@@ -1,0 +1,128 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  ADMIN_SESSION,
+  BUSINESSES,
+  INITIAL_QR_CODES_BY_BUSINESS,
+  INITIAL_REQUESTS_BY_BUSINESS,
+  OWNER_SESSION,
+  REVIEWS_BY_BUSINESS,
+  canConfigureTenant,
+  canReadTenantData,
+  isSupportSessionActive,
+  makeAuditEvent,
+  startSupportSession,
+  validateNeutralReviewTemplate,
+  type SessionContext,
+} from "../src/platform/domain.ts";
+
+const now = new Date("2026-07-16T12:00:00.000Z");
+
+test("business owners are limited to their own tenant", () => {
+  assert.equal(canReadTenantData(OWNER_SESSION, "business_123", null, now), true);
+  assert.equal(canReadTenantData(OWNER_SESSION, "business_201", null, now), false);
+  assert.equal(canConfigureTenant(OWNER_SESSION, "business_201", null, now), false);
+});
+
+test("agency portfolio access does not silently grant tenant data access", () => {
+  assert.equal(canReadTenantData(ADMIN_SESSION, "business_123", null, now), false);
+  assert.equal(canConfigureTenant(ADMIN_SESSION, "business_123", null, now), false);
+});
+
+test("view-only support sessions cannot mutate tenant configuration", () => {
+  const session = startSupportSession(
+    ADMIN_SESSION,
+    { businessId: "business_123", reason: "SUP-184 reconnect investigation", scope: "view", durationMinutes: 15 },
+    now,
+  );
+  assert.equal(isSupportSessionActive(session, new Date("2026-07-16T12:14:59.000Z")), true);
+  assert.equal(canReadTenantData(ADMIN_SESSION, "business_123", session, now), true);
+  assert.equal(canReadTenantData(ADMIN_SESSION, "business_201", session, now), false);
+  assert.equal(canConfigureTenant(ADMIN_SESSION, "business_123", session, now), false);
+  assert.equal(canReadTenantData({ ...ADMIN_SESSION, userId: "user_admin_other" }, "business_123", session, now), false);
+  assert.equal(canReadTenantData(ADMIN_SESSION, "business_123", session, new Date(session.expiresAt)), false);
+  assert.equal(isSupportSessionActive({ ...session, startedAt: "2026-07-16T12:01:00.000Z" }, now), false);
+});
+
+test("seeded tenant rows cannot drift into another business scope", () => {
+  const knownBusinessIds = new Set(BUSINESSES.map((business) => business.id));
+  for (const business of BUSINESSES) {
+    assert.ok((INITIAL_REQUESTS_BY_BUSINESS[business.id] ?? []).every((request) => request.businessId === business.id));
+    assert.ok((INITIAL_REQUESTS_BY_BUSINESS[business.id] ?? []).every((request) => request.consentStatus === "Missing" || Boolean(request.consentReference && request.consentCapturedAt && request.consentWordingVersion)));
+    assert.ok((REVIEWS_BY_BUSINESS[business.id] ?? []).every((review) => review.businessId === business.id));
+    assert.equal(new Set(business.teamMembers.map((member) => member.name)).size, business.teamMembers.length);
+  }
+  assert.ok(Object.keys(INITIAL_REQUESTS_BY_BUSINESS).every((businessId) => knownBusinessIds.has(businessId)));
+  assert.ok(Object.keys(REVIEWS_BY_BUSINESS).every((businessId) => knownBusinessIds.has(businessId)));
+  assert.ok(Object.keys(INITIAL_QR_CODES_BY_BUSINESS).every((businessId) => knownBusinessIds.has(businessId)));
+  assert.equal(new Set(Object.values(INITIAL_QR_CODES_BY_BUSINESS).map((record) => record.publicToken)).size, BUSINESSES.length);
+  for (const [businessId, record] of Object.entries(INITIAL_QR_CODES_BY_BUSINESS)) {
+    assert.equal(record.businessId, businessId);
+    assert.match(record.publicToken, /^[a-z0-9-]{16,80}$/);
+    assert.ok(record.artworkRevision > 0);
+  }
+  const allTeamNames = BUSINESSES.flatMap((business) => business.teamMembers.map((member) => member.name));
+  assert.equal(new Set(allTeamNames).size, allTeamNames.length);
+});
+
+test("configuration support requires recent step-up verification", () => {
+  const staleAdmin: SessionContext = { ...ADMIN_SESSION, stepUpVerifiedAt: "2026-07-16T11:30:00.000Z" };
+  assert.throws(
+    () => startSupportSession(staleAdmin, { businessId: "business_123", reason: "SUP-185 configuration support", scope: "configuration", durationMinutes: 30 }, now),
+    /step-up verification/i,
+  );
+
+  const futureAdmin: SessionContext = { ...ADMIN_SESSION, stepUpVerifiedAt: "2026-07-16T12:05:00.000Z" };
+  assert.throws(
+    () => startSupportSession(futureAdmin, { businessId: "business_123", reason: "SUP-185 future verification", scope: "configuration", durationMinutes: 30 }, now),
+    /step-up verification/i,
+  );
+
+  const freshAdmin: SessionContext = { ...ADMIN_SESSION, stepUpVerifiedAt: "2026-07-16T11:55:00.000Z" };
+  const session = startSupportSession(
+    freshAdmin,
+    { businessId: "business_123", reason: "SUP-185 configuration support", scope: "configuration", durationMinutes: 30 },
+    now,
+  );
+  assert.equal(canConfigureTenant(freshAdmin, "business_123", session, now), true);
+});
+
+test("neutral template checks block gating, incentives and missing compliance fields", () => {
+  const neutral = "Hi {{first_name}}, thanks for choosing {{business_name}}. Leave an honest review: {{review_link}}. Reply STOP to opt out.";
+  assert.deepEqual(validateNeutralReviewTemplate(neutral), []);
+  assert.ok(validateNeutralReviewTemplate("If you are happy, leave us a five-star review for a discount.").length >= 4);
+  assert.ok(validateNeutralReviewTemplate("If you’re not happy, contact us first. {{business_name}} {{review_link}} Reply STOP.").some((issue) => /sentiment/i.test(issue)));
+});
+
+test("support sessions require agency MFA and a meaningful reason", () => {
+  assert.throws(
+    () => startSupportSession(OWNER_SESSION, { businessId: "business_123", reason: "SUP-186 owner attempt", scope: "view", durationMinutes: 15 }, now),
+    /agency administrator/i,
+  );
+  assert.throws(
+    () => startSupportSession({ ...ADMIN_SESSION, mfaVerified: false }, { businessId: "business_123", reason: "SUP-186 support request", scope: "view", durationMinutes: 15 }, now),
+    /MFA/i,
+  );
+  assert.throws(
+    () => startSupportSession(ADMIN_SESSION, { businessId: "business_123", reason: "too short", scope: "view", durationMinutes: 15 }, now),
+    /reason/i,
+  );
+});
+
+test("administrative events keep actor, tenant and correlation evidence", () => {
+  const event = makeAuditEvent({
+    occurredAt: now.toISOString(),
+    actor: ADMIN_SESSION.userName,
+    actorType: "user",
+    businessId: "business_123",
+    action: "support.session.start",
+    resource: "Harbour & Hearth",
+    outcome: "Completed",
+    supportSessionId: "SUP-184",
+    reason: "SUP-184 reconnect investigation",
+  }, now);
+  assert.match(event.id, /^AUD-/);
+  assert.match(event.correlationId, /^COR-/);
+  assert.equal(event.businessId, "business_123");
+  assert.equal(event.actor, "Maya Chen");
+});

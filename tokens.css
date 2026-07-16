@@ -1,0 +1,93 @@
+/* Afterword design tokens · Hallmark Coral register */
+:root {
+  color-scheme: light;
+
+  --color-transparent: oklch(0% 0 0 / 0);
+  --color-paper: oklch(96.5% 0.005 50);
+  --color-paper-2: oklch(94% 0.006 50);
+  --color-paper-3: oklch(91% 0.008 50);
+  --color-surface: oklch(98.5% 0.004 50);
+  --color-rule: oklch(86% 0.008 50);
+  --color-rule-2: oklch(72% 0.01 50);
+  --color-muted: oklch(49% 0.012 50);
+  --color-neutral: oklch(38% 0.012 45);
+  --color-ink-2: oklch(28% 0.012 40);
+  --color-ink: oklch(20% 0.01 35);
+  --color-ink-soft: oklch(24% 0.018 150);
+  --color-accent: oklch(64% 0.165 28);
+  --color-accent-soft: oklch(92% 0.035 30);
+  --color-accent-ink: oklch(20% 0.01 35);
+  --color-focus: oklch(38% 0.1 28);
+  --color-success: oklch(53% 0.135 155);
+  --color-success-soft: oklch(92% 0.035 155);
+  --color-warning: oklch(72% 0.14 78);
+  --color-warning-soft: oklch(94% 0.035 78);
+  --color-error: oklch(54% 0.18 24);
+  --color-error-soft: oklch(93% 0.035 24);
+  --color-star: oklch(76% 0.145 82);
+  --color-google-blue: oklch(54% 0.18 250);
+  --color-overlay: oklch(14% 0.01 35 / 0.5);
+
+  --font-display: "Geist Variable", "General Sans", ui-sans-serif, sans-serif;
+  --font-body: "Geist Variable", "General Sans", ui-sans-serif, sans-serif;
+  --font-wordmark: "Fraunces Variable", ui-serif, serif;
+  --font-label: "Geist Mono Variable", ui-monospace, monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-md: 1.125rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.5rem;
+  --text-2xl: 2rem;
+  --text-3xl: 2.5rem;
+  --text-4xl: 3.25rem;
+  --text-display: clamp(2.75rem, 5vw + 0.5rem, 5.25rem);
+  --text-display-s: clamp(2.25rem, 3vw + 0.5rem, 3.5rem);
+
+  --space-3xs: 0.125rem;
+  --space-2xs: 0.25rem;
+  --space-xs: 0.5rem;
+  --space-sm: 0.75rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2.5rem;
+  --space-2xl: 4rem;
+  --space-3xl: 6rem;
+  --space-4xl: 9rem;
+
+  --radius-xs: 0.375rem;
+  --radius-sm: 0.625rem;
+  --radius-md: 0.875rem;
+  --radius-lg: 1.25rem;
+  --radius-xl: 1.75rem;
+  --radius-pill: 999px;
+
+  --rule-hair: 1px;
+  --page-max: 82rem;
+  --page-gutter: clamp(1rem, 4vw, 3rem);
+  --measure: 65ch;
+  --banner-height: 4.25rem;
+
+  --shadow-whisper: 0 1px 2px oklch(20% 0.01 35 / 0.06);
+  --shadow-card: 0 18px 50px -32px oklch(20% 0.01 35 / 0.28), 0 1px 2px oklch(20% 0.01 35 / 0.08);
+  --shadow-nav: 0 18px 44px -26px oklch(20% 0.01 35 / 0.34), 0 0 0 1px oklch(98% 0.005 50 / 0.55) inset;
+  --shadow-dialog: 0 40px 90px -32px oklch(14% 0.01 35 / 0.5);
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-micro: 120ms;
+  --dur-short: 220ms;
+  --dur-long: 420ms;
+  --dur-nav: 520ms;
+
+  --z-base: 1;
+  --z-raised: 10;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-sticky-nav: 210;
+  --z-modal: 400;
+  --z-toast: 500;
+  --z-tooltip: 600;
+}
