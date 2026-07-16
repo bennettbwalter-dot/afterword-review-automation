@@ -13,12 +13,14 @@ import {
 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import type { AuditEvent, BusinessAccount, PlatformException, WorkspaceView } from "./domain";
+import { IS_DEMO_MODE } from "./api";
 
 function ToneTag({ tone, children }: { tone: string; children: ReactNode }) {
   return <span className={`status-pill status-pill--${tone}`}>{children}</span>;
 }
 
 function AgencyDemoNotice() {
+  if (!IS_DEMO_MODE) return null;
   return (
     <div className="demo-notice demo-notice--quiet">
       <span className="demo-label">Agency preview</span>
@@ -47,7 +49,7 @@ export function AgencyOverviewView({
     <div className="view-stack">
       <AgencyDemoNotice />
       <section className="metric-grid agency-metric-grid" aria-label="Agency portfolio metrics">
-        <article className="metric-card metric-card--wide"><span>Client accounts</span><strong>{businesses.length}</strong><small>{businesses.length} active locations in this demo</small></article>
+        <article className="metric-card metric-card--wide"><span>Client accounts</span><strong>{businesses.length}</strong><small>{businesses.length} active locations{IS_DEMO_MODE ? " in this demo" : ""}</small></article>
         <article className="metric-card metric-card--success"><span>Healthy</span><strong>{healthy}</strong><small>Normal automation and integrations</small></article>
         <article className="metric-card metric-card--warning"><span>Open exceptions</span><strong>{exceptions.length}</strong><small>{affected} events or messages affected</small></article>
         <article className="metric-card"><span>Paused scopes</span><strong>{paused}</strong><small>Held safely; queued work retained</small></article>
@@ -63,7 +65,7 @@ export function AgencyOverviewView({
                 <article key={item.id}>
                   <span className={`agency-exception-list__icon agency-exception-list__icon--${item.tone}`}><AlertTriangle size={17} /></span>
                   <div><span><ToneTag tone={item.tone}>{item.category}</ToneTag><small>{item.id}</small></span><strong>{item.title}</strong><p>{business.name} · {business.locationName} · {item.affectedLabel}</p></div>
-                  <button className="button button--secondary" type="button" onClick={() => onStartSupport(business)}>Open safely</button>
+                  <button className="button button--secondary" type="button" disabled={!IS_DEMO_MODE} onClick={() => onStartSupport(business)}>{IS_DEMO_MODE ? "Open safely" : "Support endpoint pending"}</button>
                 </article>
               );
             })}
@@ -127,7 +129,7 @@ export function ClientsView({
                 <span role="cell"><ToneTag tone={business.healthTone}>{business.health}</ToneTag><small>{business.integrationSummary}</small></span>
                 <span role="cell"><strong>{isPaused ? "Held" : business.automationState}</strong><small>{business.affectedCount ? `${business.affectedCount} affected` : "No affected work"}</small></span>
                 <span role="cell"><strong>{business.lastSuccess}</strong><small>{business.plan}</small></span>
-                <span role="cell" className="agency-client-row__actions"><button className="button button--secondary" type="button" onClick={() => onStartSupport(business)}><UserCog size={16} /> Start support</button><button className="button button--quiet" type="button" disabled={isSystemProtected} onClick={() => onPause(business)}>{isSystemProtected ? <ShieldAlert size={16} /> : <PauseCircle size={16} />} {isSystemProtected ? "System protected" : isManuallyPaused ? "Resume scope" : "Pause scope"}</button></span>
+                <span role="cell" className="agency-client-row__actions"><button className="button button--secondary" type="button" disabled={!IS_DEMO_MODE} onClick={() => onStartSupport(business)}><UserCog size={16} /> {IS_DEMO_MODE ? "Start support" : "Support pending"}</button><button className="button button--quiet" type="button" disabled={!IS_DEMO_MODE || isSystemProtected} onClick={() => onPause(business)}>{isSystemProtected ? <ShieldAlert size={16} /> : <PauseCircle size={16} />} {isSystemProtected ? "System protected" : isManuallyPaused ? "Resume scope" : "Pause scope"}</button></span>
               </article>
             );
           })}
@@ -172,7 +174,7 @@ export function ExceptionsView({
                 <header><span><ToneTag tone={item.tone}>{item.category}</ToneTag><small>{item.id} · began {item.startedAt}</small></span><strong>{item.title}</strong><p>{business.name} · {business.locationName}</p></header>
                 <dl><div><dt>Affected</dt><dd>{item.affectedLabel}</dd></div><div><dt>System response</dt><dd>{item.protectedAction}</dd></div><div><dt>Client</dt><dd>{item.clientNotified ? "Notified" : "Notification pending"}</dd></div><div><dt>Owner</dt><dd>{item.owner}</dd></div></dl>
                 <div className="exception-resolution"><ShieldCheck size={17} /><span><strong>Recommended resolution</strong><small>{item.resolution}</small></span></div>
-                <footer><button className="button button--secondary" type="button" onClick={() => onStartSupport(business)}>Start support session</button><button className="button button--quiet" type="button" disabled={isSystemProtected} onClick={() => onPause(business)}>{isSystemProtected ? <ShieldAlert size={16} /> : <PauseCircle size={16} />} {isSystemProtected ? "System protected" : isManuallyPaused ? "Resume scope" : "Pause scope"}</button></footer>
+                <footer><button className="button button--secondary" type="button" disabled={!IS_DEMO_MODE} onClick={() => onStartSupport(business)}>{IS_DEMO_MODE ? "Start support session" : "Support endpoint pending"}</button><button className="button button--quiet" type="button" disabled={!IS_DEMO_MODE || isSystemProtected} onClick={() => onPause(business)}>{isSystemProtected ? <ShieldAlert size={16} /> : <PauseCircle size={16} />} {isSystemProtected ? "System protected" : isManuallyPaused ? "Resume scope" : "Pause scope"}</button></footer>
               </article>
             );
           })}
@@ -195,7 +197,7 @@ export function AuditLogView({ businesses, events }: { businesses: BusinessAccou
     <div className="view-stack">
       <AgencyDemoNotice />
       <section className="panel audit-panel">
-        <header className="table-toolbar"><div className="search-field"><Search size={17} aria-hidden="true" /><label className="sr-only" htmlFor="audit-search">Search audit history</label><input id="audit-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search actor, action or correlation ID" /></div><span><KeyRound size={16} /> Append-only demo history</span></header>
+        <header className="table-toolbar"><div className="search-field"><Search size={17} aria-hidden="true" /><label className="sr-only" htmlFor="audit-search">Search audit history</label><input id="audit-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search actor, action or correlation ID" /></div><span><KeyRound size={16} /> Append-only {IS_DEMO_MODE ? "demo " : ""}history</span></header>
         <div className="audit-list" role="table" aria-label="Administrative audit history">
           <div className="audit-list__head" role="row"><span role="columnheader">Time</span><span role="columnheader">Actor</span><span role="columnheader">Tenant</span><span role="columnheader">Action and resource</span><span role="columnheader">Outcome</span><span role="columnheader">Correlation</span></div>
           {filtered.map((event) => {

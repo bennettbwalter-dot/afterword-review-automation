@@ -1,0 +1,616 @@
+import assert from "node:assert/strict";
+import {
+  createHmac,
+  generateKeyPairSync,
+  randomBytes,
+  randomUUID,
+  sign,
+} from "node:crypto";
+import test from "node:test";
+import { buildApp } from "../server/app.js";
+import { loadConfig } from "../server/config.js";
+import { createWebhookSecurity } from "../server/providers/webhook-security.js";
+import { synchronizeDueGoogleConnections, type GoogleBusinessProfileClient } from "../server/providers/google.js";
+import { encryptField, hashOpaqueToken, hashPassword, verifyPassword } from "../server/security/crypto.js";
+import type {
+  ActorContext,
+  CompletedJobInput,
+  EncryptedPayload,
+  GoogleConnectionInput,
+  PlatformRepository,
+  WorkspacePayload,
+} from "../server/types.js";
+import { runDeliveryCycle, runGoogleTokenRevocationCycle } from "../server/worker.js";
+
+const appOrigin = "http://127.0.0.1:4173";
+const encryptionKey = randomBytes(32).toString("base64url");
+const sessionPepper = "test-session-pepper-that-is-longer-than-32-characters";
+const businessId = randomUUID();
+const otherBusinessId = randomUUID();
+const locationId = randomUUID();
+const userId = randomUUID();
+const password = "correct horse battery staple 2026";
+const passwordHash = await hashPassword(password);
+
+const config = loadConfig({
+  NODE_ENV: "test",
+  DATABASE_URL: "postgresql://unused:unused@127.0.0.1:5432/unused",
+  APP_ORIGIN: appOrigin,
+  SESSION_PEPPER: sessionPepper,
+  FIELD_ENCRYPTION_KEY: encryptionKey,
+});
+
+function workspace(actor: ActorContext): WorkspacePayload {
+  return {
+    session: {
+      userId: actor.userId,
+      userName: actor.userName,
+      email: actor.email,
+      role: actor.role,
+      businessId: actor.businessId,
+      agencyId: actor.agencyId,
+      mfaVerified: actor.mfaVerified,
+      stepUpVerifiedAt: actor.stepUpVerifiedAt,
+      supportSessionId: actor.supportSessionId,
+    },
+    businesses: [{
+      id: businessId,
+      agencyId: randomUUID(),
+      locationId,
+      name: "Pilot Plumbing",
+      locationName: "Main location",
+      initials: "PP",
+      country: "GB",
+      timezone: "Europe/London",
+      health: "Healthy",
+      healthTone: "success",
+      automationState: "Live",
+      integrationSummary: "Server connected",
+      lastSuccess: "Awaiting provider activity",
+      affectedCount: 0,
+      plan: "Professional",
+      seedRequestCount: 0,
+      metrics: {
+        completedJobs: 0,
+        eligibleCustomers: 0,
+        delivered: 0,
+        uniqueClicks: 0,
+        reviewsDetected: 0,
+        rating: 0,
+        totalReviews: 0,
+      },
+      teamMembers: [],
+      integrations: {
+        google: { status: "Connected", tone: "success", lastEvent: "Now" },
+        messaging: { status: "Connected", tone: "success", lastEvent: "Now" },
+        jobIntake: { status: "Listening", tone: "success", lastEvent: "Now" },
+      },
+    }],
+    requestsByBusiness: { [businessId]: [] },
+    reviewsByBusiness: { [businessId]: [] },
+    qrCodesByBusiness: {},
+    exceptions: [],
+    auditEvents: [],
+  };
+}
+
+function createRepository() {
+  const sessionActors = new Map<string, ActorContext>();
+  let capturedJob: CompletedJobInput | undefined;
+  const loginResults: Array<{ email: string; succeeded: boolean }> = [];
+  const repository: PlatformRepository = {
+    async findCredentialByEmail(email) {
+      return email === "owner@example.com"
+        ? { userId, email, displayName: "Owner", passwordHash, mfaRequired: false, disabled: false }
+        : null;
+    },
+    async recordLoginResult(email, succeeded) { loginResults.push({ email, succeeded }); },
+    async createLoginSession(input) {
+      const sessionId = randomUUID();
+      sessionActors.set(input.tokenHash.toString("hex"), {
+        userId,
+        userName: "Owner",
+        email: "owner@example.com",
+        role: "business_owner",
+        businessId,
+        mfaVerified: false,
+        sessionId,
+        sessionTokenHash: input.tokenHash,
+      });
+      return sessionId;
+    },
+    async resolveLoginSession(tokenHash) {
+      return sessionActors.get(tokenHash.toString("hex")) ?? null;
+    },
+    async revokeLoginSession(_sessionId, tokenHash) {
+      sessionActors.delete(tokenHash.toString("hex"));
+    },
+    async getWorkspace(actor) {
+      return workspace(actor);
+    },
+    async startSupportSession() { return randomUUID(); },
+    async endSupportSession() { return true; },
+    async createCompletedJob(_actor, input) {
+      capturedJob = input;
+      return { requestId: randomUUID(), status: "Queued", duplicate: false };
+    },
+    async beginGoogleOAuth() {},
+    async consumeGoogleOAuthState() { return null; },
+    async saveGoogleConnection() {},
+    async listDueGoogleConnections() { return []; },
+    async upsertGoogleReviews() { return 0; },
+    async claimMessageJobs() { return []; },
+    async authorizeMessageDispatch() { return { allowed: false, reason: "not_due" }; },
+    async getMessagePayload() { throw new Error("No message payload in API test repository."); },
+    async finishMessageAttempt() {},
+    async deferMessageJob() {},
+    async resolvePublicReviewFlow(token) {
+      return token === "valid-public-token"
+        ? { qrCodeId: randomUUID(), businessId, locationId, destinationUrl: "https://g.page/r/example/review" }
+        : null;
+    },
+    async recordPublicQrScan() {
+      return { scanId: randomUUID(), destinationUrl: "https://g.page/r/example/review" };
+    },
+    async markPublicQrContinue() {},
+  };
+  return { repository, getCapturedJob: () => capturedJob, getLoginResults: () => loginResults };
+}
+
+async function authenticatedApp() {
+  const state = createRepository();
+  const app = await buildApp({ config, repository: state.repository });
+  const login = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/login",
+    headers: { origin: appOrigin },
+    payload: { email: "owner@example.com", password },
+  });
+  assert.equal(login.statusCode, 200);
+  const cookie = login.headers["set-cookie"];
+  assert.equal(typeof cookie, "string");
+  const cookiePair = String(cookie).split(";", 1)[0];
+  return { app, cookie: cookiePair, setCookie: String(cookie), ...state };
+}
+
+test("production configuration requires separate least-privilege database connections", () => {
+  assert.throws(() => loadConfig({
+    NODE_ENV: "production",
+    DATABASE_URL: "postgresql://all-powerful:secret@example.com/afterword",
+    SESSION_PEPPER: sessionPepper,
+    FIELD_ENCRYPTION_KEY: encryptionKey,
+  }), /Production requires AUTH_DATABASE_URL/i);
+});
+
+test("production configuration rejects example secrets and insecure application origins", () => {
+  const productionDatabaseUrls = {
+    AUTH_DATABASE_URL: "postgresql://auth:secret@db.example.com/afterword",
+    RUNTIME_DATABASE_URL: "postgresql://runtime:secret@db.example.com/afterword",
+    INGRESS_DATABASE_URL: "postgresql://ingress:secret@db.example.com/afterword",
+    WORKER_DATABASE_URL: "postgresql://worker:secret@db.example.com/afterword",
+  };
+
+  assert.throws(() => loadConfig({
+    NODE_ENV: "production",
+    ...productionDatabaseUrls,
+    APP_ORIGIN: "https://app.example.com",
+    SESSION_PEPPER: "replace-with-at-least-32-random-characters",
+    FIELD_ENCRYPTION_KEY: encryptionKey,
+  }), /example SESSION_PEPPER/i);
+
+  assert.throws(() => loadConfig({
+    NODE_ENV: "production",
+    ...productionDatabaseUrls,
+    APP_ORIGIN: "https://app.example.com",
+    SESSION_PEPPER: sessionPepper,
+    FIELD_ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  }), /example FIELD_ENCRYPTION_KEY/i);
+
+  assert.throws(() => loadConfig({
+    NODE_ENV: "production",
+    ...productionDatabaseUrls,
+    APP_ORIGIN: "http://app.example.com",
+    SESSION_PEPPER: sessionPepper,
+    FIELD_ENCRYPTION_KEY: encryptionKey,
+  }), /APP_ORIGIN must use HTTPS/i);
+});
+
+test("production configuration requires four distinct database login identities", () => {
+  const shared = "postgresql://shared:secret@db.example.com/afterword";
+  assert.throws(() => loadConfig({
+    NODE_ENV: "production",
+    AUTH_DATABASE_URL: shared,
+    RUNTIME_DATABASE_URL: shared,
+    INGRESS_DATABASE_URL: shared,
+    WORKER_DATABASE_URL: shared,
+    APP_ORIGIN: "https://app.example.com",
+    SESSION_PEPPER: sessionPepper,
+    FIELD_ENCRYPTION_KEY: encryptionKey,
+  }), /four distinct least-privilege login identities/i);
+
+  assert.doesNotThrow(() => loadConfig({
+    NODE_ENV: "production",
+    AUTH_DATABASE_URL: "postgresql://auth:secret@db.example.com/afterword",
+    RUNTIME_DATABASE_URL: "postgresql://runtime:secret@db.example.com/afterword",
+    INGRESS_DATABASE_URL: "postgresql://ingress:secret@db.example.com/afterword",
+    WORKER_DATABASE_URL: "postgresql://worker:secret@db.example.com/afterword",
+    APP_ORIGIN: "https://app.example.com",
+    SESSION_PEPPER: sessionPepper,
+    FIELD_ENCRYPTION_KEY: encryptionKey,
+  }));
+});
+
+test("each production process can start without credentials for other capabilities", () => {
+  const common = {
+    NODE_ENV: "production",
+    APP_ORIGIN: "https://app.example.com",
+    SESSION_PEPPER: sessionPepper,
+    FIELD_ENCRYPTION_KEY: encryptionKey,
+  } as const;
+  assert.doesNotThrow(() => loadConfig({
+    ...common,
+    AUTH_DATABASE_URL: "postgresql://auth:secret@db.example.com/afterword",
+    RUNTIME_DATABASE_URL: "postgresql://runtime:secret@db.example.com/afterword",
+  }, ["auth", "runtime"]));
+  assert.doesNotThrow(() => loadConfig({
+    ...common,
+    INGRESS_DATABASE_URL: "postgresql://ingress:secret@db.example.com/afterword",
+  }, ["ingress"]));
+  assert.doesNotThrow(() => loadConfig({
+    ...common,
+    WORKER_DATABASE_URL: "postgresql://worker:secret@db.example.com/afterword",
+  }, ["worker"]));
+});
+
+test("application and public-ingress routes are separated into different processes", async (t) => {
+  const state = createRepository();
+  const application = await buildApp({ config, repository: state.repository, surface: "application" });
+  const ingress = await buildApp({ config, repository: state.repository, surface: "ingress" });
+  t.after(async () => Promise.all([application.close(), ingress.close()]));
+
+  assert.equal((await application.inject({ method: "GET", url: "/api/v1/public/review-flows/valid-public-token" })).statusCode, 404);
+  assert.equal((await ingress.inject({ method: "POST", url: "/api/v1/auth/login", payload: {} })).statusCode, 404);
+  assert.equal((await ingress.inject({ method: "GET", url: "/api/v1/public/review-flows/valid-public-token" })).statusCode, 200);
+});
+
+test("password and field encryption use salt, authenticated context and constant-time verification", async () => {
+  const secondHash = await hashPassword(password);
+  assert.notEqual(secondHash, passwordHash);
+  assert.equal(await verifyPassword(password, passwordHash), true);
+  assert.equal(await verifyPassword("wrong password", passwordHash), false);
+
+  const encrypted = encryptField("+447700900123", encryptionKey, `${businessId}:message-destination`);
+  assert.notEqual(encrypted.ciphertext.toString("utf8"), "+447700900123");
+  const { decryptField } = await import("../server/security/crypto.js");
+  assert.equal(decryptField(encrypted, encryptionKey, `${businessId}:message-destination`), "+447700900123");
+  assert.throws(() => decryptField(encrypted, encryptionKey, `${otherBusinessId}:message-destination`));
+});
+
+test("login uses an opaque HttpOnly cookie and records durable success and failure results", async (t) => {
+  const { app, cookie, setCookie, getLoginResults } = await authenticatedApp();
+  t.after(() => app.close());
+  assert.match(setCookie, /^afterword_session=/);
+  assert.match(setCookie, /HttpOnly/i);
+  assert.match(setCookie, /SameSite=Strict/i);
+
+  const session = await app.inject({ method: "GET", url: "/api/v1/session", headers: { cookie } });
+  assert.equal(session.statusCode, 200);
+  assert.doesNotMatch(session.body, /sessionTokenHash|sessionId|afterword_session/i);
+
+  const invalid = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/login",
+    headers: { origin: appOrigin },
+    payload: { email: "missing@example.com", password: "not the password" },
+  });
+  assert.equal(invalid.statusCode, 401);
+  assert.equal(invalid.json().error.code, "INVALID_CREDENTIALS");
+  assert.deepEqual(getLoginResults(), [
+    { email: "owner@example.com", succeeded: true },
+    { email: "missing@example.com", succeeded: false },
+  ]);
+});
+
+test("origin guard and path-derived tenant prevent browser-selected authority", async (t) => {
+  const { app, cookie, getCapturedJob } = await authenticatedApp();
+  t.after(() => app.close());
+  const commonJob = {
+    locationId,
+    externalJobId: "job-1001",
+    serviceLabel: "Boiler service",
+    occurredAt: "2026-07-16T12:00:00.000Z",
+    firstName: "Alex",
+    phone: "+447700900123",
+    preferredChannel: "SMS",
+    consent: {
+      status: "granted",
+      wording: "I agree to receive a service follow-up by SMS.",
+      wordingVersion: "pilot-v1",
+      purpose: "review_request",
+      capturedAt: "2026-07-16T11:59:00.000Z",
+      source: "completed_job_form",
+      transactionReference: "consent-1001",
+    },
+  };
+
+  const wrongOrigin = await app.inject({
+    method: "POST",
+    url: `/api/v1/businesses/${businessId}/completed-jobs`,
+    headers: { cookie, origin: "https://attacker.example" },
+    payload: commonJob,
+  });
+  assert.equal(wrongOrigin.statusCode, 403);
+
+  const injectedTenant = await app.inject({
+    method: "POST",
+    url: `/api/v1/businesses/${businessId}/completed-jobs`,
+    headers: { cookie, origin: appOrigin },
+    payload: { ...commonJob, businessId: otherBusinessId },
+  });
+  assert.equal(injectedTenant.statusCode, 400);
+
+  const crossTenant = await app.inject({
+    method: "POST",
+    url: `/api/v1/businesses/${otherBusinessId}/completed-jobs`,
+    headers: { cookie, origin: appOrigin },
+    payload: commonJob,
+  });
+  assert.equal(crossTenant.statusCode, 403);
+
+  const accepted = await app.inject({
+    method: "POST",
+    url: `/api/v1/businesses/${businessId}/completed-jobs`,
+    headers: { cookie, origin: appOrigin },
+    payload: commonJob,
+  });
+  assert.equal(accepted.statusCode, 201);
+  assert.equal(getCapturedJob()?.businessId, businessId);
+});
+
+test("public QR flow validates stable tokens and trusted Google destinations", async (t) => {
+  const { repository } = createRepository();
+  const app = await buildApp({ config, repository });
+  t.after(() => app.close());
+  const missing = await app.inject({ method: "GET", url: "/api/v1/public/review-flows/not-present-token" });
+  assert.equal(missing.statusCode, 404);
+  const flow = await app.inject({ method: "GET", url: "/api/v1/public/review-flows/valid-public-token" });
+  assert.equal(flow.statusCode, 200);
+  assert.equal(flow.json().data.destinationUrl, "https://g.page/r/example/review");
+});
+
+test("multi-profile Google OAuth selection is opaque, actor-bound and single use", async (t) => {
+  interface SelectionRepository extends PlatformRepository {
+    peekGoogleProfileSelection(
+      actor: ActorContext,
+      tokenHash: Buffer,
+    ): Promise<{ businessId: string; locationId: string; payload: EncryptedPayload } | null>;
+    consumeGoogleProfileSelection(
+      actor: ActorContext,
+      tokenHash: Buffer,
+    ): Promise<{ businessId: string; locationId: string; payload: EncryptedPayload } | null>;
+  }
+  const { repository: baseRepository } = createRepository();
+  const repository = baseRepository as SelectionRepository;
+  const selectionToken = randomBytes(32).toString("base64url");
+  const expectedHash = hashOpaqueToken(selectionToken, sessionPepper);
+  const payload = encryptField(JSON.stringify({
+    actorUserId: userId,
+    accessToken: "access-token-must-not-reach-browser",
+    refreshToken: "refresh-token-must-not-reach-browser",
+    expiresAt: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+    scopes: ["https://www.googleapis.com/auth/business.manage"],
+    profiles: [
+      {
+        accountName: "accounts/1001",
+        accountDisplayName: "Pilot Account",
+        locationName: "locations/2001",
+        locationTitle: "Pilot Plumbing North",
+        newReviewUri: "https://g.page/r/pilot-north/review",
+      },
+      {
+        accountName: "accounts/1001",
+        accountDisplayName: "Pilot Account",
+        locationName: "locations/2002",
+        locationTitle: "Pilot Plumbing South",
+        newReviewUri: "https://g.page/r/pilot-south/review",
+      },
+    ],
+  }), encryptionKey, `${businessId}:${locationId}:google-profile-selection`);
+  let consumed = false;
+  let savedConnection: GoogleConnectionInput | undefined;
+  repository.peekGoogleProfileSelection = async (actor, tokenHash) => {
+    assert.equal(actor.userId, userId);
+    assert.deepEqual(tokenHash, expectedHash);
+    return consumed ? null : { businessId, locationId, payload };
+  };
+  repository.consumeGoogleProfileSelection = async (actor, tokenHash) => {
+    const state = await repository.peekGoogleProfileSelection(actor, tokenHash);
+    consumed = true;
+    return state;
+  };
+  repository.saveGoogleConnection = async (input) => { savedConnection = input; };
+  const app = await buildApp({ config, repository });
+  t.after(() => app.close());
+  const login = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/login",
+    headers: { origin: appOrigin },
+    payload: { email: "owner@example.com", password },
+  });
+  const cookie = String(login.headers["set-cookie"]).split(";", 1)[0];
+
+  const selection = await app.inject({
+    method: "GET",
+    url: `/api/v1/integrations/google/oauth/selections/${selectionToken}`,
+    headers: { cookie },
+  });
+  assert.equal(selection.statusCode, 200);
+  assert.match(selection.body, /Pilot Plumbing South/);
+  assert.doesNotMatch(selection.body, /access-token|refresh-token|accounts\/1001|locations\/2001/);
+
+  const completed = await app.inject({
+    method: "POST",
+    url: `/api/v1/integrations/google/oauth/selections/${selectionToken}`,
+    headers: { cookie, origin: appOrigin },
+    payload: { profileIndex: 1 },
+  });
+  assert.equal(completed.statusCode, 200);
+  assert.equal(savedConnection?.actorUserId, userId);
+  assert.equal(savedConnection?.locationName, "locations/2002");
+
+  const replay = await app.inject({
+    method: "POST",
+    url: `/api/v1/integrations/google/oauth/selections/${selectionToken}`,
+    headers: { cookie, origin: appOrigin },
+    payload: { profileIndex: 0 },
+  });
+  assert.equal(replay.statusCode, 404);
+});
+
+test("delivery worker renders the canonical review URI and records the immutable attempt", async () => {
+  const jobId = randomUUID();
+  const attemptId = randomUUID();
+  const leaseToken = randomUUID();
+  const destination = encryptField("+447700900123", encryptionKey, `${businessId}:message-destination`);
+  let deliveredBody = "";
+  let finishedAttempt = "";
+  const { repository } = createRepository();
+  repository.claimMessageJobs = async () => [{
+    id: jobId,
+    businessId,
+    locationId,
+    channel: "sms",
+    provider: "twilio",
+    leaseToken,
+  }];
+  repository.authorizeMessageDispatch = async () => ({ allowed: true, reason: "authorized" });
+  repository.getMessagePayload = async () => ({
+    messageAttemptId: attemptId,
+    businessId,
+    channel: "sms",
+    reviewUri: "https://g.page/r/example/review",
+    destination,
+    body: "Please leave an honest review: {{review_link}} Reply STOP to opt out.",
+    idempotencyKey: `afterword:${jobId}`,
+  });
+  repository.finishMessageAttempt = async (input) => { finishedAttempt = input.messageAttemptId; };
+  const cycle = await runDeliveryCycle({
+    repository,
+    workerId: "test-worker",
+    encryptionKey,
+    providers: {
+      sms: {
+        name: "fake-sms",
+        isConfigured: () => true,
+        async send(input) {
+          deliveredBody = input.body;
+          return { result: "accepted", providerMessageId: "SM_TEST" };
+        },
+      },
+    },
+  });
+  assert.equal(cycle.accepted, 1);
+  assert.equal(finishedAttempt, attemptId);
+  assert.match(deliveredBody, /https:\/\/g\.page\/r\/example\/review/);
+  assert.doesNotMatch(deliveredBody, /\{\{review_link\}\}/);
+});
+
+test("Google review sync closes its lease once for zero-review success and failure", async () => {
+  const { repository } = createRepository();
+  const accessToken = encryptField("google-access-token", encryptionKey, `${businessId}:google-oauth-access`);
+  const connection = {
+    integrationId: randomUUID(),
+    businessId,
+    locationId,
+    accountName: "accounts/1001",
+    locationName: "locations/2001",
+    reviewUri: "https://g.page/r/example/review",
+    accessToken,
+    expiresAt: new Date(Date.now() + 60 * 60 * 1_000),
+    grantedScopes: ["https://www.googleapis.com/auth/business.manage"],
+    syncWorkerId: "sync-worker-1",
+    syncLeaseToken: randomUUID(),
+  };
+  repository.listDueGoogleConnections = async () => [connection];
+  const completions: Array<{ succeeded: boolean; error?: string; seen?: string[] }> = [];
+  repository.finishGoogleReviewSync = async (_connection, succeeded, error, seen) => {
+    completions.push({ succeeded, error, seen });
+  };
+  const client: GoogleBusinessProfileClient = {
+    isConfigured: () => true,
+    authorizationUrl: () => "https://accounts.google.com/",
+    async exchangeCode() { throw new Error("unused"); },
+    async refreshAccessToken() { throw new Error("unused"); },
+    async listProfiles() { return []; },
+    async listReviews() { return []; },
+  };
+  const success = await synchronizeDueGoogleConnections(repository, client, encryptionKey, 1);
+  assert.equal(success[0]?.imported, 0);
+  assert.deepEqual(completions, [{ succeeded: true, error: undefined, seen: [] }]);
+
+  completions.length = 0;
+  client.listReviews = async () => { throw new Error("permission denied"); };
+  const failure = await synchronizeDueGoogleConnections(repository, client, encryptionKey, 1);
+  assert.match(failure[0]?.error ?? "", /permission denied/);
+  assert.deepEqual(completions, [{ succeeded: false, error: "permission denied", seen: undefined }]);
+});
+
+test("Google token revocation decrypts with tenant context and durably finishes the lease", async () => {
+  const { repository } = createRepository();
+  const revocationId = randomUUID();
+  const leaseToken = randomUUID();
+  const token = encryptField("refresh-token-secret", encryptionKey, `${businessId}:google-oauth-refresh`);
+  repository.claimGoogleTokenRevocations = async () => [{
+    revocationId,
+    integrationId: randomUUID(),
+    businessId,
+    tokenKind: "refresh",
+    token,
+    keyVersion: 1,
+    leaseToken,
+  }];
+  let revoked = "";
+  let finished: { succeeded: boolean; error?: string } | undefined;
+  repository.finishGoogleTokenRevocation = async (_id, _worker, _lease, succeeded, error) => {
+    finished = { succeeded, error };
+  };
+  const result = await runGoogleTokenRevocationCycle({
+    repository,
+    googleClient: { async revokeToken(value) { revoked = value; } },
+    encryptionKey,
+    workerId: "revocation-worker-1",
+  });
+  assert.equal(revoked, "refresh-token-secret");
+  assert.deepEqual(finished, { succeeded: true, error: undefined });
+  assert.deepEqual(result, { claimed: 1, completed: 1, failed: 0 });
+});
+
+test("Twilio and SendGrid webhook verifiers reject tampering", () => {
+  const twilioToken = "twilio-test-token";
+  const twilioUrl = "https://api.example.com/webhooks/twilio/status";
+  const fields = { MessageSid: "SM123", MessageStatus: "delivered" };
+  const twilioPayload = `${twilioUrl}MessageSidSM123MessageStatusdelivered`;
+  const twilioSignature = createHmac("sha1", twilioToken).update(twilioPayload).digest("base64");
+  const twilioVerifier = createWebhookSecurity({ twilioAuthToken: twilioToken });
+  assert.equal(twilioVerifier.verifyTwilio({ signature: twilioSignature, url: twilioUrl, fields }), true);
+  assert.equal(twilioVerifier.verifyTwilio({ signature: twilioSignature, url: twilioUrl, fields: { ...fields, MessageStatus: "failed" } }), false);
+
+  const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const publicDer = publicKey.export({ format: "der", type: "spki" }).toString("base64");
+  const timestamp = "1784203200";
+  const rawBody = Buffer.from('[{"event":"delivered","sg_event_id":"evt-1"}]');
+  const signature = sign("sha256", Buffer.concat([Buffer.from(timestamp), rawBody]), privateKey).toString("base64");
+  const sendGridVerifier = createWebhookSecurity({ sendGridVerificationKey: publicDer });
+  assert.equal(sendGridVerifier.verifySendGrid({ signature, timestamp, rawBody }), true);
+  assert.equal(sendGridVerifier.verifySendGrid({ signature, timestamp, rawBody: Buffer.from("[]") }), false);
+});
+
+test("opaque session hashes are deterministic only under the server pepper", () => {
+  const token = randomBytes(32).toString("base64url");
+  const first = hashOpaqueToken(token, sessionPepper);
+  const second = hashOpaqueToken(token, sessionPepper);
+  const other = hashOpaqueToken(token, `${sessionPepper}-other`);
+  assert.equal(first.length, 32);
+  assert.deepEqual(first, second);
+  assert.notDeepEqual(first, other);
+});

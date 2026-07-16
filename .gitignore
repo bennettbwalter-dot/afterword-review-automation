@@ -3,5 +3,9 @@ dist/
 .vite/
 *.local
 *.log
+.env
+.env.*
+!.env.example
+!.env.demo
 .playwright-cli/
 output/playwright/

@@ -64,6 +64,7 @@ export interface IntegrationState {
 
 export interface BusinessAccount {
   id: string;
+  locationId?: string;
   agencyId: string;
   name: string;
   locationName: string;

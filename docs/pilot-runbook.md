@@ -1,0 +1,61 @@
+# One-business pilot runbook
+
+The pilot is a launch gate, not a demo. Billing and public self-service stay disabled until every acceptance item below has evidence attached to the pilot record.
+
+Current execution status: **not started**. The migrations and SQL isolation tests have not been run locally because this workspace has no PostgreSQL runtime. No real Google Business Profile, Twilio or SendGrid credentials have been connected.
+
+## Required access
+
+- One verified Google Business Profile whose owner has approved Afterword access. Google does not provide a Business Profile API sandbox.
+- A Google Cloud project approved for Business Profile APIs, an OAuth web client, exact redirect URI, and only the `https://www.googleapis.com/auth/business.manage` scope.
+- A Pub/Sub topic and authenticated push subscription for `NEW_REVIEW` and `UPDATED_REVIEW` notifications, plus a scheduled reconciliation sync.
+- A registered Twilio sender or Messaging Service and/or a SendGrid account with an authenticated sending domain.
+- Four separate production PostgreSQL login URLs for authentication, tenant runtime traffic, webhook/QR ingress and workers. Each login inherits exactly one matching `NOLOGIN`, `NOBYPASSRLS` group role and none owns schema objects. Inject auth/runtime only into the application, ingress only into the public edge, and worker only into the worker.
+- Approved customer-contact consent wording, privacy notice, retention schedule, quiet-hour timezone, sender identity, and suppression process.
+- A named business owner and operator who can stop the pilot immediately. Use the business-owner path for this pilot; agency support access cannot be enabled until MFA challenge/enrolment and verified step-up evidence are implemented.
+
+Secrets belong in the deployment secret manager. Do not paste credentials into the browser, source control, pilot notes, provider metadata, or message custom arguments.
+
+The current code exposes completed-job intake only through authenticated `POST /api/v1/businesses/:businessId/completed-jobs`. There is no signed CRM/webhook intake that derives tenant and location from a server-owned integration identity. Use the authenticated manual endpoint for this pilot and do not expose it as a general integration endpoint.
+
+Configure provider callbacks to their exact deployed HTTPS URLs:
+
+- Twilio message status: `/webhooks/twilio/status`
+- Twilio inbound STOP/START: `/webhooks/twilio/inbound/:integrationId`, with the UUID for the pilot messaging integration
+- SendGrid Event Webhook: `/webhooks/sendgrid/events`
+- Google Pub/Sub push: `/webhooks/google-business-profile/reviews`; `GOOGLE_PUBSUB_AUDIENCE` must be the same full URL
+
+## Safe activation order
+
+1. Create the six database group roles and four application logins, deploy the three capability-separated processes, apply migrations 001-003 in a clean PostgreSQL environment, then run `database/tests/003_tenant_isolation.sql` and the remaining pool-reuse/two-connection checks. If a reverse proxy is used, pin the exact trusted hop count and block direct origin access.
+2. Bootstrap one business-owner account and one location. When provider variables are configured, retain the printed `twilioIntegrationId` for the inbound callback URL. Keep billing, agency support access and public registration off.
+3. Connect Google, explicitly choose the correct account/location when more than one is returned, capture the canonical Google review URL, then run a read-only review reconciliation. Confirm the selection is actor-bound, single-use and exposes no OAuth tokens to the browser.
+4. Configure the exact provider callback URLs above and prove bad signatures/OIDC claims are rejected before any live send. Send only to controlled internal destinations first.
+5. Prove STOP/unsubscribe suppression, quiet-hour deferral, retry backoff, duplicate-job handling, an ambiguous provider timeout, and the global/business pause control.
+6. Enable one channel for the pilot location. Submit a small batch of genuine, consented, completed jobs through the authenticated manual endpoint; do not upload prospects or filter recipients by expected sentiment.
+7. Observe queue state, provider acceptance, delivery receipts, link continuations, Google review detection, failures, suppressions and cache expiry for at least seven days.
+8. Disconnect Google and messaging in a rehearsal, verify queued work stops and token revocation/deletion completes, reconnect, and document the recovery time.
+9. Schedule and observe the Google review-content purge. Cached review bodies, reviewer names and replies must not remain available more than 30 days after the last Google sync.
+
+## Acceptance evidence
+
+| Gate | Pass condition |
+| --- | --- |
+| Tenant isolation | Cross-tenant reads and writes fail at both the API and PostgreSQL RLS layers, including pooled-connection reuse. |
+| Authentication | Opaque secure cookies, expiry/revocation, rate limiting, origin checks, disabled-user handling, and no browser-selected role or tenant authority. |
+| Consent | Every attempted request links to immutable wording/version, capture time, source, channel, and transaction reference. Missing or withdrawn consent never reaches a provider. |
+| Delivery safety | Final in-transaction authorization rechecks active consent, suppression, pause, frequency cap, quiet hours, lease ownership, and attempt budget immediately before send. |
+| Duplicate safety | Replaying a completed-job key does not create another review request or provider send. Ambiguous provider timeouts enter reconciliation instead of blind retry. |
+| Suppression | STOP/unsubscribe/bounce events are signature-verified, deduplicated, and block the next attempted send. |
+| Google monitoring | Initial reconciliation, new-review event, updated-review event, duplicate Pub/Sub delivery, token refresh, disconnect/revocation and the 30-day maximum cache purge all have evidence. |
+| Neutrality | Every customer receives the same neutral review invitation; no rating prediction, incentive, negative-feedback diversion, or review gating is present. |
+| Operations | Pause, dead-letter, integration-health, audit, disconnect, and incident-owner paths are usable by the authorised operator. |
+| Reporting | Requests, accepted/delivered events, link continuations and detected reviews reconcile to source records. Review conversion is labelled estimated, not person-level attribution. |
+
+## Stop conditions
+
+Pause the pilot immediately for any cross-tenant visibility, unsigned webhook acceptance, duplicate customer send, send after suppression/withdrawal, send outside configured hours, unexplained provider timeout retry, or Google token/account mismatch. Preserve the audit trail, revoke affected credentials, and complete a root-cause review before resuming.
+
+## Launch decision
+
+Record the business owner, operator, dates, channels, message count, acceptance evidence, incidents and unresolved risks. Public launch and billing require written sign-off from product, engineering/security, operations and the pilot business owner. Code presence, a simulated demo or a provider dashboard screenshot without tenant-linked audit evidence is not a pass.
