@@ -1082,7 +1082,10 @@ begin
   ) values (
     p_business_id, p_location_id, v_customer_id, 'manual', p_external_job_id,
     p_service_label, p_completed_at,
-    case when p_consent_status = 'granted' then 'eligible' else 'blocked' end,
+    case when p_consent_status = 'granted'
+      then 'eligible'::public.completed_job_status
+      else 'blocked'::public.completed_job_status
+    end,
     case when p_consent_status = 'granted' then null else 'consent_not_granted' end
   ) returning id into v_job_id;
 
@@ -1127,10 +1130,16 @@ begin
   ) then
     v_block_reason := 'google_review_destination_unavailable';
   end if;
-  v_request_status := case when v_block_reason is null then 'scheduled' else 'blocked' end;
+  v_request_status := case when v_block_reason is null
+    then 'scheduled'::public.review_request_status
+    else 'blocked'::public.review_request_status
+  end;
 
   update public.completed_jobs
-  set status = case when v_request_status = 'scheduled' then 'eligible' else 'blocked' end,
+  set status = case when v_request_status = 'scheduled'
+        then 'eligible'::public.completed_job_status
+        else 'blocked'::public.completed_job_status
+      end,
       block_reason_code = v_block_reason,
       updated_at = statement_timestamp()
   where business_id = p_business_id and id = v_job_id;
