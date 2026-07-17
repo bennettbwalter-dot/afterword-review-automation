@@ -1,18 +1,18 @@
 # Render pilot deployment
 
-The Render deployment keeps the application API, public ingress and delivery worker in separate services. The application service also serves the production React build, which keeps login cookies and authenticated API requests on one origin. `render.yaml` intentionally does not create the database because the database roles and four login URLs must exist before the services receive their secrets.
+The Render deployment keeps the application API, public ingress and delivery worker in separate services. The application service also serves the production React build, which keeps login cookies and authenticated API requests on one origin. None of the Blueprint files creates the database because the database roles and four login URLs must exist before the services receive their secrets.
 
 ## Hobby/free preview
 
-`render.hobby.yaml` is a zero-cost preview topology for a Render Hobby workspace. It deploys only the application API and public ingress as separate Free web services. It deliberately omits the delivery worker because Render does not support Free background-worker instances. Queued email/SMS delivery, scheduled Google review sync, token-revocation processing and billing-period rolls therefore do not run in this topology.
+The root `render.yaml` is the safe zero-cost default for a Render Hobby workspace; `render.hobby.yaml` is retained as an explicit alias. Both deploy only the application API and public ingress as separate Free web services. They deliberately omit the delivery worker because Render does not support Free background-worker instances. Queued email/SMS delivery, scheduled Google review sync, token-revocation processing and billing-period rolls therefore do not run in this topology.
 
 Use a dedicated Supabase project for this application, provision the least-privilege roles described below, and enter only `AUTH_DATABASE_URL`, `RUNTIME_DATABASE_URL` and `INGRESS_DATABASE_URL` when the Hobby Blueprint prompts. Do not inject the platform administrator or migration URL into either service. Free Render web services spin down after periods without inbound traffic and have workspace usage limits, while the Supabase Free plan has its own quotas and inactivity policy. Treat this topology as a technical preview until both providers' current limits and backup requirements have been reviewed for a real pilot.
 
-When creating the Blueprint in Render, use `render.hobby.yaml` as the Blueprint Path. Stripe Checkout and all delivery providers remain disabled.
+When creating the Blueprint in Render, leave Blueprint Path empty so Render uses the free root `render.yaml`. Stripe Checkout and all delivery providers remain disabled.
 
 ## Paid pilot
 
-Do not deploy the Blueprint until the Render dashboard shows the expected monthly price. The Blueprint uses three paid Starter services and the same capability-separated Supabase database connections as the Hobby topology. Keep the Render services in Frankfurt and the Supabase project in a nearby EU region.
+Do not deploy the Blueprint until the Render dashboard shows the expected monthly price. The later paid topology is preserved in `render.paid.yaml`; it uses three paid Starter services and the same capability-separated Supabase database connections as the Hobby topology. Keep the Render services in Frankfurt and the Supabase project in a nearby EU region.
 
 ## Supabase database first
 
@@ -30,7 +30,7 @@ The application service receives auth and runtime URLs, ingress receives only th
 
 ## Deploy services
 
-Create a Blueprint from the repository's root `render.yaml`. Confirm the service names remain `review-anchor-api`, `review-anchor-ingress` and `review-anchor-worker`, because their generated `onrender.com` URLs are part of the configured origin and callback URLs. Enter the capability-specific database URLs and the same field-encryption key when prompted.
+Create or update the Blueprint with `render.paid.yaml` as the Blueprint Path. Confirm the service names remain `review-anchor-api`, `review-anchor-ingress` and `review-anchor-worker`, because their generated `onrender.com` URLs are part of the configured origin and callback URLs. Enter the capability-specific database URLs and the same field-encryption key when prompted.
 
 After the first deploy:
 
