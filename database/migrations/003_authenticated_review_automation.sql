@@ -1572,7 +1572,7 @@ set search_path = pg_catalog
 as $$
 declare v_actor uuid;
 begin
-  select authorization.actor_user_id into v_actor
+  select recent_authorization.actor_user_id into v_actor
   from (
     select oauth_state.actor_user_id, oauth_state.consumed_at
     from app_private.oauth_authorization_states oauth_state
@@ -1583,8 +1583,8 @@ begin
     from app_private.google_profile_selection_states selection_state
     where selection_state.business_id = p_business_id and selection_state.location_id = p_location_id
       and selection_state.consumed_at > statement_timestamp() - interval '10 minutes'
-  ) authorization
-  order by authorization.consumed_at desc limit 1;
+  ) recent_authorization
+  order by recent_authorization.consumed_at desc limit 1;
   if v_actor is null then raise exception 'recent Google authorization required'; end if;
   return app_private.save_google_connection_for_actor(
     v_actor, p_business_id, p_location_id, p_account_resource_name,
