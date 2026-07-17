@@ -7,5 +7,6 @@ dist/
 .env.*
 !.env.example
 !.env.demo
+!.env.cloudflare-demo
 .playwright-cli/
 output/playwright/

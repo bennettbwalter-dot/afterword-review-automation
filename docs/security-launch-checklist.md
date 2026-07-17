@@ -6,10 +6,11 @@ All acceptance items remain unchecked. The repository now contains an authentica
 
 Present in code:
 
-- Forward-only migrations 001-003, checksum tracking, forced RLS, composite tenant keys, safe column grants and session-derived request context.
+- Forward-only migrations 001-004, checksum tracking, forced RLS, composite tenant keys, safe column grants and session-derived request context.
 - Separate application (auth/runtime), public-ingress (ingress only) and worker (worker only) process surfaces, with distinct database login identities.
 - Persistent completed jobs, encrypted contact/message fields, immutable templates, consent, review requests, outbox/attempts, suppressions, Google review cache and audit events.
 - Opaque-cookie login/logout, tenant-scoped APIs, audited support sessions, Google OAuth/review sync, Twilio/SendGrid adapters, signed provider webhooks and the QR review flow.
+- Server-owned Pro/Multi plan state, pre-provider SMS segment reservations, per-location usage, safe allowance holds, threshold records and combined multi-location reporting. Stripe checkout and paid bundle activation are not present.
 - Node security tests plus `database/tests/003_tenant_isolation.sql`, `.github/workflows/application-security.yml` and `.github/workflows/database-security.yml`.
 
 Not executed or approved:
@@ -22,7 +23,7 @@ Not executed or approved:
 
 ## Database and role bootstrap
 
-- [ ] A dedicated PostgreSQL 15.9+ test environment executes `001_multi_tenant_foundation.sql` successfully.
+- [ ] A dedicated PostgreSQL 15.9+ test environment executes forward migrations 001-004 successfully.
 - [ ] `afterword_migration_owner` owns the dedicated database, and it or `pg_database_owner` owns the `public` schema; the DBA has not substituted a narrower `CREATE` grant.
 - [ ] `afterword_migration_owner`, `afterword_auth`, `afterword_runtime`, `afterword_ingress`, `afterword_worker` and `afterword_ops` are `NOLOGIN` and `NOBYPASSRLS`.
 - [ ] API, webhook, worker and operations logins inherit exactly one matching group and cannot `SET ROLE` to an owner or another runtime group.
@@ -125,3 +126,20 @@ Not executed or approved:
 - [ ] Twilio status and inbound STOP callbacks and SendGrid Event Webhook callbacks use the exact deployed URLs and pass signature tests.
 - [ ] One real, consented business completes the full pilot runbook with no stop condition, documented owner sign-off and seven days of observed evidence.
 - [ ] Billing and public self-service remain disabled until engineering/security, operations and the pilot business owner approve the result.
+- [ ] The Stripe key exposed during setup has been rolled, its Workbench request history reviewed, and the replacement is a test/live-separated restricted key with an access policy.
+- [ ] The application process holds the Stripe API key and Price IDs; ingress holds only the endpoint signing secret; neither credential appears in browser assets, logs, provider metadata or repository history.
+- [ ] `/webhooks/stripe` subscribes only to the documented Checkout and subscription events, verifies the unchanged raw body, rejects missing/invalid signatures, deduplicates event IDs and fails closed when an ID is reused with a different payload.
+- [ ] Test evidence covers immediate and delayed success, payment failure, expiry, cancellation, past-due recovery, out-of-order subscription events and webhook replay.
+
+## Commercial and data-use gate
+
+- [ ] Checkout charges the applicable setup fee before Google, QR, messaging or template implementation starts; no free trial path exists.
+- [ ] Stripe products and prices match `docs/product-commercial-rules.md`, and webhook-backed subscription state is the server-owned source of truth.
+- [ ] The server retrieves each configured Price before Checkout and rejects wrong currency, amount, interval, active state or one-time/recurring type.
+- [ ] An account cannot become Active until a signed event records both an active subscription and the paid setup fee; a success URL or browser payload never changes billing state.
+- [ ] Stripe Tax remains disabled until registrations and tax treatment are confirmed, or registered jurisdictions and calculation evidence are attached before it is enabled.
+- [ ] SMS usage counts provider-billable segments and enforces the 100-segment Pro allowance or 300-segment pooled Multi allowance.
+- [ ] Accounts receive alerts at 75%, 90% and 100%, with tested billing-period resets and location-level Multi usage.
+- [ ] Each owner has a recorded choice between a £10 automatic 100-segment bundle and pausing SMS while email continues.
+- [ ] Customer-facing copy includes the implementation guarantee and does not promise review volume, ratings, rankings, enquiries or revenue.
+- [ ] The customer platform contains no Google Maps-derived prospect database, and experimental lead-generation work cannot share production Google API credentials or projects.

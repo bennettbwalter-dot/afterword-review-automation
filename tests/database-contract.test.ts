@@ -35,3 +35,40 @@ test("token revocation has no unfenced authentication-role shortcut", async () =
   assert.doesNotMatch(schema, /grant\s+execute[^;]*complete_google_token_revocation[^;]*afterword_auth/i);
   assert.match(schema, /grant\s+execute[^;]*finish_google_token_revocation[^;]*afterword_worker/i);
 });
+
+test("SMS billing migration is forward-only, tenant-isolated and worker-fenced", async () => {
+  const schema = await readFile(
+    path.resolve("database", "migrations", "004_sms_billing_and_location_reporting.sql"),
+    "utf8",
+  );
+
+  for (const table of ["billing_accounts", "sms_allowance_bundles", "sms_usage_reservations", "sms_usage_alerts"]) {
+    assert.match(schema, new RegExp(`create\\s+table\\s+public\\.${table}`, "i"));
+    assert.match(schema, new RegExp(`alter\\s+table\\s+public\\.${table}\\s+force\\s+row\\s+level\\s+security`, "i"));
+    assert.match(schema, new RegExp(`create\\s+policy\\s+migration_owner_all\\s+on\\s+public\\.${table}`, "i"));
+  }
+
+  assert.match(schema, /grant\s+execute\s+on\s+function\s+app_private\.reserve_sms_segments\([^;]+to\s+afterword_worker/i);
+  assert.doesNotMatch(schema, /grant\s+execute\s+on\s+function\s+app_private\.reserve_sms_segments\([^;]+to\s+afterword_runtime/i);
+  assert.match(schema, /subscription_price_pence\s*=\s*3900[^;]+sms_base_allowance\s*=\s*100/i);
+  assert.match(schema, /subscription_price_pence\s*=\s*39000[^;]+sms_base_allowance\s*=\s*100/i);
+  assert.match(schema, /subscription_price_pence\s*=\s*7900[^;]+setup_fee_pence\s+in\s*\(24900,\s*34900\)[^;]+sms_base_allowance\s*=\s*300/i);
+  assert.match(schema, /segments\s+integer\s+not\s+null\s+default\s+100[^;]+amount_pence\s+integer\s+not\s+null\s+default\s+1000/i);
+});
+
+test("Stripe billing migration is replay-safe, ingress-fenced and requires paid setup before activation", async () => {
+  const schema = await readFile(
+    path.resolve("database", "migrations", "005_stripe_checkout_and_webhooks.sql"),
+    "utf8",
+  );
+
+  assert.match(schema, /create\s+table\s+app_private\.stripe_checkout_attempts/i);
+  assert.match(schema, /create\s+table\s+app_private\.stripe_billing_events/i);
+  assert.match(schema, /event_id\s+text\s+primary\s+key/i);
+  assert.match(schema, /on\s+conflict\s*\(event_id\)\s+do\s+nothing/i);
+  assert.match(schema, /payload_hash\s*<>\s*p_payload_hash/i);
+  assert.match(schema, /when\s+'active'\s+then\s+case\s+when\s+setup_fee_paid_at\s+is\s+not\s+null\s+then\s+'active'/i);
+  assert.match(schema, /grant\s+execute\s+on\s+function\s+app_private\.apply_stripe_billing_event\([^;]+to\s+afterword_ingress/i);
+  assert.doesNotMatch(schema, /grant\s+execute\s+on\s+function\s+app_private\.apply_stripe_billing_event\([^;]+to\s+afterword_runtime/i);
+  assert.match(schema, /current_support_session_id\(\)\s+is\s+not\s+null[^;]+billing_checkout_access_denied/is);
+});

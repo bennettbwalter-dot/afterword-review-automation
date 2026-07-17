@@ -1,5 +1,5 @@
 {
-  "name": "afterword-review-automation",
+  "name": "review-anchor",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -14,10 +14,13 @@
     "dev:ingress": "tsx watch server/ingress.ts",
     "worker": "tsx server/worker.ts",
     "build": "tsc -b && tsc -p tsconfig.server.json && vite build",
+    "build:demo": "tsc -b && tsc -p tsconfig.server.json && vite build --mode cloudflare-demo",
+    "deploy:demo": "npm run build:demo && npx --yes wrangler pages deploy dist --project-name review-anchor-demo --branch demo",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.server.json --pretty false",
+    "security:secrets": "node scripts/check-secrets.mjs",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:security": "node --import tsx --test tests/platform-security.test.ts tests/backend-security.test.ts",
-    "check": "npm run typecheck && npm run test && npm run build",
+    "check": "npm run security:secrets && npm run typecheck && npm run test && npm run build",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:bootstrap": "tsx scripts/bootstrap.ts",
     "preview": "vite preview --host 127.0.0.1 --port 4173"
@@ -37,6 +40,7 @@
     "qrcode": "^1.5.4",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "stripe": "^22.3.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -49,6 +53,7 @@
     "concurrently": "^10.0.3",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2",
-    "vite": "^8.1.5"
+    "vite": "^8.1.5",
+    "wrangler": "^4.112.0"
   }
 }

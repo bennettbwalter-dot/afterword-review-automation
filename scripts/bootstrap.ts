@@ -20,6 +20,19 @@ const displayName = required("BOOTSTRAP_DISPLAY_NAME");
 const agencyName = required("BOOTSTRAP_AGENCY_NAME");
 const businessName = required("BOOTSTRAP_BUSINESS_NAME");
 const locationName = required("BOOTSTRAP_LOCATION_NAME");
+const planKey = (process.env.BOOTSTRAP_PLAN?.trim() || "pro_monthly") as "pro_monthly" | "pro_annual" | "multi_monthly";
+if (!["pro_monthly", "pro_annual", "multi_monthly"].includes(planKey)) {
+  throw new Error("BOOTSTRAP_PLAN must be pro_monthly, pro_annual or multi_monthly.");
+}
+const multiSetupFee = Number(process.env.BOOTSTRAP_MULTI_SETUP_FEE_PENCE || 24900);
+if (planKey === "multi_monthly" && ![24900, 34900].includes(multiSetupFee)) {
+  throw new Error("BOOTSTRAP_MULTI_SETUP_FEE_PENCE must be 24900 or 34900 for Reputation Multi.");
+}
+const commercialPlan = planKey === "pro_annual"
+  ? { cycle: "annual", subscription: 39000, setup: 14900, allowance: 100 }
+  : planKey === "multi_monthly"
+    ? { cycle: "monthly", subscription: 7900, setup: multiSetupFee, allowance: 300 }
+    : { cycle: "monthly", subscription: 3900, setup: 14900, allowance: 100 };
 const timezone = process.env.BOOTSTRAP_TIMEZONE?.trim() || "Europe/London";
 const country = (process.env.BOOTSTRAP_COUNTRY?.trim().toUpperCase() || "GB");
 if (!/^[A-Z]{2}$/.test(country)) throw new Error("BOOTSTRAP_COUNTRY must be a two-letter country code.");
@@ -54,6 +67,29 @@ try {
   ]);
   await client.query("insert into public.business_memberships (business_id, user_id, role, status) values ($1,$2,'owner','active')", [businessId, userId]);
   await client.query("insert into public.locations (id, business_id, name, timezone, status) values ($1,$2,$3,$4,'active')", [locationId, businessId, locationName, timezone]);
+  await client.query(`
+    insert into public.billing_accounts (
+      business_id, plan_key, subscription_status, billing_cycle,
+      subscription_price_pence, setup_fee_pence, sms_base_allowance,
+      sms_overage_policy, current_period_start, current_period_end, updated_by
+    ) values (
+      $1,$2,'pilot',$3,$4,$5,$6,'pause_sms',statement_timestamp(),
+      statement_timestamp() + case when $3 = 'annual' then interval '1 year' else interval '1 month' end,
+      $7
+    )
+    on conflict (business_id) do update set
+      plan_key = excluded.plan_key,
+      subscription_status = excluded.subscription_status,
+      billing_cycle = excluded.billing_cycle,
+      subscription_price_pence = excluded.subscription_price_pence,
+      setup_fee_pence = excluded.setup_fee_pence,
+      sms_base_allowance = excluded.sms_base_allowance,
+      sms_overage_policy = excluded.sms_overage_policy,
+      current_period_start = excluded.current_period_start,
+      current_period_end = excluded.current_period_end,
+      updated_by = excluded.updated_by,
+      updated_at = statement_timestamp()
+  `, [businessId, planKey, commercialPlan.cycle, commercialPlan.subscription, commercialPlan.setup, commercialPlan.allowance, userId]);
 
   const templates = [
     ["sms", "Hi {{first_name}}, thanks for choosing {{business_name}}. Would you leave an honest Google review? {{review_link}} Reply STOP to opt out.", null],
@@ -105,6 +141,7 @@ try {
     locationId,
     twilioIntegrationId,
     sendGridIntegrationId,
+    planKey,
     email,
   }, null, 2) + "\n");
 } catch (error) {

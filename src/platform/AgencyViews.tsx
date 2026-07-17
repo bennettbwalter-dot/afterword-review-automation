@@ -11,8 +11,8 @@ import {
   UserCog,
   UsersRound,
 } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
-import type { AuditEvent, BusinessAccount, PlatformException, WorkspaceView } from "./domain";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import type { AuditEvent, BusinessAccount, PlatformException, SmsOveragePolicy, WorkspaceView } from "./domain";
 import { IS_DEMO_MODE } from "./api";
 
 function ToneTag({ tone, children }: { tone: string; children: ReactNode }) {
@@ -220,13 +220,111 @@ export function AuditLogView({ businesses, events }: { businesses: BusinessAccou
   );
 }
 
-export function TeamBillingView({ business, canConfigure }: { business: BusinessAccount; canConfigure: boolean }) {
+export function TeamBillingView({
+  business,
+  canConfigure,
+  onSaveSmsPolicy,
+  onStartCheckout,
+  onOpenBillingPortal,
+  stripeActionsEnabled,
+}: {
+  business: BusinessAccount;
+  canConfigure: boolean;
+  onSaveSmsPolicy: (policy: SmsOveragePolicy) => Promise<void>;
+  onStartCheckout: () => Promise<void>;
+  onOpenBillingPortal: () => Promise<void>;
+  stripeActionsEnabled: boolean;
+}) {
+  const billing = business.billing;
+  const [smsPolicy, setSmsPolicy] = useState<SmsOveragePolicy>(billing?.smsOveragePolicy ?? "pause_sms");
+  const [savedPolicy, setSavedPolicy] = useState<SmsOveragePolicy>(billing?.smsOveragePolicy ?? "pause_sms");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [billingAction, setBillingAction] = useState<"checkout" | "portal" | null>(null);
+  const [billingError, setBillingError] = useState("");
+
+  useEffect(() => {
+    const nextPolicy = business.billing?.smsOveragePolicy ?? "pause_sms";
+    setSmsPolicy(nextPolicy);
+    setSavedPolicy(nextPolicy);
+  }, [business.id, business.billing?.smsOveragePolicy]);
+
+  const usedPercent = billing ? Math.round((billing.smsUsed / billing.smsAllowance) * 100) : 0;
+  const remaining = billing ? Math.max(0, billing.smsAllowance - billing.smsUsed) : 0;
+  const estimatedOverage = billing && billing.smsUsed > billing.smsAllowance
+    ? Math.ceil((billing.smsUsed - billing.smsAllowance) / 100) * 10
+    : 0;
+  const savePolicy = async () => {
+    setSaving(true);
+    setSaveError("");
+    try {
+      await onSaveSmsPolicy(smsPolicy);
+      setSavedPolicy(smsPolicy);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "The SMS usage setting could not be saved.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const runBillingAction = async (action: "checkout" | "portal") => {
+    setBillingAction(action);
+    setBillingError("");
+    try {
+      if (action === "checkout") await onStartCheckout();
+      else await onOpenBillingPortal();
+    } catch (error) {
+      setBillingError(error instanceof Error ? error.message : "Stripe billing could not be opened.");
+      setBillingAction(null);
+    }
+  };
+
   return (
     <div className="view-stack">
       <div className="demo-notice"><span className="demo-label">Tenant scoped</span><p>Team and billing data below belongs only to {business.name}. Production membership checks are enforced by the API and database.</p></div>
       <section className="team-billing-grid">
         <article className="panel team-panel"><header className="panel__head"><div><h2>Team members</h2><p>Roles apply only inside this business</p></div><button className="button button--secondary" type="button" disabled aria-label={canConfigure ? "Invitations are simulated in this demo" : "View-only support cannot invite members"}><UsersRound size={16} /> Invite · Demo</button></header><div className="team-list">{business.teamMembers.map((member) => <div key={member.name}><span className="client-avatar">{member.initials}</span><span><strong>{member.name}</strong><small>{member.role}</small></span><ToneTag tone="success">Active</ToneTag></div>)}</div><p className="panel-note"><ShieldCheck size={16} /> Owners cannot remove the final active owner or grant a role above their own.</p></article>
-        <article className="panel billing-panel"><header className="panel__head"><div><h2>Subscription</h2><p>Business-level plan and message usage</p></div><ToneTag tone="accent">{business.plan}</ToneTag></header><div className="billing-summary"><span><small>Plan</small><strong>{business.plan}</strong></span><span><small>Renewal</small><strong>1 Aug 2026</strong></span><span><small>Messaging</small><strong>Billed separately</strong></span></div><button className="button button--secondary" type="button" disabled aria-label={canConfigure ? "Billing management is simulated in this demo" : "View-only support cannot manage billing"}>Billing · Demo</button></article>
+        <article className="panel billing-panel">
+          <header className="panel__head"><div><h2>Subscription and SMS</h2><p>Plan allowance, pooled usage and account controls</p></div><ToneTag tone="accent">{business.plan}</ToneTag></header>
+          {billing ? <>
+            <div className="billing-summary">
+              <span><small>Subscription</small><strong>{billing.subscriptionPrice} · {billing.billingCycle}</strong></span>
+              <span><small>Setup pricing</small><strong>{billing.setupFee} · {billing.setupFeePaid ? "Paid" : "Not paid"}</strong></span>
+              <span><small>Renewal</small><strong>{billing.renewalDate}</strong></span>
+              <span><small>Status</small><strong>{billing.subscriptionStatus}</strong></span>
+            </div>
+            <div className="billing-action-row">
+              {billing.stripeSubscriptionReady || billing.subscriptionStatus === "Active" || billing.subscriptionStatus === "Past due"
+                ? <button className="button button--secondary" type="button" disabled={!canConfigure || !stripeActionsEnabled || billingAction !== null} onClick={() => void runBillingAction("portal")}>{billingAction === "portal" ? "Opening billing…" : "Manage billing"}</button>
+                : <button className="button" type="button" disabled={!canConfigure || !stripeActionsEnabled || billingAction !== null} onClick={() => void runBillingAction("checkout")}>{billingAction === "checkout" ? "Opening secure checkout…" : "Activate with Stripe"}</button>}
+              <p>{stripeActionsEnabled ? "Stripe hosts payment collection. Review Anchor never receives card details." : "Stripe actions are disabled in the seeded demo and until the server launch flag is enabled."}</p>
+            </div>
+            {billingError && <p className="field-error" role="alert">{billingError}</p>}
+            <section className="sms-usage" aria-labelledby="sms-usage-title">
+              <div className="sms-usage__head"><div><small>Current billing period</small><h3 id="sms-usage-title">SMS segment usage</h3></div><ToneTag tone={usedPercent >= 75 ? "warning" : "success"}>{usedPercent}% used</ToneTag></div>
+              <progress max={billing.smsAllowance} value={Math.min(billing.smsUsed, billing.smsAllowance)} aria-label={`${billing.smsUsed} of ${billing.smsAllowance} SMS segments used`} />
+              <div className="sms-usage__numbers">
+                <span><small>Allowance</small><strong>{billing.smsAllowance}</strong></span>
+                <span><small>Used</small><strong>{billing.smsUsed}</strong></span>
+                <span><small>Pending outcome</small><strong>{billing.smsPending}</strong></span>
+                <span><small>Remaining</small><strong>{remaining}</strong></span>
+                <span><small>Estimated overage</small><strong>£{estimatedOverage.toFixed(2)}</strong></span>
+              </div>
+              <div className="sms-thresholds" aria-label="Usage notification thresholds">
+                {[75, 90, 100].map((threshold) => <span key={threshold} className={billing.reachedThresholds.includes(threshold) || usedPercent >= threshold ? "is-reached" : undefined}>{threshold}% alert</span>)}
+                <small>Resets {billing.renewalDate}</small>
+              </div>
+              <div className="sms-location-usage"><h4>Usage by location</h4>{billing.smsUsageByLocation.map((location) => <div key={location.locationName}><span>{location.locationName}</span><strong>{location.used} used{location.pending ? ` · ${location.pending} pending` : ""}</strong></div>)}</div>
+            </section>
+            <fieldset className="sms-policy" disabled={!canConfigure}>
+              <legend>When the allowance runs out</legend>
+              <label><input type="radio" name={`sms-policy-${business.id}`} value="auto_top_up" checked={smsPolicy === "auto_top_up"} onChange={() => setSmsPolicy("auto_top_up")} /><span><strong>Buy the next bundle</strong><small>Add 100 pooled SMS segments for £10.</small></span></label>
+              <label><input type="radio" name={`sms-policy-${business.id}`} value="pause_sms" checked={smsPolicy === "pause_sms"} onChange={() => setSmsPolicy("pause_sms")} /><span><strong>Pause SMS</strong><small>Email requests continue until the allowance resets.</small></span></label>
+            </fieldset>
+            {smsPolicy === "auto_top_up" && billing.subscriptionStatus !== "Active" && <p className="panel-note"><ShieldAlert size={16} /> Auto top-up is saved, but SMS will remain held at the allowance until Stripe billing is activated.</p>}
+            <button className="button button--secondary" type="button" disabled={!canConfigure || saving || smsPolicy === savedPolicy} onClick={() => void savePolicy()}>{saving ? "Saving…" : smsPolicy === savedPolicy ? "Usage setting saved" : "Save usage setting"}</button>
+            {saveError && <p className="field-error" role="alert">{saveError}</p>}
+          </> : <div className="billing-unavailable"><ShieldAlert size={20} /><div><strong>Production billing is disabled</strong><p>Activate Stripe, segment metering and the pilot launch gates before showing live subscription or usage data.</p></div></div>}
+        </article>
       </section>
     </div>
   );

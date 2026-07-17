@@ -7,8 +7,15 @@ import {
   sign,
 } from "node:crypto";
 import test from "node:test";
+import Stripe from "stripe";
 import { buildApp } from "../server/app.js";
 import { loadConfig } from "../server/config.js";
+import {
+  StripeSdkWebhookVerifier,
+  type StripeBillingClient,
+  type StripeCheckoutContext,
+  type StripeWebhookVerifier,
+} from "../server/providers/stripe.js";
 import { createWebhookSecurity } from "../server/providers/webhook-security.js";
 import { synchronizeDueGoogleConnections, type GoogleBusinessProfileClient } from "../server/providers/google.js";
 import { encryptField, hashOpaqueToken, hashPassword, verifyPassword } from "../server/security/crypto.js";
@@ -68,7 +75,8 @@ function workspace(actor: ActorContext): WorkspacePayload {
       integrationSummary: "Server connected",
       lastSuccess: "Awaiting provider activity",
       affectedCount: 0,
-      plan: "Professional",
+      plan: "Reputation Pro",
+      locationReports: [],
       seedRequestCount: 0,
       metrics: {
         completedJobs: 0,
@@ -97,6 +105,7 @@ function workspace(actor: ActorContext): WorkspacePayload {
 function createRepository() {
   const sessionActors = new Map<string, ActorContext>();
   let capturedJob: CompletedJobInput | undefined;
+  let capturedSmsPolicy: "auto_top_up" | "pause_sms" | undefined;
   const loginResults: Array<{ email: string; succeeded: boolean }> = [];
   const repository: PlatformRepository = {
     async findCredentialByEmail(email) {
@@ -128,6 +137,10 @@ function createRepository() {
     async getWorkspace(actor) {
       return workspace(actor);
     },
+    async updateSmsOveragePolicy(_actor, _businessId, policy) {
+      capturedSmsPolicy = policy;
+      return { updated: true, policy, reason: "saved" };
+    },
     async startSupportSession() { return randomUUID(); },
     async endSupportSession() { return true; },
     async createCompletedJob(_actor, input) {
@@ -142,8 +155,11 @@ function createRepository() {
     async claimMessageJobs() { return []; },
     async authorizeMessageDispatch() { return { allowed: false, reason: "not_due" }; },
     async getMessagePayload() { throw new Error("No message payload in API test repository."); },
+    async reserveSmsSegments() { return { allowed: true, reason: "reserved" }; },
+    async holdMessageForSmsAllowance() { return new Date(Date.now() + 60_000); },
     async finishMessageAttempt() {},
     async deferMessageJob() {},
+    async rollPilotBillingPeriods() { return 0; },
     async resolvePublicReviewFlow(token) {
       return token === "valid-public-token"
         ? { qrCodeId: randomUUID(), businessId, locationId, destinationUrl: "https://g.page/r/example/review" }
@@ -154,7 +170,12 @@ function createRepository() {
     },
     async markPublicQrContinue() {},
   };
-  return { repository, getCapturedJob: () => capturedJob, getLoginResults: () => loginResults };
+  return {
+    repository,
+    getCapturedJob: () => capturedJob,
+    getCapturedSmsPolicy: () => capturedSmsPolicy,
+    getLoginResults: () => loginResults,
+  };
 }
 
 async function authenticatedApp() {
@@ -262,6 +283,237 @@ test("each production process can start without credentials for other capabiliti
   }, ["worker"]));
 });
 
+test("Stripe configuration is capability-scoped, test-first and complete before checkout can start", () => {
+  const common = {
+    NODE_ENV: "test",
+    DATABASE_URL: "postgresql://unused:unused@127.0.0.1:5432/unused",
+    APP_ORIGIN: appOrigin,
+    SESSION_PEPPER: sessionPepper,
+    FIELD_ENCRYPTION_KEY: encryptionKey,
+    STRIPE_CHECKOUT_ENABLED: "true",
+    STRIPE_MODE: "test",
+  } as const;
+  assert.throws(() => loadConfig(common, ["auth", "runtime", "stripeCheckout"]), /STRIPE_API_KEY is missing/i);
+  assert.doesNotThrow(() => loadConfig({
+    ...common,
+    STRIPE_API_KEY: "rk_test_not-a-real-key-value",
+    STRIPE_PRICE_PRO_MONTHLY: "price_pro_monthly",
+    STRIPE_PRICE_PRO_ANNUAL: "price_pro_annual",
+    STRIPE_PRICE_MULTI_MONTHLY: "price_multi_monthly",
+    STRIPE_PRICE_SETUP_PRO: "price_setup_pro",
+    STRIPE_PRICE_SETUP_MULTI_2_3: "price_setup_multi_2_3",
+    STRIPE_PRICE_SETUP_MULTI_4_5: "price_setup_multi_4_5",
+  }, ["auth", "runtime", "stripeCheckout"]));
+  assert.throws(() => loadConfig({ ...common, STRIPE_MODE: "live" }), /Live Stripe mode is allowed only/i);
+  assert.throws(() => loadConfig({
+    ...common,
+    STRIPE_API_KEY: "rk_live_not-a-real-key-value",
+  }), /Live Stripe mode is allowed only|does not match STRIPE_MODE/i);
+});
+
+test("Stripe Checkout and portal routes are same-origin, tenant-bound and server-priced", async (t) => {
+  const state = createRepository();
+  let checkoutContext: StripeCheckoutContext | undefined;
+  let boundSessionId: string | undefined;
+  state.repository.prepareStripeCheckout = async (_actor, requestedBusinessId, attemptId) => ({
+    allowed: true,
+    reason: "ready",
+    attemptId,
+    businessId: requestedBusinessId,
+    planKey: "pro_monthly",
+    billingCycle: "monthly",
+    subscriptionPricePence: 3900,
+    setupFeePence: 14900,
+  });
+  state.repository.bindStripeCheckoutSession = async (_actor, _businessId, _attemptId, sessionId) => {
+    boundSessionId = sessionId;
+  };
+  state.repository.getStripeBillingCustomer = async () => ({
+    allowed: true,
+    reason: "ready",
+    customerId: "cus_test_customer",
+  });
+  const stripeBilling: StripeBillingClient = {
+    async createSubscriptionCheckout(context) {
+      checkoutContext = context;
+      return {
+        id: "cs_test_server_owned",
+        url: "https://checkout.stripe.com/c/pay/cs_test_server_owned",
+        livemode: false,
+      };
+    },
+    async createCustomerPortal(customerId) {
+      assert.equal(customerId, "cus_test_customer");
+      return { url: "https://billing.stripe.com/p/session/test_portal" };
+    },
+  };
+  const stripeConfig = loadConfig({
+    NODE_ENV: "test",
+    DATABASE_URL: "postgresql://unused:unused@127.0.0.1:5432/unused",
+    APP_ORIGIN: appOrigin,
+    SESSION_PEPPER: sessionPepper,
+    FIELD_ENCRYPTION_KEY: encryptionKey,
+    STRIPE_CHECKOUT_ENABLED: "true",
+    STRIPE_MODE: "test",
+    STRIPE_API_KEY: "rk_test_not-a-real-key-value",
+    STRIPE_PRICE_PRO_MONTHLY: "price_pro_monthly",
+    STRIPE_PRICE_PRO_ANNUAL: "price_pro_annual",
+    STRIPE_PRICE_MULTI_MONTHLY: "price_multi_monthly",
+    STRIPE_PRICE_SETUP_PRO: "price_setup_pro",
+    STRIPE_PRICE_SETUP_MULTI_2_3: "price_setup_multi_2_3",
+    STRIPE_PRICE_SETUP_MULTI_4_5: "price_setup_multi_4_5",
+  }, ["auth", "runtime", "stripeCheckout"]);
+  const app = await buildApp({ config: stripeConfig, repository: state.repository, stripeBilling });
+  t.after(() => app.close());
+  const login = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/login",
+    headers: { origin: appOrigin },
+    payload: { email: "owner@example.com", password },
+  });
+  const cookie = String(login.headers["set-cookie"]).split(";", 1)[0];
+  const attemptId = randomUUID();
+
+  const wrongOrigin = await app.inject({
+    method: "POST",
+    url: `/api/v1/businesses/${businessId}/billing/checkout`,
+    headers: { cookie, origin: "https://attacker.example" },
+    payload: { attemptId },
+  });
+  assert.equal(wrongOrigin.statusCode, 403);
+
+  const crossTenant = await app.inject({
+    method: "POST",
+    url: `/api/v1/businesses/${otherBusinessId}/billing/checkout`,
+    headers: { cookie, origin: appOrigin },
+    payload: { attemptId },
+  });
+  assert.equal(crossTenant.statusCode, 403);
+
+  const checkout = await app.inject({
+    method: "POST",
+    url: `/api/v1/businesses/${businessId}/billing/checkout`,
+    headers: { cookie, origin: appOrigin },
+    payload: { attemptId },
+  });
+  assert.equal(checkout.statusCode, 201);
+  assert.equal(checkout.json().data.url, "https://checkout.stripe.com/c/pay/cs_test_server_owned");
+  assert.equal(checkoutContext?.businessId, businessId);
+  assert.equal(checkoutContext?.subscriptionPricePence, 3900);
+  assert.equal(checkoutContext?.setupFeePence, 14900);
+  assert.equal(boundSessionId, "cs_test_server_owned");
+
+  const portal = await app.inject({
+    method: "POST",
+    url: `/api/v1/businesses/${businessId}/billing/portal`,
+    headers: { cookie, origin: appOrigin },
+    payload: {},
+  });
+  assert.equal(portal.statusCode, 201);
+  assert.equal(portal.json().data.url, "https://billing.stripe.com/p/session/test_portal");
+});
+
+test("Stripe webhook route verifies first and persists the exact raw body", async (t) => {
+  const state = createRepository();
+  let persistedRawBody: Buffer | undefined;
+  state.repository.recordStripeBillingWebhook = async (input) => {
+    persistedRawBody = input.rawBody;
+    return { duplicate: false };
+  };
+  const webhookVerifier: StripeWebhookVerifier = {
+    verify(_rawBody, signature) {
+      if (signature !== "valid-test-signature") throw new Error("invalid");
+      return {
+        kind: "checkout",
+        eventId: "evt_test_webhook",
+        eventType: "checkout.session.completed",
+        eventCreatedAt: new Date("2026-07-17T12:00:00.000Z"),
+        apiVersion: "2026-06-24.dahlia",
+        livemode: false,
+        businessId,
+        attemptId: randomUUID(),
+        checkoutSessionId: "cs_test_webhook",
+        customerId: "cus_test_customer",
+        subscriptionId: "sub_test_subscription",
+        state: "completed",
+        setupPaid: true,
+      };
+    },
+  };
+  const ingressConfig = loadConfig({
+    NODE_ENV: "test",
+    DATABASE_URL: "postgresql://unused:unused@127.0.0.1:5432/unused",
+    APP_ORIGIN: appOrigin,
+    SESSION_PEPPER: sessionPepper,
+    FIELD_ENCRYPTION_KEY: encryptionKey,
+    STRIPE_WEBHOOK_SECRET: "whsec_not-a-real-secret-value",
+  }, ["ingress", "stripeWebhook"]);
+  const app = await buildApp({
+    config: ingressConfig,
+    repository: state.repository,
+    surface: "ingress",
+    stripeWebhookVerifier: webhookVerifier,
+  });
+  t.after(() => app.close());
+  const payload = JSON.stringify({ id: "evt_test_webhook", exact: "spacing is evidence" });
+
+  const invalid = await app.inject({
+    method: "POST",
+    url: "/webhooks/stripe",
+    headers: { "content-type": "application/json", "stripe-signature": "invalid" },
+    payload,
+  });
+  assert.equal(invalid.statusCode, 401);
+
+  const accepted = await app.inject({
+    method: "POST",
+    url: "/webhooks/stripe",
+    headers: { "content-type": "application/json", "stripe-signature": "valid-test-signature" },
+    payload,
+  });
+  assert.equal(accepted.statusCode, 204);
+  assert.equal(persistedRawBody?.toString("utf8"), payload);
+});
+
+test("Stripe SDK webhook verification rejects tampering and normalizes signed Checkout metadata", () => {
+  const endpointSecret = "whsec_not-a-real-secret-value";
+  const stripe = new Stripe("rk_test_signature_generation_only", { apiVersion: "2026-06-24.dahlia" });
+  const attemptId = randomUUID();
+  const payload = JSON.stringify({
+    id: "evt_signed_checkout",
+    object: "event",
+    api_version: "2026-06-24.dahlia",
+    created: Math.floor(Date.now() / 1_000),
+    livemode: false,
+    type: "checkout.session.completed",
+    data: {
+      object: {
+        id: "cs_test_signed_checkout",
+        object: "checkout.session",
+        customer: "cus_test_customer",
+        subscription: "sub_test_subscription",
+        payment_status: "paid",
+        metadata: {
+          integration: "review_anchor",
+          business_id: businessId,
+          checkout_attempt_id: attemptId,
+          plan_key: "pro_monthly",
+        },
+      },
+    },
+  });
+  const signature = stripe.webhooks.generateTestHeaderString({ payload, secret: endpointSecret });
+  const verifier = new StripeSdkWebhookVerifier(endpointSecret);
+  const verified = verifier.verify(Buffer.from(payload), signature);
+  assert.equal(verified.kind, "checkout");
+  if (verified.kind === "checkout") {
+    assert.equal(verified.businessId, businessId);
+    assert.equal(verified.attemptId, attemptId);
+    assert.equal(verified.setupPaid, true);
+  }
+  assert.throws(() => verifier.verify(Buffer.from(`${payload} `), signature));
+});
+
 test("application and public-ingress routes are separated into different processes", async (t) => {
   const state = createRepository();
   const application = await buildApp({ config, repository: state.repository, surface: "application" });
@@ -365,6 +617,37 @@ test("origin guard and path-derived tenant prevent browser-selected authority", 
   });
   assert.equal(accepted.statusCode, 201);
   assert.equal(getCapturedJob()?.businessId, businessId);
+});
+
+test("SMS overage policy is same-origin, tenant-bound and server-persisted", async (t) => {
+  const { app, cookie, getCapturedSmsPolicy } = await authenticatedApp();
+  t.after(() => app.close());
+
+  const crossTenant = await app.inject({
+    method: "PATCH",
+    url: `/api/v1/businesses/${otherBusinessId}/billing/sms-policy`,
+    headers: { cookie, origin: appOrigin },
+    payload: { policy: "auto_top_up" },
+  });
+  assert.equal(crossTenant.statusCode, 403);
+
+  const wrongOrigin = await app.inject({
+    method: "PATCH",
+    url: `/api/v1/businesses/${businessId}/billing/sms-policy`,
+    headers: { cookie, origin: "https://attacker.example" },
+    payload: { policy: "auto_top_up" },
+  });
+  assert.equal(wrongOrigin.statusCode, 403);
+
+  const saved = await app.inject({
+    method: "PATCH",
+    url: `/api/v1/businesses/${businessId}/billing/sms-policy`,
+    headers: { cookie, origin: appOrigin },
+    payload: { policy: "auto_top_up" },
+  });
+  assert.equal(saved.statusCode, 200);
+  assert.equal(saved.json().data.policy, "auto_top_up");
+  assert.equal(getCapturedSmsPolicy(), "auto_top_up");
 });
 
 test("public QR flow validates stable tokens and trusted Google destinations", async (t) => {
@@ -474,6 +757,7 @@ test("delivery worker renders the canonical review URI and records the immutable
   const destination = encryptField("+447700900123", encryptionKey, `${businessId}:message-destination`);
   let deliveredBody = "";
   let finishedAttempt = "";
+  let reservedSegments = 0;
   const { repository } = createRepository();
   repository.claimMessageJobs = async () => [{
     id: jobId,
@@ -493,6 +777,10 @@ test("delivery worker renders the canonical review URI and records the immutable
     body: "Please leave an honest review: {{review_link}} Reply STOP to opt out.",
     idempotencyKey: `afterword:${jobId}`,
   });
+  repository.reserveSmsSegments = async (input) => {
+    reservedSegments = input.segments;
+    return { allowed: true, reason: "reserved" };
+  };
   repository.finishMessageAttempt = async (input) => { finishedAttempt = input.messageAttemptId; };
   const cycle = await runDeliveryCycle({
     repository,
@@ -511,8 +799,70 @@ test("delivery worker renders the canonical review URI and records the immutable
   });
   assert.equal(cycle.accepted, 1);
   assert.equal(finishedAttempt, attemptId);
+  assert.equal(reservedSegments, 1);
   assert.match(deliveredBody, /https:\/\/g\.page\/r\/example\/review/);
   assert.doesNotMatch(deliveredBody, /\{\{review_link\}\}/);
+});
+
+test("delivery worker holds SMS before Twilio when the pooled allowance is exhausted", async () => {
+  const jobId = randomUUID();
+  const attemptId = randomUUID();
+  const leaseToken = randomUUID();
+  const retryAt = new Date(Date.now() + 60 * 60 * 1_000);
+  const destination = encryptField("+447700900123", encryptionKey, `${businessId}:message-destination`);
+  const { repository } = createRepository();
+  let providerCalls = 0;
+  let heldReason = "";
+  repository.claimMessageJobs = async () => [{
+    id: jobId,
+    businessId,
+    locationId,
+    channel: "sms",
+    provider: "twilio",
+    leaseToken,
+  }];
+  repository.authorizeMessageDispatch = async () => ({ allowed: true, reason: "authorized" });
+  repository.getMessagePayload = async () => ({
+    messageAttemptId: attemptId,
+    businessId,
+    channel: "sms",
+    reviewUri: "https://g.page/r/example/review",
+    destination,
+    body: "Please leave an honest review: {{review_link}} Reply STOP to opt out.",
+    idempotencyKey: `afterword:${jobId}`,
+  });
+  repository.reserveSmsSegments = async () => ({
+    allowed: false,
+    reason: "sms_allowance_exhausted",
+    retryAt,
+  });
+  repository.holdMessageForSmsAllowance = async (input) => {
+    heldReason = input.reason;
+    assert.equal(input.messageAttemptId, attemptId);
+    assert.equal(input.retryAt, retryAt);
+    return retryAt;
+  };
+
+  const cycle = await runDeliveryCycle({
+    repository,
+    workerId: "test-worker",
+    encryptionKey,
+    providers: {
+      sms: {
+        name: "fake-sms",
+        isConfigured: () => true,
+        async send() {
+          providerCalls += 1;
+          return { result: "accepted" };
+        },
+      },
+    },
+  });
+
+  assert.equal(providerCalls, 0);
+  assert.equal(heldReason, "sms_allowance_exhausted");
+  assert.equal(cycle.deferred, 1);
+  assert.equal(cycle.accepted, 0);
 });
 
 test("Google review sync closes its lease once for zero-review success and failure", async () => {

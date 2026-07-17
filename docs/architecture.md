@@ -1,16 +1,16 @@
-# Afterword architecture
+# Review Anchor architecture
 
 ## Status and implementation boundary
 
-Afterword now has an authenticated Fastify application API, a restricted Fastify public-ingress service, a PostgreSQL persistence/security layer, a worker process and provider adapters behind the React workspace. Outside explicit `VITE_DEMO_MODE=true`, the browser loads its session and workspace from the server and does not seed tenants or select its own authoritative role.
+Review Anchor has an authenticated Fastify application API, a restricted Fastify public-ingress service, a PostgreSQL persistence/security layer, a worker process and provider adapters behind the React workspace. Outside explicit `VITE_DEMO_MODE=true`, the browser loads its session and workspace from the server and does not seed tenants or select its own authoritative role.
 
-This is code-complete foundation work, not production evidence. The PostgreSQL migrations and SQL isolation suite have not been executed in this workspace because no PostgreSQL runtime is available. No real Google Business Profile, Twilio or SendGrid credentials have been used, and the one-business pilot has not run. Nothing in this document should be treated as evidence that a launch control has passed.
+This is code-complete foundation work, not production evidence. The PostgreSQL migrations and SQL isolation suite have not been executed in this workspace because no PostgreSQL runtime is available. No real Google Business Profile, Twilio, SendGrid or Stripe credentials have been used, and the one-business pilot has not run. Nothing in this document should be treated as evidence that a launch control has passed.
 
 The system is one multi-tenant SaaS application. Client workspaces and the agency portfolio share one identity system and PostgreSQL database. The authenticated application, public ingress and worker are separate least-privilege processes. Navigation is derived from memberships and capabilities; there is no separate, implicitly trusted admin application.
 
-Migrations 001, 002 and 003 target PostgreSQL 15.9 or newer. `scripts/migrate.ts` applies them in filename order, stores SHA-256 checksums and refuses to alter an already-applied migration. `database/tests/003_tenant_isolation.sql` and `.github/workflows/database-security.yml` define executable role, RLS, dispatch and webhook-deduplication checks. They are present in code but have not been run locally; a clean database run and two-connection concurrency tests remain launch blockers.
+Migrations 001 through 005 target PostgreSQL 15.9 or newer. `scripts/migrate.ts` applies them in filename order, stores SHA-256 checksums and refuses to alter an already-applied migration. `database/tests/003_tenant_isolation.sql` and `.github/workflows/database-security.yml` define executable role, RLS, dispatch and webhook-deduplication checks. They are present in code but have not been run locally; a clean database run and two-connection concurrency tests remain launch blockers.
 
-The migrations require a dedicated database owned by `afterword_migration_owner`. The `public` schema must belong to that role or PostgreSQL 15's `pg_database_owner` role. Those ownership rules let the migration revoke public schema creation; a plain `CREATE` grant does not satisfy the bootstrap contract.
+The migrations require a dedicated database owned by `afterword_migration_owner`. The `public` schema must belong to that role or PostgreSQL 15's `pg_database_owner` role. Those ownership rules let the migration revoke public schema creation; a plain `CREATE` grant does not satisfy the bootstrap contract. The `afterword_*` database roles and other lowercase prefixes remain stable legacy implementation identifiers after the product rename.
 
 Google Business Profile is an external launch dependency. The Google Cloud project must be approved for the Business Profile APIs and the business must have a verified profile. Google provides no Business Profile API sandbox, so real OAuth, review sync and Pub/Sub validation can only be proven in the controlled pilot.
 
@@ -26,12 +26,14 @@ Only a business owner/admin or a configuration-scoped support session may replac
 
 ```text
 Browser
-  -> Afterword API (opaque cookie and trusted request-context boundary)
+  -> Review Anchor API (opaque cookie and trusted request-context boundary)
        -> afterword_auth (credentials and server sessions)
        -> afterword_runtime (tenant queries and audited commands)
        -> PostgreSQL RLS + audited command functions
 
 Provider webhooks/QR -> public ingress process -> signature/OIDC verification -> afterword_ingress -> durable deduplicated receipts
+Authenticated billing action -> application API -> Stripe-hosted Checkout/Portal
+Stripe event -> public ingress -> exact-body signature verification -> replay-safe billing state
 Delivery/review worker -> afterword_worker -> lease/outbox/sync functions -> Google, Twilio, SendGrid
 Operations -> afterword_ops -> global pause and reconciliation functions
 Migration/bootstrap -> afterword_migration_owner only during controlled deployment
@@ -135,7 +137,9 @@ Encrypted provider webhook evidence is capped at 30 days by the schema and has a
 
 ## Webhook, queue and outbox model
 
-The server applies provider-specific verification before database ingestion: Twilio request signatures over the exact callback URL and form fields, SendGrid's signed timestamp/body, and Google Pub/Sub OIDC with exact issuer, audience and service-account identity. Request bodies are size-limited. Provider event IDs are persisted with uniqueness so at-least-once callbacks can be deduplicated. A webhook request never sends a customer message directly.
+The server applies provider-specific verification before database ingestion: Twilio request signatures over the exact callback URL and form fields, SendGrid's signed timestamp/body, Google Pub/Sub OIDC with exact issuer, audience and service-account identity, and Stripe signatures over the unchanged raw body. Request bodies are size-limited. Provider event IDs are persisted with uniqueness so at-least-once callbacks can be deduplicated. A webhook request never sends a customer message directly.
+
+Stripe Checkout is created only for an authenticated business owner, admin or billing member, never from public pricing input or an agency support session. The database snapshots the server-owned plan and amounts into an idempotent Checkout attempt before the Stripe API call. The application then validates the configured GBP Prices against those amounts and binds the returned Session to the attempt. Subscription metadata repeats only tenant and attempt identifiers created by the server. The ingress process holds the endpoint signing secret but no Stripe API key. Billing activation requires both an active Stripe subscription state and a signature-verified paid setup fee; browser redirects are not payment evidence. Event creation timestamps fence stale subscription updates, and an event ID replay with a different payload hash fails closed.
 
 Message execution uses a logical job plus a durable provider outbox and attempt history:
 
@@ -150,7 +154,7 @@ Message execution uses a logical job plus a durable provider outbox and attempt 
 
 Database deduplication does not create exactly-once delivery at an external provider. Twilio does not accept a provider idempotency key for message creation, so an ambiguous network outcome must remain in reconciliation and must never be blindly retried. The SendGrid adapter includes an attempt identifier in signed event metadata, but its timeout and duplicate behaviour must also be proven. A provider/credential kill switch is required because a small race remains between the last database pause check and the network call.
 
-Google Pub/Sub notifications are scheduling hints, not the review source of truth. Notifications are verified, deduplicated and used to request a durable reconciliation. The worker then fetches the canonical review list from Google. Google review objects do not contain an Afterword request or customer ID, so conversion reporting is estimated rather than deterministic person-level attribution.
+Google Pub/Sub notifications are scheduling hints, not the review source of truth. Notifications are verified, deduplicated and used to request a durable reconciliation. The worker then fetches the canonical review list from Google. Google review objects do not contain a Review Anchor request or customer ID, so conversion reporting is estimated rather than deterministic person-level attribution.
 
 ## Implementation status and deliberate launch limits
 
@@ -162,6 +166,9 @@ The following are implemented in code but not yet proven against a live PostgreS
 - Persistent completed jobs, consent evidence, review requests, outbox/attempt history, provider webhooks, Google review cache and audit events.
 - Google OAuth/PKCE, encrypted tokens, actor-bound single-use account/location selection, scheduled review sync, Pub/Sub verification, token refresh/disconnect primitives and cached-review purge.
 - Twilio and SendGrid delivery adapters, signed callbacks, STOP/unsubscribe suppression and dispatch-time quiet-hour/retry fencing.
+- Forward-only billing/SMS migration 004 with exact Pro/Multi prices, pooled segment reservations before Twilio, per-location usage, safe allowance holds, threshold records and non-Stripe pilot-period resets.
+- Forward-only Stripe migration 005 plus hosted Checkout, Customer Portal, server-side Price verification, exact-body signature checks, replay-safe events and paid-setup activation fencing.
+- Combined business reporting with durable per-location job, delivery, click, review and SMS totals.
 - Public QR resolution, privacy-minimised scans and provider continuation tracking.
 
 Launch blockers that remain outside or incomplete in the current code path:
@@ -171,7 +178,8 @@ Launch blockers that remain outside or incomplete in the current code path:
 - Execute Google account/location selection against the approved pilot account, including a multi-profile account if available, and attach evidence that access and refresh tokens never reach the browser.
 - Add a signed completed-job CRM/webhook endpoint that derives tenant and location from a server-owned integration identity. Until then, pilot intake is manual through the authenticated business API.
 - Deploy through a real secret manager and prove key rotation, Google token revocation, provider timeout reconciliation, dead-letter recovery, emergency pause and 30-day purge jobs.
-- Obtain Google Business Profile API approval, configure real Twilio/SendGrid accounts, and run the full one-business pilot before billing or public registration.
+- Obtain Google Business Profile API approval, configure real Twilio/SendGrid accounts, and run the full one-business pilot before enabling Stripe Checkout, paid SMS bundles or public registration.
+- Rotate the exposed Stripe test key, configure a least-privilege replacement and test-mode Prices/webhook, then prove successful, failed, delayed, expired, cancelled, past-due and replayed event paths against clean PostgreSQL before live mode.
 - Complete legal, privacy, consent, retention, regional-hosting and subprocessor review for the launch regions.
 
 The React workspace demonstrates the intended operation of these paths. It is not evidence that PostgreSQL, provider or compliance controls are live until the checklist and pilot have attached results.

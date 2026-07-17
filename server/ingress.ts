@@ -3,11 +3,12 @@ import { databaseUrl, loadConfig } from "./config.js";
 import { createPool } from "./db.js";
 import { loadLocalEnvironment } from "./load-env.js";
 import { createWebhookSecurity } from "./providers/webhook-security.js";
+import { StripeSdkWebhookVerifier } from "./providers/stripe.js";
 import { PostgresRepository } from "./repository/postgres.js";
 
 async function main() {
   loadLocalEnvironment();
-  const config = loadConfig(process.env, ["ingress"]);
+  const config = loadConfig(process.env, ["ingress", "stripeWebhook"]);
   const ingressPool = createPool(
     databaseUrl(config, "ingress"),
     config.DATABASE_SSL === "require",
@@ -20,11 +21,15 @@ async function main() {
     googlePubSubAudience: config.GOOGLE_PUBSUB_AUDIENCE,
     googlePubSubServiceAccount: config.GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL,
   });
+  const stripeWebhookVerifier = config.STRIPE_WEBHOOK_SECRET
+    ? new StripeSdkWebhookVerifier(config.STRIPE_WEBHOOK_SECRET)
+    : undefined;
   const app = await buildApp({
     config,
     repository,
     surface: "ingress",
     webhookSecurity,
+    stripeWebhookVerifier,
     externalWebhookBaseUrl: config.EXTERNAL_WEBHOOK_BASE_URL,
   });
 
@@ -47,6 +52,6 @@ async function main() {
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`Afterword ingress failed to start: ${error instanceof Error ? error.message : "Unknown error"}\n`);
+  process.stderr.write(`Review Anchor ingress failed to start: ${error instanceof Error ? error.message : "Unknown error"}\n`);
   process.exitCode = 1;
 });

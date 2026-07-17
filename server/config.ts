@@ -55,6 +55,17 @@ const baseEnvironmentSchema = z.object({
   SENDGRID_FROM_EMAIL: z.string().email().optional(),
   SENDGRID_ASM_GROUP_ID: z.coerce.number().int().positive().optional(),
   SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY: z.string().optional(),
+  STRIPE_CHECKOUT_ENABLED: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
+  STRIPE_MODE: z.enum(["test", "live"]).default("test"),
+  STRIPE_API_KEY: z.string().min(20).regex(/^(?:sk|rk)_(?:test|live)_/).optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().min(20).regex(/^whsec_/).optional(),
+  STRIPE_PRICE_PRO_MONTHLY: z.string().regex(/^price_/).optional(),
+  STRIPE_PRICE_PRO_ANNUAL: z.string().regex(/^price_/).optional(),
+  STRIPE_PRICE_MULTI_MONTHLY: z.string().regex(/^price_/).optional(),
+  STRIPE_PRICE_SETUP_PRO: z.string().regex(/^price_/).optional(),
+  STRIPE_PRICE_SETUP_MULTI_2_3: z.string().regex(/^price_/).optional(),
+  STRIPE_PRICE_SETUP_MULTI_4_5: z.string().regex(/^price_/).optional(),
+  STRIPE_PORTAL_CONFIGURATION_ID: z.string().regex(/^bpc_/).optional(),
 });
 
 const databaseEnvironmentKeys = {
@@ -66,12 +77,17 @@ const databaseEnvironmentKeys = {
 
 export type DatabaseCapability = keyof typeof databaseEnvironmentKeys;
 const allDatabaseCapabilities = Object.keys(databaseEnvironmentKeys) as DatabaseCapability[];
+export type ProviderCapability = "stripeCheckout" | "stripeWebhook";
+export type ProcessCapability = DatabaseCapability | ProviderCapability;
 
-function environmentSchema(requiredCapabilities: readonly DatabaseCapability[]) {
+function environmentSchema(requiredCapabilities: readonly ProcessCapability[]) {
   return baseEnvironmentSchema.superRefine((value, context) => {
-  const missingCapabilities = requiredCapabilities.filter((capability) => !value[databaseEnvironmentKeys[capability]]);
+  const requiredDatabaseCapabilities = requiredCapabilities.filter(
+    (capability): capability is DatabaseCapability => capability in databaseEnvironmentKeys,
+  );
+  const missingCapabilities = requiredDatabaseCapabilities.filter((capability) => !value[databaseEnvironmentKeys[capability]]);
   if (value.NODE_ENV === "production" && missingCapabilities.length > 0) {
-    const requiredNames = requiredCapabilities.map((capability) => databaseEnvironmentKeys[capability]).join(", ");
+    const requiredNames = requiredDatabaseCapabilities.map((capability) => databaseEnvironmentKeys[capability]).join(", ");
     context.addIssue({
       code: "custom",
       message: `Production requires ${requiredNames} with separate least-privilege PostgreSQL logins for this process.`,
@@ -79,14 +95,14 @@ function environmentSchema(requiredCapabilities: readonly DatabaseCapability[]) 
     });
   }
   if (value.NODE_ENV === "production" && missingCapabilities.length === 0) {
-    const connections = requiredCapabilities.map((capability) => value[databaseEnvironmentKeys[capability]]!);
+    const connections = requiredDatabaseCapabilities.map((capability) => value[databaseEnvironmentKeys[capability]]!);
     try {
       const identities = connections.map(databaseLoginIdentity);
       if (new Set(connections).size !== connections.length || new Set(identities).size !== identities.length) {
         context.addIssue({
           code: "custom",
           message: `Production database URLs must use ${connections.length === 4 ? "four " : ""}distinct least-privilege login identities.`,
-          path: [databaseEnvironmentKeys[requiredCapabilities[0]]],
+          path: [databaseEnvironmentKeys[requiredDatabaseCapabilities[0]]],
         });
       }
     } catch (error) {
@@ -121,8 +137,51 @@ function environmentSchema(requiredCapabilities: readonly DatabaseCapability[]) 
   if (value.NODE_ENV !== "production" && !value.DATABASE_URL && missingCapabilities.length > 0) {
     context.addIssue({
       code: "custom",
-      message: `Set DATABASE_URL for local development, or provide ${requiredCapabilities.map((capability) => databaseEnvironmentKeys[capability]).join(", ")}.`,
+      message: `Set DATABASE_URL for local development, or provide ${requiredDatabaseCapabilities.map((capability) => databaseEnvironmentKeys[capability]).join(", ")}.`,
       path: ["DATABASE_URL"],
+    });
+  }
+  if (value.STRIPE_MODE === "live" && value.NODE_ENV !== "production") {
+    context.addIssue({
+      code: "custom",
+      message: "Live Stripe mode is allowed only in a production process.",
+      path: ["STRIPE_MODE"],
+    });
+  }
+  if (value.STRIPE_API_KEY) {
+    const keyMode = /^(?:sk|rk)_live_/.test(value.STRIPE_API_KEY) ? "live" : "test";
+    if (keyMode !== value.STRIPE_MODE) {
+      context.addIssue({
+        code: "custom",
+        message: `The Stripe API key does not match STRIPE_MODE=${value.STRIPE_MODE}.`,
+        path: ["STRIPE_API_KEY"],
+      });
+    }
+  }
+  if (value.STRIPE_CHECKOUT_ENABLED && requiredCapabilities.includes("stripeCheckout")) {
+    const requiredStripeKeys = [
+      "STRIPE_API_KEY",
+      "STRIPE_PRICE_PRO_MONTHLY",
+      "STRIPE_PRICE_PRO_ANNUAL",
+      "STRIPE_PRICE_MULTI_MONTHLY",
+      "STRIPE_PRICE_SETUP_PRO",
+      "STRIPE_PRICE_SETUP_MULTI_2_3",
+      "STRIPE_PRICE_SETUP_MULTI_4_5",
+    ] as const;
+    const missingStripeKey = requiredStripeKeys.find((key) => !value[key]);
+    if (missingStripeKey) {
+      context.addIssue({
+        code: "custom",
+        message: `Stripe Checkout is enabled but ${missingStripeKey} is missing for the application process.`,
+        path: [missingStripeKey],
+      });
+    }
+  }
+  if (value.STRIPE_CHECKOUT_ENABLED && requiredCapabilities.includes("stripeWebhook") && !value.STRIPE_WEBHOOK_SECRET) {
+    context.addIssue({
+      code: "custom",
+      message: "Stripe Checkout is enabled but STRIPE_WEBHOOK_SECRET is missing for the ingress process.",
+      path: ["STRIPE_WEBHOOK_SECRET"],
     });
   }
   });
@@ -132,7 +191,7 @@ export type AppConfig = z.infer<typeof baseEnvironmentSchema>;
 
 export function loadConfig(
   environment: NodeJS.ProcessEnv = process.env,
-  requiredCapabilities: readonly DatabaseCapability[] = allDatabaseCapabilities,
+  requiredCapabilities: readonly ProcessCapability[] = allDatabaseCapabilities,
 ): AppConfig {
   return environmentSchema(requiredCapabilities).parse(environment);
 }

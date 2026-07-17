@@ -3,12 +3,13 @@ import { databaseUrl, loadConfig } from "./config.js";
 import { createPool } from "./db.js";
 import { loadLocalEnvironment } from "./load-env.js";
 import { GoogleHttpClient } from "./providers/google.js";
+import { StripeSdkBillingClient } from "./providers/stripe.js";
 import { createWebhookSecurity } from "./providers/webhook-security.js";
 import { PostgresRepository } from "./repository/postgres.js";
 
 async function main() {
   loadLocalEnvironment();
-  const config = loadConfig(process.env, ["auth", "runtime"]);
+  const config = loadConfig(process.env, ["auth", "runtime", "stripeCheckout"]);
   const requireSsl = config.DATABASE_SSL === "require";
   const authPool = createPool(databaseUrl(config, "auth"), requireSsl, "afterword-auth-api");
   const runtimePool = createPool(databaseUrl(config, "runtime"), requireSsl, "afterword-runtime-api");
@@ -20,12 +21,14 @@ async function main() {
     googlePubSubAudience: config.GOOGLE_PUBSUB_AUDIENCE,
     googlePubSubServiceAccount: config.GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL,
   });
+  const stripeBilling = config.STRIPE_API_KEY ? new StripeSdkBillingClient(config) : undefined;
   const app = await buildApp({
     config,
     repository,
     surface: "application",
     googleClient,
     webhookSecurity,
+    stripeBilling,
     externalWebhookBaseUrl: config.EXTERNAL_WEBHOOK_BASE_URL,
   });
 
@@ -48,6 +51,6 @@ async function main() {
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`Afterword API failed to start: ${error instanceof Error ? error.message : "Unknown error"}\n`);
+  process.stderr.write(`Review Anchor API failed to start: ${error instanceof Error ? error.message : "Unknown error"}\n`);
   process.exitCode = 1;
 });

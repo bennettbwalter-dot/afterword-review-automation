@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { databaseUrl, loadConfig } from "./config.js";
 import { createPool } from "./db.js";
 import { loadLocalEnvironment } from "./load-env.js";
+import { estimateSmsSegments } from "./messaging/sms-segments.js";
 import { createDeliveryProviders, type DeliveryProviderMap } from "./providers/delivery.js";
 import { GoogleHttpClient, synchronizeDueGoogleConnections, validateGoogleReviewUri, type GoogleBusinessProfileClient } from "./providers/google.js";
 import { PostgresRepository } from "./repository/postgres.js";
@@ -143,12 +144,37 @@ export async function runDeliveryCycle(options: DeliveryCycleOptions): Promise<D
           options.encryptionKey,
           `${job.businessId}:message-destination`,
         );
+        const renderedBody = renderReviewMessage(payload);
+        if (job.channel === "sms") {
+          const estimate = estimateSmsSegments(renderedBody);
+          const reservation = await options.repository.reserveSmsSegments({
+            messageAttemptId: payload.messageAttemptId,
+            workerId: options.workerId,
+            leaseToken: job.leaseToken,
+            segments: estimate.segments,
+          });
+          if (!reservation.allowed) {
+            if (!["sms_billing_missing", "sms_billing_inactive", "sms_allowance_exhausted", "sms_top_up_required"].includes(reservation.reason)) {
+              throw new Error(`Unexpected SMS allowance decision: ${reservation.reason}`);
+            }
+            await options.repository.holdMessageForSmsAllowance({
+              messageAttemptId: payload.messageAttemptId,
+              workerId: options.workerId,
+              leaseToken: job.leaseToken,
+              reason: reservation.reason as "sms_billing_missing" | "sms_billing_inactive" | "sms_allowance_exhausted" | "sms_top_up_required",
+              retryAt: reservation.retryAt,
+              correlationId: randomUUID(),
+            });
+            result.deferred += 1;
+            continue;
+          }
+        }
         const providerResult = await provider.send({
           jobId: job.id,
           attemptId: payload.messageAttemptId,
           destination,
           subject: payload.subject,
-          body: renderReviewMessage(payload),
+          body: renderedBody,
           idempotencyKey: payload.idempotencyKey,
         });
         deliveryResult = providerResult.result;
@@ -197,6 +223,8 @@ async function main() {
 
   let nextGoogleSyncAt = 0;
   let nextGoogleRevocationAt = 0;
+  let nextStripePayloadPurgeAt = 0;
+  let nextPilotBillingRollAt = 0;
   while (!stopping) {
     const delivery = await runDeliveryCycle({
       repository,
@@ -217,6 +245,14 @@ async function main() {
       });
       nextGoogleRevocationAt = Date.now() + 30 * 1_000;
     }
+    if (Date.now() >= nextStripePayloadPurgeAt) {
+      await repository.purgeExpiredStripeWebhookPayloads?.(1000);
+      nextStripePayloadPurgeAt = Date.now() + 60 * 60 * 1_000;
+    }
+    if (Date.now() >= nextPilotBillingRollAt) {
+      await repository.rollPilotBillingPeriods(100);
+      nextPilotBillingRollAt = Date.now() + 5 * 60 * 1_000;
+    }
     if (process.env.WORKER_ONCE === "true") break;
     if (delivery.claimed === 0) await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
@@ -227,7 +263,7 @@ const isEntrypoint = Boolean(process.argv[1])
   && resolve(fileURLToPath(import.meta.url)).toLowerCase() === resolve(process.argv[1]).toLowerCase();
 if (isEntrypoint) {
   main().catch((error: unknown) => {
-    process.stderr.write(`Afterword worker stopped: ${error instanceof Error ? error.message : "Unknown error"}\n`);
+    process.stderr.write(`Review Anchor worker stopped: ${error instanceof Error ? error.message : "Unknown error"}\n`);
     process.exitCode = 1;
   });
 }

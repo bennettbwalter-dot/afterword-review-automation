@@ -19,6 +19,12 @@ import type {
   PlatformRepository,
   PublicQrScanInput,
   PublicReviewFlow,
+  ReserveSmsSegmentsInput,
+  SmsOveragePolicy,
+  SmsSegmentReservation,
+  StripeBillingWebhookInput,
+  StripeCheckoutPreparation,
+  HoldSmsMessageInput,
   StartSupportSessionInput,
   WorkspacePayload,
 } from "../types.js";
@@ -38,6 +44,15 @@ function initials(name: string) {
 function displayTime(value: unknown) {
   if (!value) return "No activity yet";
   return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short" }).format(new Date(String(value)));
+}
+
+function displayDate(value: unknown) {
+  if (!value) return "Not scheduled";
+  return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium" }).format(new Date(String(value)));
+}
+
+function pounds(pence: unknown) {
+  return `£${(Number(pence) / 100).toFixed(Number(pence) % 100 === 0 ? 0 : 2)}`;
 }
 
 function googleIntegrationState(health: unknown) {
@@ -169,7 +184,17 @@ export class PostgresRepository implements PlatformRepository {
           coalesce(qr_stats.unique_clicks, 0) as unique_clicks,
           coalesce(review_stats.reviews_detected, 0) as reviews_detected,
           coalesce(review_stats.rating, 0) as rating,
-          coalesce(exception_stats.affected_count, 0) as affected_count
+          coalesce(exception_stats.affected_count, 0) as affected_count,
+          billing.plan_key, billing.subscription_status, billing.billing_cycle,
+          billing.subscription_price_pence, billing.setup_fee_pence,
+          billing.sms_base_allowance, billing.sms_overage_policy,
+          billing.current_period_start, billing.current_period_end,
+          billing.stripe_customer_ready, billing.stripe_subscription_ready,
+          billing.setup_fee_paid,
+          coalesce(bundle_stats.bundle_segments, 0) as bundle_segments,
+          coalesce(sms_stats.used_segments, 0) as sms_used_segments,
+          coalesce(sms_stats.pending_segments, 0) as sms_pending_segments,
+          coalesce(alert_stats.reached_thresholds, '{}'::smallint[]) as reached_thresholds
         from public.businesses business
         left join lateral (
           select candidate.* from public.locations candidate
@@ -214,8 +239,86 @@ export class PostgresRepository implements PlatformRepository {
           )::integer as affected_count
           from public.review_requests request where request.business_id = business.id
         ) exception_stats on true
+        left join public.billing_account_status billing on billing.business_id = business.id
+        left join lateral (
+          select coalesce(sum(bundle.segments), 0)::integer as bundle_segments
+          from public.sms_allowance_bundles bundle
+          where bundle.business_id = business.id
+            and bundle.period_start = billing.current_period_start
+            and bundle.period_end = billing.current_period_end
+            and bundle.status = 'paid'
+        ) bundle_stats on true
+        left join lateral (
+          select
+            coalesce(sum(reservation.segments) filter (where reservation.status in ('accepted', 'unknown')), 0)::integer as used_segments,
+            coalesce(sum(reservation.segments) filter (where reservation.status = 'reserved'), 0)::integer as pending_segments
+          from public.sms_usage_reservations reservation
+          where reservation.business_id = business.id
+            and reservation.period_start = billing.current_period_start
+            and reservation.period_end = billing.current_period_end
+        ) sms_stats on true
+        left join lateral (
+          select coalesce(array_agg(alert.threshold order by alert.threshold), '{}'::smallint[]) as reached_thresholds
+          from public.sms_usage_alerts alert
+          where alert.business_id = business.id
+            and alert.period_start = billing.current_period_start
+        ) alert_stats on true
         order by business.name
       `);
+      const businessIds = businessesResult.rows.map((row) => row.id);
+      const locationStatsResult = businessIds.length === 0 ? { rows: [] } : await client.query(`
+        select location.id, location.business_id, location.name,
+          coalesce(job_stats.completed_jobs, 0) as completed_jobs,
+          coalesce(delivery_stats.delivered, 0) as delivered,
+          coalesce(qr_stats.unique_clicks, 0) as unique_clicks,
+          coalesce(review_stats.reviews_detected, 0) as reviews_detected,
+          coalesce(review_stats.rating, 0) as rating,
+          coalesce(sms_stats.used_segments, 0) as sms_segments,
+          coalesce(sms_stats.pending_segments, 0) as sms_pending_segments
+        from public.locations location
+        left join public.billing_account_status billing on billing.business_id = location.business_id
+        left join lateral (
+          select count(*)::integer as completed_jobs
+          from public.completed_jobs job
+          where job.business_id = location.business_id and job.location_id = location.id
+        ) job_stats on true
+        left join lateral (
+          select count(*) filter (where outbox.status = 'accepted')::integer as delivered
+          from public.message_jobs job
+          join public.message_outbox outbox
+            on outbox.business_id = job.business_id and outbox.message_job_id = job.id
+          where job.business_id = location.business_id and job.location_id = location.id
+        ) delivery_stats on true
+        left join lateral (
+          select count(distinct scan.anonymous_visitor_hash)
+            filter (where scan.continued_to_provider_at is not null)::integer as unique_clicks
+          from public.qr_scan_events scan
+          where scan.business_id = location.business_id and scan.location_id = location.id
+        ) qr_stats on true
+        left join lateral (
+          select count(*)::integer as reviews_detected, avg(review.rating)::numeric(4,2) as rating
+          from public.review_records review
+          where review.business_id = location.business_id and review.location_id = location.id
+            and review.cache_expires_at > statement_timestamp()
+        ) review_stats on true
+        left join lateral (
+          select
+            coalesce(sum(reservation.segments) filter (where reservation.status in ('accepted', 'unknown')), 0)::integer as used_segments,
+            coalesce(sum(reservation.segments) filter (where reservation.status = 'reserved'), 0)::integer as pending_segments
+          from public.sms_usage_reservations reservation
+          where reservation.business_id = location.business_id and reservation.location_id = location.id
+            and reservation.period_start = billing.current_period_start
+            and reservation.period_end = billing.current_period_end
+        ) sms_stats on true
+        where location.business_id = any($1::uuid[]) and location.status <> 'archived'
+        order by location.business_id, location.name
+      `, [businessIds]);
+      const locationsByBusiness = new Map<string, typeof locationStatsResult.rows>();
+      for (const row of locationStatsResult.rows) {
+        const current = locationsByBusiness.get(row.business_id) ?? [];
+        current.push(row);
+        locationsByBusiness.set(row.business_id, current);
+      }
       const requestedBusinessId = selectedBusinessId ?? actor.businessId ?? businessesResult.rows[0]?.id;
       const requestsByBusiness: Record<string, unknown[]> = {};
       const reviewsByBusiness: Record<string, unknown[]> = {};
@@ -302,11 +405,32 @@ export class PostgresRepository implements PlatformRepository {
 
       const businessRows: WorkspacePayload["businesses"] = businessesResult.rows.map((row) => {
         const google = googleIntegrationState(row.google_health);
+        const locationRows = locationsByBusiness.get(row.id) ?? [];
         const operational = row.lifecycle_status === "active"
           && Boolean(row.location_id)
           && Boolean(row.messaging_ready)
           && ["connected", "healthy"].includes(String(row.google_health ?? ""));
         const lastActivity = row.google_last_sync_at ?? row.last_accepted_at ?? row.google_last_event_at;
+        const billing = row.plan_key ? {
+          billingCycle: row.billing_cycle === "annual" ? "Annual" as const : "Monthly" as const,
+          subscriptionStatus: ({ inactive: "Inactive", pilot: "Pilot", active: "Active", past_due: "Past due", cancelled: "Cancelled" } as const)[row.subscription_status as "inactive" | "pilot" | "active" | "past_due" | "cancelled"],
+          subscriptionPrice: `${pounds(row.subscription_price_pence)}/${row.billing_cycle === "annual" ? "year" : "month"}`,
+          setupFee: `${pounds(row.setup_fee_pence)} one-off`,
+          renewalDate: displayDate(row.current_period_end),
+          smsAllowance: Number(row.sms_base_allowance) + Number(row.bundle_segments),
+          smsUsed: Number(row.sms_used_segments),
+          smsPending: Number(row.sms_pending_segments),
+          smsOveragePolicy: row.sms_overage_policy as SmsOveragePolicy,
+          stripeCustomerReady: Boolean(row.stripe_customer_ready),
+          stripeSubscriptionReady: Boolean(row.stripe_subscription_ready),
+          setupFeePaid: Boolean(row.setup_fee_paid),
+          smsUsageByLocation: locationRows.map((location) => ({
+            locationName: String(location.name),
+            used: Number(location.sms_segments),
+            pending: Number(location.sms_pending_segments),
+          })),
+          reachedThresholds: (row.reached_thresholds as unknown[]).map(Number),
+        } : undefined;
         return {
         id: row.id,
         agencyId: row.agency_id,
@@ -322,7 +446,19 @@ export class PostgresRepository implements PlatformRepository {
         integrationSummary: operational ? "Google and messaging ready" : "Setup incomplete; unsafe sends remain blocked",
         lastSuccess: displayTime(lastActivity),
         affectedCount: Number(row.affected_count),
-        plan: "Professional" as const,
+        plan: row.plan_key === "multi_monthly" ? "Reputation Multi" as const : "Reputation Pro" as const,
+        billing,
+        locationReports: locationRows.map((location) => ({
+          id: String(location.id),
+          name: String(location.name),
+          completedJobs: Number(location.completed_jobs),
+          delivered: Number(location.delivered),
+          uniqueClicks: Number(location.unique_clicks),
+          reviewsDetected: Number(location.reviews_detected),
+          rating: Number(location.rating),
+          totalReviews: Number(location.reviews_detected),
+          smsSegments: Number(location.sms_segments),
+        })),
         seedRequestCount: 0,
         metrics: {
           completedJobs: Number(row.completed_jobs),
@@ -383,6 +519,86 @@ export class PostgresRepository implements PlatformRepository {
           correlationId: row.correlation_id,
         })),
       } as WorkspacePayload;
+    });
+  }
+
+  async updateSmsOveragePolicy(
+    actor: ActorContext,
+    businessId: string,
+    policy: SmsOveragePolicy,
+    correlationId: string,
+  ) {
+    return this.asActor(actor, async (client) => {
+      const result = await client.query(
+        "select * from app_private.set_sms_overage_policy($1,$2,$3)",
+        [businessId, policy, correlationId],
+      );
+      const row = result.rows[0];
+      return {
+        updated: Boolean(row?.updated),
+        policy: row?.policy ? row.policy as SmsOveragePolicy : undefined,
+        reason: String(row?.reason ?? "billing_unavailable"),
+      };
+    });
+  }
+
+  async prepareStripeCheckout(
+    actor: ActorContext,
+    businessId: string,
+    attemptId: string,
+    correlationId: string,
+  ): Promise<StripeCheckoutPreparation> {
+    return this.asActor(actor, async (client) => {
+      const result = await client.query(
+        "select * from app_private.prepare_stripe_checkout($1,$2,$3)",
+        [businessId, attemptId, correlationId],
+      );
+      const row = result.rows[0];
+      return {
+        allowed: Boolean(row?.allowed),
+        reason: String(row?.reason ?? "billing_unavailable"),
+        attemptId,
+        businessId,
+        planKey: row?.plan_key ?? undefined,
+        billingCycle: row?.billing_cycle ?? undefined,
+        subscriptionPricePence: row?.subscription_price_pence === undefined
+          ? undefined
+          : Number(row.subscription_price_pence),
+        setupFeePence: row?.setup_fee_pence === undefined ? undefined : Number(row.setup_fee_pence),
+        customerId: row?.stripe_customer_id ?? undefined,
+      };
+    });
+  }
+
+  async bindStripeCheckoutSession(
+    actor: ActorContext,
+    businessId: string,
+    attemptId: string,
+    sessionId: string,
+    customerId: string | undefined,
+    livemode: boolean,
+    correlationId: string,
+  ) {
+    await this.asActor(actor, async (client) => {
+      await client.query(
+        "select app_private.bind_stripe_checkout_session($1,$2,$3,$4,$5,$6)",
+        [businessId, attemptId, sessionId, customerId ?? null, livemode, correlationId],
+      );
+    });
+  }
+
+  async getStripeBillingCustomer(actor: ActorContext, businessId: string, correlationId: string) {
+    return this.asActor(actor, async (client) => {
+      const result = await client.query(
+        "select * from app_private.get_stripe_billing_customer($1,$2)",
+        [businessId, correlationId],
+      );
+      const row = result.rows[0];
+      return {
+        allowed: Boolean(row?.allowed),
+        reason: String(row?.reason ?? "billing_unavailable"),
+        customerId: row?.stripe_customer_id ?? undefined,
+      };
     });
   }
 
@@ -696,6 +912,34 @@ export class PostgresRepository implements PlatformRepository {
     };
   }
 
+  async reserveSmsSegments(input: ReserveSmsSegmentsInput): Promise<SmsSegmentReservation> {
+    const result = await this.worker().query(
+      "select * from app_private.reserve_sms_segments($1,$2,$3,$4)",
+      [input.messageAttemptId, input.workerId, input.leaseToken, input.segments],
+    );
+    const row = result.rows[0];
+    return {
+      allowed: Boolean(row?.allowed),
+      reason: String(row?.reason ?? "sms_billing_missing"),
+      retryAt: row?.retry_at ? new Date(row.retry_at) : undefined,
+    };
+  }
+
+  async holdMessageForSmsAllowance(input: HoldSmsMessageInput) {
+    const result = await this.worker().query(
+      "select app_private.hold_message_for_sms_allowance($1,$2,$3,$4,$5,$6) as retry_at",
+      [
+        input.messageAttemptId,
+        input.workerId,
+        input.leaseToken,
+        input.reason,
+        input.retryAt ?? null,
+        input.correlationId,
+      ],
+    );
+    return new Date(result.rows[0].retry_at);
+  }
+
   async finishMessageAttempt(input: FinishMessageAttemptInput) {
     await this.worker().query("select app_private.finish_message_attempt($1,$2,$3,$4,$5,$6,$7)", [
       input.messageAttemptId, input.workerId, input.leaseToken, input.result,
@@ -705,6 +949,14 @@ export class PostgresRepository implements PlatformRepository {
 
   async deferMessageJob(jobId: string, workerId: string, leaseToken: string, runAt: Date, reason: string) {
     await this.worker().query("select app_private.defer_message_job($1,$2,$3,$4,$5)", [jobId, workerId, leaseToken, runAt, reason]);
+  }
+
+  async rollPilotBillingPeriods(limit: number) {
+    const result = await this.worker().query(
+      "select app_private.roll_pilot_billing_periods($1) as rolled",
+      [limit],
+    );
+    return Number(result.rows[0]?.rolled ?? 0);
   }
 
   async resolvePublicReviewFlow(publicToken: string): Promise<PublicReviewFlow | null> {
@@ -754,6 +1006,46 @@ export class PostgresRepository implements PlatformRepository {
       "select * from app_private.record_message_provider_webhook($1,$2,$3,$4,$5,$6)",
       ["twilio", input.eventId, input.providerMessageId, input.status, evidence.payloadHash, evidence.encryptedPayload],
     );
+  }
+
+  async recordStripeBillingWebhook(input: StripeBillingWebhookInput) {
+    const evidence = webhookEvidence(
+      input.rawBody.toString("base64"),
+      input.rawBody,
+      this.config.FIELD_ENCRYPTION_KEY,
+      `webhook:stripe:${input.eventId}`,
+    );
+    const result = await this.ingress().query(
+      "select * from app_private.apply_stripe_billing_event($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
+      [
+        input.eventId,
+        input.eventType,
+        input.eventCreatedAt,
+        input.apiVersion ?? null,
+        input.livemode,
+        input.businessId,
+        input.attemptId ?? null,
+        input.checkoutSessionId ?? null,
+        input.customerId ?? null,
+        input.subscriptionId ?? null,
+        input.checkoutState ?? null,
+        input.setupPaid ?? false,
+        input.subscriptionState ?? null,
+        input.periodStart ?? null,
+        input.periodEnd ?? null,
+        evidence.payloadHash,
+        evidence.encryptedPayload,
+      ],
+    );
+    return { duplicate: Boolean(result.rows[0]?.duplicate) };
+  }
+
+  async purgeExpiredStripeWebhookPayloads(limit: number) {
+    const result = await this.worker().query(
+      "select app_private.purge_expired_stripe_webhook_payloads($1) as purged",
+      [limit],
+    );
+    return Number(result.rows[0]?.purged ?? 0);
   }
 
   async recordTwilioSuppressionWebhook(input: {
@@ -806,7 +1098,7 @@ export class PostgresRepository implements PlatformRepository {
         `webhook:sendgrid:${event.eventId}`,
       );
       if (!event.attemptId && !event.providerMessageId) {
-        throw new Error("SendGrid event has no Afterword attempt or provider message identity.");
+        throw new Error("SendGrid event has no Review Anchor attempt or provider message identity.");
       }
       if (action) {
         const sql = event.attemptId

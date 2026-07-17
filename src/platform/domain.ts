@@ -62,6 +62,38 @@ export interface IntegrationState {
   lastEvent: string;
 }
 
+export type PlanName = "Reputation Pro" | "Reputation Multi";
+export type SmsOveragePolicy = "auto_top_up" | "pause_sms";
+
+export interface BillingSummary {
+  billingCycle: "Monthly" | "Annual";
+  subscriptionStatus: "Inactive" | "Pilot" | "Active" | "Past due" | "Cancelled";
+  subscriptionPrice: string;
+  setupFee: string;
+  renewalDate: string;
+  smsAllowance: number;
+  smsUsed: number;
+  smsPending: number;
+  smsOveragePolicy: SmsOveragePolicy;
+  stripeCustomerReady: boolean;
+  stripeSubscriptionReady: boolean;
+  setupFeePaid: boolean;
+  smsUsageByLocation: Array<{ locationName: string; used: number; pending: number }>;
+  reachedThresholds: number[];
+}
+
+export interface LocationReportSummary {
+  id: string;
+  name: string;
+  completedJobs: number;
+  delivered: number;
+  uniqueClicks: number;
+  reviewsDetected: number;
+  rating: number;
+  totalReviews: number;
+  smsSegments: number;
+}
+
 export interface BusinessAccount {
   id: string;
   locationId?: string;
@@ -77,7 +109,9 @@ export interface BusinessAccount {
   integrationSummary: string;
   lastSuccess: string;
   affectedCount: number;
-  plan: "Starter" | "Professional" | "Multi-location";
+  plan: PlanName;
+  billing?: BillingSummary;
+  locationReports?: LocationReportSummary[];
   seedRequestCount: number;
   metrics: TenantMetrics;
   teamMembers: TenantMemberSummary[];
@@ -278,6 +312,45 @@ export function makeAuditEvent(input: Omit<AuditEvent, "id" | "correlationId">, 
   };
 }
 
+const proBilling = (locationName: string, smsUsed: number, annual = false): BillingSummary => ({
+  billingCycle: annual ? "Annual" : "Monthly",
+  subscriptionStatus: "Pilot",
+  subscriptionPrice: annual ? "£390/year" : "£39/month",
+  setupFee: "£149 one-off",
+  renewalDate: "1 Aug 2026",
+  smsAllowance: 100,
+  smsUsed,
+  smsPending: 0,
+  smsOveragePolicy: "pause_sms",
+  stripeCustomerReady: false,
+  stripeSubscriptionReady: false,
+  setupFeePaid: false,
+  smsUsageByLocation: [{ locationName, used: smsUsed, pending: 0 }],
+  reachedThresholds: smsUsed >= 90 ? [75, 90] : smsUsed >= 75 ? [75] : [],
+});
+
+const multiBilling: BillingSummary = {
+  billingCycle: "Monthly",
+  subscriptionStatus: "Pilot",
+  subscriptionPrice: "£79/month",
+  setupFee: "£349 for four locations",
+  renewalDate: "1 Aug 2026",
+  smsAllowance: 300,
+  smsUsed: 242,
+  smsPending: 3,
+  smsOveragePolicy: "auto_top_up",
+  stripeCustomerReady: false,
+  stripeSubscriptionReady: false,
+  setupFeePaid: false,
+  smsUsageByLocation: [
+    { locationName: "Bath", used: 80, pending: 1 },
+    { locationName: "Bristol", used: 40, pending: 0 },
+    { locationName: "Trowbridge", used: 72, pending: 2 },
+    { locationName: "Wells", used: 50, pending: 0 },
+  ],
+  reachedThresholds: [75],
+};
+
 export const BUSINESSES: BusinessAccount[] = [
   {
     id: "business_123",
@@ -293,7 +366,8 @@ export const BUSINESSES: BusinessAccount[] = [
     integrationSummary: "Google, messaging and job intake healthy",
     lastSuccess: "4 min ago",
     affectedCount: 0,
-    plan: "Professional",
+    plan: "Reputation Pro",
+    billing: proBilling("Bristol", 68),
     seedRequestCount: 4,
     metrics: { completedJobs: 142, eligibleCustomers: 133, delivered: 121, uniqueClicks: 18, reviewsDetected: 11, rating: 4.8, totalReviews: 126 },
     teamMembers: [{ initials: "SC", name: "Sarah Collins", role: "Business owner · MFA active" }, { initials: "OG", name: "Oliver Grant", role: "Location manager · Bristol" }],
@@ -313,7 +387,8 @@ export const BUSINESSES: BusinessAccount[] = [
     integrationSummary: "Messaging credentials rejected",
     lastSuccess: "2 h ago",
     affectedCount: 42,
-    plan: "Professional",
+    plan: "Reputation Pro",
+    billing: proBilling("Leeds", 91),
     seedRequestCount: 2,
     metrics: { completedJobs: 96, eligibleCustomers: 91, delivered: 74, uniqueClicks: 12, reviewsDetected: 7, rating: 4.7, totalReviews: 84 },
     teamMembers: [{ initials: "LT", name: "Leah Thompson", role: "Business owner · MFA active" }, { initials: "JW", name: "Jamie Wood", role: "Location manager · Leeds" }],
@@ -333,7 +408,8 @@ export const BUSINESSES: BusinessAccount[] = [
     integrationSummary: "23 CSV records missing consent evidence",
     lastSuccess: "Yesterday",
     affectedCount: 23,
-    plan: "Starter",
+    plan: "Reputation Pro",
+    billing: proBilling("Austin", 43),
     seedRequestCount: 1,
     metrics: { completedJobs: 88, eligibleCustomers: 64, delivered: 58, uniqueClicks: 9, reviewsDetected: 5, rating: 4.9, totalReviews: 203 },
     teamMembers: [{ initials: "MP", name: "Maya Patel", role: "Business owner · MFA active" }, { initials: "AR", name: "Avery Reed", role: "Location manager · Austin" }],
@@ -353,7 +429,14 @@ export const BUSINESSES: BusinessAccount[] = [
     integrationSummary: "78 messages delayed; retry scheduled",
     lastSuccess: "18 min ago",
     affectedCount: 78,
-    plan: "Professional",
+    plan: "Reputation Multi",
+    billing: multiBilling,
+    locationReports: [
+      { id: "location_203_bath", name: "Bath", completedJobs: 46, delivered: 38, uniqueClicks: 6, reviewsDetected: 4, rating: 4.7, totalReviews: 28, smsSegments: 80 },
+      { id: "location_203_bristol", name: "Bristol", completedJobs: 44, delivered: 37, uniqueClicks: 5, reviewsDetected: 3, rating: 4.6, totalReviews: 24, smsSegments: 40 },
+      { id: "location_203_trowbridge", name: "Trowbridge", completedJobs: 45, delivered: 36, uniqueClicks: 5, reviewsDetected: 3, rating: 4.5, totalReviews: 23, smsSegments: 72 },
+      { id: "location_203_wells", name: "Wells", completedJobs: 39, delivered: 32, uniqueClicks: 5, reviewsDetected: 3, rating: 4.6, totalReviews: 22, smsSegments: 50 },
+    ],
     seedRequestCount: 1,
     metrics: { completedJobs: 174, eligibleCustomers: 168, delivered: 143, uniqueClicks: 21, reviewsDetected: 13, rating: 4.6, totalReviews: 97 },
     teamMembers: [{ initials: "MH", name: "Megan Hughes", role: "Business owner · MFA active" }, { initials: "TB", name: "Tom Baker", role: "Location manager · Bath" }],
@@ -373,7 +456,8 @@ export const BUSINESSES: BusinessAccount[] = [
     integrationSummary: "14 invalid signatures rejected",
     lastSuccess: "31 min ago",
     affectedCount: 14,
-    plan: "Starter",
+    plan: "Reputation Pro",
+    billing: proBilling("Glasgow", 76, true),
     seedRequestCount: 1,
     metrics: { completedJobs: 61, eligibleCustomers: 58, delivered: 55, uniqueClicks: 8, reviewsDetected: 4, rating: 4.8, totalReviews: 62 },
     teamMembers: [{ initials: "CF", name: "Callum Fraser", role: "Business owner · MFA active" }, { initials: "FM", name: "Fiona McKay", role: "Location manager · Glasgow" }],
@@ -393,7 +477,8 @@ export const BUSINESSES: BusinessAccount[] = [
     integrationSummary: "Review monitoring paused; outbound healthy",
     lastSuccess: "2 h ago",
     affectedCount: 1,
-    plan: "Professional",
+    plan: "Reputation Pro",
+    billing: proBilling("Tampa", 54),
     seedRequestCount: 1,
     metrics: { completedJobs: 119, eligibleCustomers: 110, delivered: 101, uniqueClicks: 15, reviewsDetected: 8, rating: 4.7, totalReviews: 151 },
     teamMembers: [{ initials: "EC", name: "Elena Cruz", role: "Business owner · MFA active" }, { initials: "MH", name: "Marcus Hill", role: "Location manager · Tampa" }],

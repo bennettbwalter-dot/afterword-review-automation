@@ -8,6 +8,7 @@ import type {
   RequestRecord,
   ReviewRecord,
   SessionContext,
+  SmsOveragePolicy,
 } from "./domain";
 
 export const IS_DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
@@ -206,6 +207,39 @@ export const platformApi = {
       throw new ApiError("The server returned an invalid completed-job result.", 502, "INVALID_JOB_RESPONSE");
     }
     return result as unknown as CompletedJobResult;
+  },
+
+  async updateSmsOveragePolicy(businessId: string, policy: SmsOveragePolicy) {
+    const payload = unwrapData(await request<unknown>(
+      `/api/v1/businesses/${encodeURIComponent(businessId)}/billing/sms-policy`,
+      { method: "PATCH", body: JSON.stringify({ policy }) },
+    ));
+    if (!isRecord(payload) || (payload.policy !== "pause_sms" && payload.policy !== "auto_top_up")) {
+      throw new ApiError("The server returned an invalid SMS billing policy.", 502, "INVALID_SMS_POLICY_RESPONSE");
+    }
+    return payload.policy as SmsOveragePolicy;
+  },
+
+  async startStripeCheckout(businessId: string, attemptId: string) {
+    const payload = unwrapData(await request<unknown>(
+      `/api/v1/businesses/${encodeURIComponent(businessId)}/billing/checkout`,
+      { method: "POST", body: JSON.stringify({ attemptId }) },
+    ));
+    if (!isRecord(payload) || typeof payload.url !== "string") {
+      throw new ApiError("The server returned an invalid Stripe Checkout URL.", 502, "INVALID_CHECKOUT_RESPONSE");
+    }
+    return payload.url;
+  },
+
+  async openStripeBillingPortal(businessId: string) {
+    const payload = unwrapData(await request<unknown>(
+      `/api/v1/businesses/${encodeURIComponent(businessId)}/billing/portal`,
+      { method: "POST", body: JSON.stringify({}) },
+    ));
+    if (!isRecord(payload) || typeof payload.url !== "string") {
+      throw new ApiError("The server returned an invalid Stripe billing portal URL.", 502, "INVALID_PORTAL_RESPONSE");
+    }
+    return payload.url;
   },
 
   async startGoogleOAuth(businessId: string, locationId: string) {

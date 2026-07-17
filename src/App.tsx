@@ -86,6 +86,7 @@ import {
   type ReviewRecord,
   type QrCodeRecord,
   type SessionContext,
+  type SmsOveragePolicy,
   type SupportScope,
   type SupportSession,
   type WorkspaceView,
@@ -94,6 +95,19 @@ import {
 type Surface = "site" | "app";
 type AppView = WorkspaceView;
 type WorkspaceLoadState = "loading" | "anonymous" | "authenticated" | "error";
+type PricingOfferId = "pro-monthly" | "pro-annual" | "multi-monthly";
+
+interface PricingOffer {
+  id: PricingOfferId;
+  name: string;
+  price: string;
+  period: string;
+  setup: string;
+  description: string;
+  smsAllowance: string;
+  features: string[];
+  featured?: boolean;
+}
 
 interface StoryStep {
   title: string;
@@ -138,6 +152,40 @@ const STORY_STEPS: StoryStep[] = [
   },
 ];
 
+const PRICING_OFFERS: PricingOffer[] = [
+  {
+    id: "pro-monthly",
+    name: "Reputation Pro monthly",
+    price: "£39",
+    period: "/month",
+    setup: "£149 setup fee",
+    description: "One location with paid onboarding and monthly billing.",
+    smsAllowance: "100 SMS segments per month",
+    features: ["Unlimited email requests", "One automated reminder", "Review link, QR code and monthly report", "Extra 100 SMS segments for £10"],
+  },
+  {
+    id: "pro-annual",
+    name: "Reputation Pro annual",
+    price: "£390",
+    period: "/year",
+    setup: "£149 setup fee",
+    description: "The same one-location plan with one annual subscription payment.",
+    smsAllowance: "100 SMS segments per month",
+    features: ["Unlimited email requests", "One automated reminder", "Review link, QR code and monthly report", "Extra 100 SMS segments for £10"],
+    featured: true,
+  },
+  {
+    id: "multi-monthly",
+    name: "Reputation Multi",
+    price: "£79",
+    period: "/month",
+    setup: "Setup quoted by location count",
+    description: "Up to five locations with central reporting and shared billing.",
+    smsAllowance: "300 pooled SMS segments per month",
+    features: ["£249 setup for 2–3 locations", "£349 setup for 4–5 locations", "Location-level and combined reporting", "Extra 100 pooled SMS segments for £10"],
+  },
+];
+
 const CLIENT_NAV: Array<{ id: AppView; label: string; icon: LucideIcon }> = [
   { id: "overview", label: "Overview", icon: Gauge },
   { id: "requests", label: "Requests", icon: UsersRound },
@@ -171,7 +219,7 @@ function cx(...classes: Array<string | false | null | undefined>) {
 
 function LogoMark() {
   return (
-    <svg className="brand-mark" viewBox="0 0 36 36" role="img" aria-label="Afterword mark">
+    <svg className="brand-mark" viewBox="0 0 36 36" role="img" aria-label="Review Anchor mark">
       <path d="M7 10.5A3.5 3.5 0 0 1 10.5 7h15A3.5 3.5 0 0 1 29 10.5v9a3.5 3.5 0 0 1-3.5 3.5H17l-6.5 5v-5A3.5 3.5 0 0 1 7 19.5v-9Z" />
       <path d="M12 13h12M12 17h8" />
     </svg>
@@ -182,7 +230,7 @@ function Brand({ compact = false }: { compact?: boolean }) {
   return (
     <span className={cx("brand", compact && "brand--compact")}>
       <LogoMark />
-      <span className="brand__name">Afterword</span>
+      <span className="brand__name">Review Anchor</span>
     </span>
   );
 }
@@ -318,7 +366,7 @@ function MarketingNav({ onOpenDemo, onStartSetup }: { onOpenDemo: () => void; on
   return (
     <header className={cx("marketing-nav", floating && "is-floating", menuOpen && "is-menu-open")}>
       <div className="marketing-nav__inner">
-        <a href="#top" className="marketing-nav__brand" aria-label="Afterword home" onClick={() => setMenuOpen(false)}>
+        <a href="#top" className="marketing-nav__brand" aria-label="Review Anchor home" onClick={() => setMenuOpen(false)}>
           <Brand />
         </a>
         <nav className="marketing-nav__links" aria-label="Main navigation">
@@ -469,9 +517,29 @@ function OutcomePreview() {
   );
 }
 
+function PlanSelectionDialog({ offer, onClose, onOpenDemo }: { offer: PricingOffer; onClose: () => void; onOpenDemo: () => void }) {
+  return (
+    <Modal open onClose={onClose} label={`${offer.name} selection`}>
+      <div className="dialog-card plan-selection-dialog">
+        <header className="dialog-card__head"><div><span className="dialog-icon"><ClipboardCheck size={20} /></span><div><small>Selected offer</small><h2>{offer.name}</h2></div></div><IconButton label="Close plan selection" onClick={onClose}><X size={19} /></IconButton></header>
+        <div className="plan-selection-summary">
+          <span><small>Subscription</small><strong>{offer.price}{offer.period}</strong></span>
+          <span><small>Implementation</small><strong>{offer.setup}</strong></span>
+          <span><small>Included SMS</small><strong>{offer.smsAllowance}</strong></span>
+        </div>
+        <div className="implementation-guarantee"><ShieldCheck size={22} /><div><h3>Implementation guarantee</h3><p>Pay the setup fee and complete onboarding. If we cannot configure and deliver the review-request system agreed during setup, we will refund the setup fee.</p></div></div>
+        <div className="dialog-note"><AlertTriangle size={16} /><span>Secure Stripe Checkout is available only after signing in to an authorised business workspace. The setup fee is charged before implementation starts.</span></div>
+        <footer className="dialog-card__actions"><Button variant="quiet" onClick={onClose}>Close</Button><Button onClick={() => { onClose(); onOpenDemo(); }}>Preview the workspace</Button></footer>
+      </div>
+    </Modal>
+  );
+}
+
 function MarketingSite({ onOpenDemo, onStartSetup }: { onOpenDemo: () => void; onStartSetup: () => void }) {
   const [activeStoryStep, setActiveStoryStep] = useState(0);
+  const [selectedOfferId, setSelectedOfferId] = useState<PricingOfferId | null>(null);
   const stepRefs = useRef<Array<HTMLElement | null>>([]);
+  const selectedOffer = PRICING_OFFERS.find((offer) => offer.id === selectedOfferId);
 
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -493,9 +561,9 @@ function MarketingSite({ onOpenDemo, onStartSetup }: { onOpenDemo: () => void; o
       <main>
         <section className="hero-section" aria-labelledby="hero-title">
           <div className="hero-copy reveal-sequence">
-            <p className="hero-kicker"><span className="live-dot" /> Google review automation for genuine customers</p>
-            <h1 id="hero-title">Every completed job can become public proof.</h1>
-            <p className="hero-lede">Connect your Google Business Profile. Afterword asks every genuine customer, follows up politely and shows you what changed.</p>
+            <p className="hero-kicker"><span className="live-dot" /> Business growth, starting with reviews</p>
+            <h1 id="hero-title">Get more reviews. Win more customers.</h1>
+            <p className="hero-lede">Review Anchor gives local businesses one place to build customer trust, starting with genuine Google reviews. Ask every customer, follow up politely and track what changes.</p>
             <div className="hero-actions">
               <Button onClick={onStartSetup}>Connect Google profile <ArrowRight size={17} aria-hidden="true" /></Button>
               <Button variant="secondary" onClick={() => document.getElementById("workflow")?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" })}>
@@ -512,16 +580,16 @@ function MarketingSite({ onOpenDemo, onStartSetup }: { onOpenDemo: () => void; o
         </section>
 
         <section className="truth-strip" aria-label="Product rules">
-          <div><strong>1</strong><span>location per Starter workspace</span></div>
+          <div><strong>1</strong><span>location per Reputation Pro account</span></div>
           <div><strong>3</strong><span>messages maximum per completed job</span></div>
           <div><strong>0</strong><span>sentiment gates or positive-only routes</span></div>
-          <p>Set it once. Watch the exceptions.</p>
+          <p>Email requests do not use the SMS allowance.</p>
         </section>
 
         <section className="workflow-section" id="workflow" aria-labelledby="workflow-title">
           <header className="section-heading">
             <h2 id="workflow-title">One honest line from finished work to Google.</h2>
-            <p>The screenshots show the right ingredients—merge fields, delays and follow-ups. Afterword removes the sprawling workflow builder and keeps the part a local business actually needs.</p>
+            <p>The screenshots show the right ingredients—merge fields, delays and follow-ups. Review Anchor removes the sprawling workflow builder and keeps the part a local business actually needs.</p>
           </header>
           <div className="workflow-story">
             <div className="workflow-story__steps">
@@ -571,50 +639,42 @@ function MarketingSite({ onOpenDemo, onStartSetup }: { onOpenDemo: () => void; o
             <article><strong>No incentives</strong><span>Templates do not offer discounts, prizes or rewards for a review.</span></article>
             <article><strong>Immediate suppression</strong><span>STOP cancels pending messages and blocks future enrolment.</span></article>
             <article><strong>Clear attribution</strong><span>Reviews detected and estimated conversion remain separate metrics.</span></article>
+            <article><strong>No outcome promises</strong><span>We do not guarantee review counts, ratings, search rankings, enquiries or revenue.</span></article>
           </div>
         </section>
 
         <section className="pricing-section" id="pricing" aria-labelledby="pricing-title">
           <header className="section-heading section-heading--compact">
-            <h2 id="pricing-title">Priced for the result, not the setup time.</h2>
-            <p>Messaging usage is billed separately and shown before activation.</p>
+            <h2 id="pricing-title">Choose your billing schedule.</h2>
+            <p>Every plan starts with paid implementation. SMS allowances are measured in billable segments, and email requests are unlimited.</p>
           </header>
           <div className="pricing-ledger">
-            <article className="pricing-row">
-              <div><span>Starter</span><strong>$297<small>/month</small></strong></div>
-              <p>One location with a focused request sequence and a clear monthly report.</p>
-              <ul><li>SMS or email</li><li>Up to 3 touches</li><li>Basic reporting</li></ul>
-              <Button variant="secondary" onClick={onStartSetup}>Choose Starter</Button>
-            </article>
-            <article className="pricing-row pricing-row--featured">
-              <div><span>Professional <em>Recommended</em></span><strong>$397<small>/month</small></strong></div>
-              <p>SMS and email, monitored Google reviews and branded reporting.</p>
-              <ul><li>Advanced sequences</li><li>Review monitoring</li><li>Additional integrations</li></ul>
-              <Button onClick={onStartSetup}>Choose Professional</Button>
-            </article>
-            <article className="pricing-row">
-              <div><span>Multi-location</span><strong>From $497<small>/month</small></strong></div>
-              <p>Central control with location-level health and reporting.</p>
-              <ul><li>Multiple locations</li><li>Central dashboard</li><li>Priority support</li></ul>
-              <Button variant="secondary" onClick={onStartSetup}>Start multi-location</Button>
-            </article>
+            {PRICING_OFFERS.map((offer) => <article className={cx("pricing-row", offer.featured && "pricing-row--featured")} key={offer.id}>
+              <div><span>{offer.name}{offer.featured && <em>Best annual value</em>}</span><strong>{offer.price}<small>{offer.period}</small></strong></div>
+              <p>{offer.description} <strong>{offer.setup}.</strong></p>
+              <ul><li>{offer.smsAllowance}</li>{offer.features.map((feature) => <li key={feature}>{feature}</li>)}</ul>
+              <Button variant={offer.featured ? "primary" : "secondary"} onClick={() => setSelectedOfferId(offer.id)}>Choose {offer.id === "multi-monthly" ? "Multi" : offer.id === "pro-annual" ? "annual" : "monthly"}</Button>
+            </article>)}
           </div>
+          <div className="implementation-guarantee implementation-guarantee--section"><ShieldCheck size={24} /><div><h3>Implementation guarantee</h3><p>Pay the setup fee and complete onboarding. If we cannot configure and deliver the review-request system agreed during setup, we will refund the setup fee.</p><small>The guarantee covers agreed configuration and delivery. It does not promise review volume, ratings, rankings, enquiries or revenue.</small></div></div>
         </section>
 
         <section className="faq-section" aria-labelledby="faq-title">
           <h2 id="faq-title">The practical questions.</h2>
           <div className="faq-list">
-            <details><summary>Does Afterword move or copy our Google profile?<ChevronDown size={18} /></summary><p>No. Your Business Profile stays on Google. Afterword connects with owner permission, links genuine customers to Google and monitors review data that Google makes available.</p></details>
+            <details><summary>Does Review Anchor move or copy our Google profile?<ChevronDown size={18} /></summary><p>No. Your Business Profile stays on Google. Review Anchor connects with owner permission, links genuine customers to Google and monitors review data that Google makes available.</p></details>
             <details><summary>Can we send only to customers who say they are happy?<ChevronDown size={18} /></summary><p>No. That is review gating. Eligible genuine customers receive the same neutral route regardless of expected sentiment.</p></details>
             <details><summary>How many follow-ups can go out?<ChevronDown size={18} /></summary><p>The hard product limit is three total messages per completed job. Most sequences should use fewer.</p></details>
+            <details><summary>Is there a free trial?<ChevronDown size={18} /></summary><p>No. The setup fee covers real implementation work and is charged before onboarding. The implementation guarantee refunds that fee if we cannot deliver the agreed review-request setup.</p></details>
+            <details><summary>How is SMS usage charged?<ChevronDown size={18} /></summary><p>Reputation Pro includes 100 SMS segments each month. Reputation Multi includes 300 pooled segments. Each additional 100-segment bundle costs £10, and you can choose automatic bundles or an SMS pause at the limit. Email requests continue during an SMS pause.</p></details>
           <details><summary>Is the Google connection live?<ChevronDown size={18} /></summary><p>{IS_DEMO_MODE ? "No. The demo is intentionally simulated. A production connection needs approved OAuth credentials, secure token storage and Business Profile API access." : "The authenticated workspace starts Google OAuth with explicit owner permission. Availability still depends on approved Google Business Profile API access."}</p></details>
           </div>
         </section>
       </main>
 
       <footer className="statement-footer">
-        <p>Give every completed job an honest afterword.</p>
-        <div><Brand compact /><span>Google-first review automation · Demo build</span><span>© 2026</span></div>
+        <p>Get more reviews. Win more customers.</p>
+        <div><Brand compact /><span>Business growth, starting with reviews · Demo build</span><span>© 2026</span></div>
       </footer>
 
       {activeStoryStep >= 2 && (
@@ -623,6 +683,7 @@ function MarketingSite({ onOpenDemo, onStartSetup }: { onOpenDemo: () => void; o
           <Button onClick={onOpenDemo}>{IS_DEMO_MODE ? "Open demo" : "Sign in"} <ArrowRight size={16} /></Button>
         </aside>
       )}
+      {selectedOffer && <PlanSelectionDialog offer={selectedOffer} onClose={() => setSelectedOfferId(null)} onOpenDemo={onOpenDemo} />}
     </div>
   );
 }
@@ -664,7 +725,7 @@ function AppSidebar({
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const agencyMode = session.role === "agency_admin" && !supportSession;
   const healthNeedsAttention = agencyMode || business.healthTone !== "success";
-  const workspaceName = agencyMode ? "Afterword Agency" : business.name;
+  const workspaceName = agencyMode ? "Review Anchor Agency" : business.name;
   const workspaceDetail = agencyMode
     ? `${businessCount} client accounts${demoMode ? " · Demo" : ""}`
     : supportSession
@@ -718,7 +779,7 @@ function AppSidebar({
       inert={compactViewport && !open ? true : undefined}
     >
       <div className="app-sidebar__brand">
-        <button type="button" onClick={onBack} aria-label="Return to the Afterword website"><Brand /></button>
+        <button type="button" onClick={onBack} aria-label="Return to the Review Anchor website"><Brand /></button>
         <IconButton label="Close workspace navigation" className="app-sidebar__close" onClick={onClose}><X size={19} /></IconButton>
       </div>
       <div className="workspace-switcher" aria-label={`Current workspace: ${workspaceName}`}>
@@ -813,10 +874,10 @@ function WorkspaceAuthScreen({
 
   return (
     <main className="workspace-auth-shell">
-      <button className="workspace-auth-shell__brand" type="button" onClick={onBack} aria-label="Return to the Afterword website"><Brand /></button>
+      <button className="workspace-auth-shell__brand" type="button" onClick={onBack} aria-label="Return to the Review Anchor website"><Brand /></button>
       <section className="workspace-auth-card" aria-busy={state === "loading"}>
         <span className="eyebrow">Secure workspace</span>
-        <h1>{state === "loading" ? "Opening your workspace…" : "Sign in to Afterword"}</h1>
+        <h1>{state === "loading" ? "Opening your workspace…" : "Sign in to Review Anchor"}</h1>
         <p>{state === "loading" ? "Checking your encrypted session and tenant access." : "Use the account assigned to your business or agency."}</p>
         {state === "loading" ? (
           <div className="workspace-auth-loading" role="status"><span aria-hidden="true" /> Authenticating…</div>
@@ -1041,7 +1102,7 @@ function AutomationView({ business, requests, canConfigure, paused, onStateChang
           <div className="field-group"><label htmlFor="wait-hours">Wait time in hours</label><input id="wait-hours" type="number" min="1" max="168" value={waitHours} disabled={!canConfigure} onChange={(event) => setWaitHours(Number(event.target.value))} /><small>Pending messages cancel immediately after a reply, review detection or opt-out.</small></div>
         ) : selected === "request" || selected === "followup" ? (
           <>
-            <div className="field-group"><label htmlFor="channel">Channel</label><select id="channel" defaultValue="SMS" disabled={!canConfigure}><option>SMS</option><option>Email</option></select><small>Messaging usage is billed separately from the subscription.</small></div>
+            <div className="field-group"><label htmlFor="channel">Channel</label><select id="channel" defaultValue="SMS" disabled={!canConfigure}><option>SMS</option><option>Email</option></select><small>SMS uses the plan’s segment allowance. Email requests do not reduce it.</small></div>
             <div className="field-group"><label htmlFor="message-template">Message</label><textarea id="message-template" value={message} disabled={!canConfigure} onChange={(event) => setMessage(event.target.value)} rows={7} /><small>{message.length} characters · merge fields preview below</small></div>
             <div className={cx("template-validation", templateIssues.length > 0 && "template-validation--blocked")} role="status">
               {templateIssues.length > 0 ? <AlertTriangle size={17} /> : <ShieldCheck size={17} />}
@@ -1093,6 +1154,8 @@ function ReviewsView({ business, reviews }: { business: BusinessAccount; reviews
 
 function ReportsView({ business }: { business: BusinessAccount }) {
   const metrics = business.metrics;
+  const locationReports = business.locationReports ?? [];
+  const isCombinedReport = locationReports.length > 1;
   const operationalTone = business.healthTone === "success" ? "success" : "warning";
   const generatedOn = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "long", year: "numeric" }).format(new Date());
   const integrationChecks = [
@@ -1106,16 +1169,17 @@ function ReportsView({ business }: { business: BusinessAccount }) {
       <section className="report-shell">
         <header className="report-toolbar"><div><span>{IS_DEMO_MODE ? "Monthly report" : "Operational snapshot"}</span><strong>{IS_DEMO_MODE ? "July 2026" : generatedOn}</strong></div><Button variant="secondary" onClick={() => window.print()}><Printer size={16} /> Print report</Button></header>
         <article className="report-paper">
-          <header><Brand /><span>{business.name} · {business.locationName}</span><small>{IS_DEMO_MODE ? "1–31 July 2026 · Sample report" : `Generated ${generatedOn} · Authenticated current totals`}</small></header>
+          <header><Brand /><span>{business.name} · {isCombinedReport ? `Combined ${locationReports.length}-location report` : business.locationName}</span><small>{IS_DEMO_MODE ? "1–31 July 2026 · Sample report" : `Generated ${generatedOn} · Authenticated current totals`}</small></header>
           <section className="report-intro"><p>{IS_DEMO_MODE ? business.healthTone === "success" ? "Your review-request system ran without an integration failure this month." : `The system protected customer messaging while ${business.health.toLowerCase()} needs attention.` : business.healthTone === "success" ? "Current durable records show the configured review-request system operating without a reported integration failure." : `Customer messaging remains protected while ${business.health.toLowerCase()} needs attention.`}</p><span className={`status-pill status-pill--${operationalTone}`}>{business.healthTone === "success" ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />} {business.health}</span></section>
           <section className="report-metrics"><div><span>Completed jobs</span><strong>{metrics.completedJobs}</strong></div><div><span>Requests delivered</span><strong>{metrics.delivered}</strong></div><div><span>Unique link clicks</span><strong>{metrics.uniqueClicks}</strong></div><div><span>{IS_DEMO_MODE ? "New reviews detected" : "Reviews cached"}</span><strong>{metrics.reviewsDetected}</strong></div></section>
           <section className="report-rating"><div><span>Google rating</span><strong>{metrics.rating.toFixed(1)}</strong><Stars rating={Math.round(metrics.rating)} size={17} /></div><p>{IS_DEMO_MODE ? `${metrics.totalReviews} total reviews at month end.` : `${metrics.totalReviews} total Google reviews in the current snapshot.`} Review detection is not exact job-level attribution; estimated conversion is reported separately.</p></section>
+          {isCombinedReport && <section className="report-locations"><h2>Location performance</h2><div className="report-locations__table" role="table" aria-label="Location-level report"><div className="report-locations__head" role="row"><span role="columnheader">Location</span><span role="columnheader">Jobs</span><span role="columnheader">Delivered</span><span role="columnheader">Clicks</span><span role="columnheader">Reviews</span><span role="columnheader">Rating</span><span role="columnheader">SMS</span></div>{locationReports.map((location) => <div role="row" key={location.id}><strong role="cell">{location.name}</strong><span role="cell">{location.completedJobs}</span><span role="cell">{location.delivered}</span><span role="cell">{location.uniqueClicks}</span><span role="cell">{location.reviewsDetected}</span><span role="cell">{location.rating.toFixed(1)}</span><span role="cell">{location.smsSegments}</span></div>)}</div><p>Combined totals appear above. Each row is calculated from records scoped to that location.</p></section>}
           {IS_DEMO_MODE ? (
             <section className="report-events"><h2>Operational checks</h2><div><span><CheckCircle2 size={16} /> Completed-job trigger</span><strong>Healthy</strong></div><div><span>{business.healthTone === "success" ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />} Google review sync</span><strong>{business.healthTone === "success" ? "Healthy" : "Attention"}</strong></div><div><span><CheckCircle2 size={16} /> Suppression list</span><strong>4 contacts</strong></div><div><span><AlertTriangle size={16} /> Failed delivery rate</span><strong>2.4%</strong></div></section>
           ) : (
             <section className="report-events"><h2>Operational checks</h2>{integrationChecks.map((check) => <div key={check.label}><span>{check.state.tone === "success" ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />} {check.label}</span><strong>{check.state.status}</strong></div>)}<div><span><AlertTriangle size={16} /> Review attribution</span><strong>Estimated</strong></div></section>
           )}
-          <footer><span>Afterword · Review automation</span><span>{IS_DEMO_MODE ? "Sample data · Not a live client report" : "Authenticated tenant report"}</span></footer>
+          <footer><span>Review Anchor · Review automation</span><span>{IS_DEMO_MODE ? "Sample data · Not a live client report" : "Authenticated tenant report"}</span></footer>
         </article>
       </section>
     </div>
@@ -1415,7 +1479,7 @@ function GoogleProfileSelectionDialog({
           <div><span className="dialog-icon"><MapPin size={20} /></span><div><small>Google Business Profile</small><h2>Choose the location to connect</h2></div></div>
           <IconButton label="Close Google profile selection" onClick={onClose} disabled={saving}><X size={19} /></IconButton>
         </header>
-        <p className="dialog-explainer">The selected Google location will be permanently bound to this Afterword business location. Customers still review the business directly on Google.</p>
+        <p className="dialog-explainer">The selected Google location will be permanently bound to this Review Anchor business location. Customers still review the business directly on Google.</p>
         {loading && <div className="empty-state"><Activity size={22} /><h2>Loading verified locations…</h2></div>}
         {error && <div className="dialog-note"><AlertTriangle size={16} /><span>{error}</span></div>}
         {!loading && selection && <div className="profile-selection-list">
@@ -1471,6 +1535,12 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
   const [googleSelectionLoading, setGoogleSelectionLoading] = useState(Boolean(selectionToken));
   const [googleSelectionSaving, setGoogleSelectionSaving] = useState(false);
   const [googleSelectionError, setGoogleSelectionError] = useState("");
+  const stripeCheckoutAttempts = useRef(new Map<string, string>());
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "auto" }));
+    return () => window.cancelAnimationFrame(frame);
+  }, [view]);
 
   const applyWorkspace = (workspace: WorkspacePayload) => {
     setSession(workspace.session);
@@ -1806,6 +1876,35 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
     setPauseDialogBusiness(null);
   };
 
+  const saveSmsOveragePolicy = async (policy: SmsOveragePolicy) => {
+    if (!canConfigure) throw new Error("You do not have permission to change SMS billing controls.");
+    if (IS_DEMO_MODE) {
+      setBusinesses((current) => current.map((item) => item.id === business.id && item.billing
+        ? { ...item, billing: { ...item.billing, smsOveragePolicy: policy } }
+        : item));
+      return;
+    }
+    await platformApi.updateSmsOveragePolicy(business.id, policy);
+    const refreshed = await platformApi.getWorkspace(business.id);
+    applyWorkspace(refreshed);
+  };
+
+  const startStripeCheckout = async () => {
+    if (!canConfigure) throw new Error("You do not have permission to manage billing.");
+    if (IS_DEMO_MODE) throw new Error("Stripe Checkout is disabled in the seeded demo.");
+    const attemptId = stripeCheckoutAttempts.current.get(business.id) ?? crypto.randomUUID();
+    stripeCheckoutAttempts.current.set(business.id, attemptId);
+    const checkoutUrl = await platformApi.startStripeCheckout(business.id, attemptId);
+    window.location.assign(checkoutUrl);
+  };
+
+  const openStripeBillingPortal = async () => {
+    if (!canConfigure) throw new Error("You do not have permission to manage billing.");
+    if (IS_DEMO_MODE) throw new Error("The Stripe billing portal is disabled in the seeded demo.");
+    const portalUrl = await platformApi.openStripeBillingPortal(business.id);
+    window.location.assign(portalUrl);
+  };
+
   const addRequest = async (draft: CompletedJobDraft) => {
     if (!canConfigure) throw new Error("You do not have permission to add a completed job.");
     if (!IS_DEMO_MODE) {
@@ -1971,7 +2070,7 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
           {!agencyMode && canReadTenant && view === "qr-codes" && qrCodesByBusiness[business.id] && <QrCodesView business={business} record={qrCodesByBusiness[business.id]} canConfigure={canConfigure && IS_DEMO_MODE} onUpdate={updateQrCode} onAudit={recordQrAudit} />}
           {!agencyMode && canReadTenant && view === "reports" && <ReportsView business={business} />}
           {!agencyMode && canReadTenant && view === "integrations" && <IntegrationsView business={business} onConnect={() => void beginGoogleConnection()} canConfigure={canConfigure} />}
-          {!agencyMode && canReadTenant && view === "team-billing" && <TeamBillingView business={business} canConfigure={canConfigure && IS_DEMO_MODE} />}
+          {!agencyMode && canReadTenant && view === "team-billing" && <TeamBillingView business={business} canConfigure={canConfigure} onSaveSmsPolicy={saveSmsOveragePolicy} onStartCheckout={startStripeCheckout} onOpenBillingPortal={openStripeBillingPortal} stripeActionsEnabled={!IS_DEMO_MODE} />}
         </div>
       </main>
       <AddJobDialog open={addJobOpen && canConfigure} onClose={() => setAddJobOpen(false)} onAdd={addRequest} locationId={business.locationId} demoMode={IS_DEMO_MODE} />
@@ -1991,9 +2090,11 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
 }
 
 export default function App() {
-  const oauthReturn = !IS_DEMO_MODE && new URLSearchParams(window.location.search).has("google");
-  const [surface, setSurface] = useState<Surface>(oauthReturn ? "app" : "site");
-  const [initialView, setInitialView] = useState<AppView>(oauthReturn ? "integrations" : "overview");
+  const returnParams = new URLSearchParams(window.location.search);
+  const oauthReturn = !IS_DEMO_MODE && returnParams.has("google");
+  const billingReturn = !IS_DEMO_MODE && (returnParams.has("checkout") || returnParams.has("billing"));
+  const [surface, setSurface] = useState<Surface>(oauthReturn || billingReturn ? "app" : "site");
+  const [initialView, setInitialView] = useState<AppView>(oauthReturn ? "integrations" : billingReturn ? "team-billing" : "overview");
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const publicToken = window.location.pathname.match(/^\/r\/([a-z0-9-]+)\/?$/i)?.[1];
   const publicQrCode = IS_DEMO_MODE && publicToken ? getQrCodeByToken(publicToken) : undefined;

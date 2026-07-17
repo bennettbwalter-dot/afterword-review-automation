@@ -6,8 +6,10 @@ import { ZodError } from "zod";
 import type { AppConfig } from "./config.js";
 import { isProduction } from "./config.js";
 import type { GoogleBusinessProfileClient } from "./providers/google.js";
+import type { StripeBillingClient, StripeWebhookVerifier } from "./providers/stripe.js";
 import type { WebhookSecurity } from "./providers/webhook-security.js";
 import { registerAuthRoutes } from "./routes/auth.js";
+import { registerBillingRoutes } from "./routes/billing.js";
 import { registerGoogleRoutes } from "./routes/google.js";
 import { registerPublicReviewRoutes } from "./routes/public-review.js";
 import { registerSupportRoutes } from "./routes/support.js";
@@ -23,6 +25,8 @@ export interface BuildAppOptions {
   surface?: "application" | "ingress" | "all";
   googleClient?: GoogleBusinessProfileClient;
   webhookSecurity?: WebhookSecurity;
+  stripeBilling?: StripeBillingClient;
+  stripeWebhookVerifier?: StripeWebhookVerifier;
   externalWebhookBaseUrl?: string;
 }
 
@@ -105,6 +109,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
   if (surface !== "ingress") {
     await registerAuthRoutes(app, options);
+    await registerBillingRoutes(app, options);
     await registerWorkspaceRoutes(app, options);
     await registerGoogleRoutes(app, options);
     await registerSupportRoutes(app, options);

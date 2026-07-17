@@ -109,6 +109,43 @@ function requireWebhookPersistence<T extends (...parameters: never[]) => unknown
 export async function registerWebhookRoutes(app: FastifyInstance, options: BuildAppOptions) {
   const repository = options.repository as WebhookPersistenceRepository;
 
+  app.post("/webhooks/stripe", async (request, reply) => {
+    if (!options.stripeWebhookVerifier || !options.config.STRIPE_WEBHOOK_SECRET) {
+      throw new ApiError(503, "STRIPE_WEBHOOK_NOT_CONFIGURED", "Stripe webhook verification is not configured.");
+    }
+    const signature = request.headers["stripe-signature"];
+    if (typeof signature !== "string" || !request.rawBody) {
+      throw new ApiError(400, "WEBHOOK_SIGNATURE_MISSING", "The Stripe webhook signature or raw body is missing.");
+    }
+    let event;
+    try {
+      event = options.stripeWebhookVerifier.verify(request.rawBody, signature);
+    } catch {
+      throw new ApiError(401, "WEBHOOK_SIGNATURE_INVALID", "The webhook signature is invalid.");
+    }
+    if (event.kind === "ignored") return reply.code(204).send();
+    const persist = requireWebhookPersistence(repository, repository.recordStripeBillingWebhook);
+    await persist({
+      eventId: event.eventId,
+      eventType: event.eventType,
+      eventCreatedAt: event.eventCreatedAt,
+      apiVersion: event.apiVersion,
+      livemode: event.livemode,
+      businessId: event.businessId,
+      attemptId: event.attemptId,
+      checkoutSessionId: event.kind === "checkout" ? event.checkoutSessionId : undefined,
+      customerId: event.customerId,
+      subscriptionId: event.subscriptionId,
+      checkoutState: event.kind === "checkout" ? event.state : undefined,
+      setupPaid: event.kind === "checkout" ? event.setupPaid : undefined,
+      subscriptionState: event.kind === "subscription" ? event.subscriptionState : undefined,
+      periodStart: event.kind === "subscription" ? event.periodStart : undefined,
+      periodEnd: event.kind === "subscription" ? event.periodEnd : undefined,
+      rawBody: request.rawBody,
+    });
+    return reply.code(204).send();
+  });
+
   app.post("/webhooks/twilio/status", async (request, reply) => {
     const url = webhookUrl(options.externalWebhookBaseUrl, request.url);
     if (!url || !options.webhookSecurity?.twilioConfigured) {

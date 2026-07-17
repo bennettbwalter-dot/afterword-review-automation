@@ -1,5 +1,35 @@
 export type PlatformRole = "business_owner" | "agency_admin";
 export type SupportScope = "view" | "configuration";
+export type SmsOveragePolicy = "auto_top_up" | "pause_sms";
+
+export interface BillingSummary {
+  billingCycle: "Monthly" | "Annual";
+  subscriptionStatus: "Inactive" | "Pilot" | "Active" | "Past due" | "Cancelled";
+  subscriptionPrice: string;
+  setupFee: string;
+  renewalDate: string;
+  smsAllowance: number;
+  smsUsed: number;
+  smsPending: number;
+  smsOveragePolicy: SmsOveragePolicy;
+  stripeCustomerReady: boolean;
+  stripeSubscriptionReady: boolean;
+  setupFeePaid: boolean;
+  smsUsageByLocation: Array<{ locationName: string; used: number; pending: number }>;
+  reachedThresholds: number[];
+}
+
+export interface LocationReportSummary {
+  id: string;
+  name: string;
+  completedJobs: number;
+  delivered: number;
+  uniqueClicks: number;
+  reviewsDetected: number;
+  rating: number;
+  totalReviews: number;
+  smsSegments: number;
+}
 
 export interface ActorContext {
   userId: string;
@@ -39,7 +69,9 @@ export interface BusinessSummary {
   integrationSummary: string;
   lastSuccess: string;
   affectedCount: number;
-  plan: "Starter" | "Professional" | "Multi-location";
+  plan: "Reputation Pro" | "Reputation Multi";
+  billing?: BillingSummary;
+  locationReports: LocationReportSummary[];
   seedRequestCount: number;
   metrics: {
     completedJobs: number;
@@ -88,6 +120,37 @@ export interface CompletedJobInput {
   };
 }
 
+export interface StripeCheckoutPreparation {
+  allowed: boolean;
+  reason: string;
+  attemptId: string;
+  businessId: string;
+  planKey?: "pro_monthly" | "pro_annual" | "multi_monthly";
+  billingCycle?: "monthly" | "annual";
+  subscriptionPricePence?: number;
+  setupFeePence?: number;
+  customerId?: string;
+}
+
+export interface StripeBillingWebhookInput {
+  eventId: string;
+  eventType: string;
+  eventCreatedAt: Date;
+  apiVersion?: string;
+  livemode: boolean;
+  businessId: string;
+  attemptId?: string;
+  checkoutSessionId?: string;
+  customerId?: string;
+  subscriptionId?: string;
+  checkoutState?: "completed" | "expired" | "failed";
+  setupPaid?: boolean;
+  subscriptionState?: "inactive" | "active" | "past_due" | "cancelled";
+  periodStart?: Date;
+  periodEnd?: Date;
+  rawBody: Buffer;
+}
+
 export interface PlatformRepository {
   findCredentialByEmail(email: string): Promise<AuthCredential | null>;
   recordLoginResult?(email: string, succeeded: boolean): Promise<void>;
@@ -102,6 +165,12 @@ export interface PlatformRepository {
   resolveLoginSession(tokenHash: Buffer): Promise<ActorContext | null>;
   revokeLoginSession(sessionId: string, tokenHash: Buffer): Promise<void>;
   getWorkspace(actor: ActorContext, selectedBusinessId?: string): Promise<WorkspacePayload>;
+  updateSmsOveragePolicy(actor: ActorContext, businessId: string, policy: SmsOveragePolicy, correlationId: string): Promise<{ updated: boolean; policy?: SmsOveragePolicy; reason: string }>;
+  prepareStripeCheckout?(actor: ActorContext, businessId: string, attemptId: string, correlationId: string): Promise<StripeCheckoutPreparation>;
+  bindStripeCheckoutSession?(actor: ActorContext, businessId: string, attemptId: string, sessionId: string, customerId: string | undefined, livemode: boolean, correlationId: string): Promise<void>;
+  getStripeBillingCustomer?(actor: ActorContext, businessId: string, correlationId: string): Promise<{ allowed: boolean; reason: string; customerId?: string }>;
+  recordStripeBillingWebhook?(input: StripeBillingWebhookInput): Promise<{ duplicate: boolean }>;
+  purgeExpiredStripeWebhookPayloads?(limit: number): Promise<number>;
   startSupportSession(actor: ActorContext, input: StartSupportSessionInput): Promise<string>;
   endSupportSession(actor: ActorContext, supportSessionId: string, reason: string): Promise<boolean>;
   createCompletedJob(actor: ActorContext, input: CompletedJobInput): Promise<{ requestId: string; status: "Queued" | "Blocked"; duplicate: boolean }>;
@@ -127,8 +196,11 @@ export interface PlatformRepository {
   claimMessageJobs(workerId: string, limit: number, leaseSeconds: number): Promise<MessageJob[]>;
   authorizeMessageDispatch(jobId: string, workerId: string, leaseToken: string): Promise<DispatchAuthorization>;
   getMessagePayload(jobId: string, workerId: string, leaseToken: string): Promise<MessagePayload>;
+  reserveSmsSegments(input: ReserveSmsSegmentsInput): Promise<SmsSegmentReservation>;
+  holdMessageForSmsAllowance(input: HoldSmsMessageInput): Promise<Date>;
   finishMessageAttempt(input: FinishMessageAttemptInput): Promise<void>;
   deferMessageJob(jobId: string, workerId: string, leaseToken: string, runAt: Date, reason: string): Promise<void>;
+  rollPilotBillingPeriods(limit: number): Promise<number>;
   resolvePublicReviewFlow(publicToken: string): Promise<PublicReviewFlow | null>;
   recordPublicQrScan(input: PublicQrScanInput): Promise<{ scanId: string; destinationUrl: string }>;
   markPublicQrContinue(scanId: string): Promise<void>;
@@ -239,4 +311,26 @@ export interface FinishMessageAttemptInput {
   providerMessageId?: string;
   responseCode?: string;
   errorCode?: string;
+}
+
+export interface ReserveSmsSegmentsInput {
+  messageAttemptId: string;
+  workerId: string;
+  leaseToken: string;
+  segments: number;
+}
+
+export interface SmsSegmentReservation {
+  allowed: boolean;
+  reason: string;
+  retryAt?: Date;
+}
+
+export interface HoldSmsMessageInput {
+  messageAttemptId: string;
+  workerId: string;
+  leaseToken: string;
+  reason: "sms_billing_missing" | "sms_billing_inactive" | "sms_allowance_exhausted" | "sms_top_up_required";
+  retryAt?: Date;
+  correlationId: string;
 }

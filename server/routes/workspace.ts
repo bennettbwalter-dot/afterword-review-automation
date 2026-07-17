@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { BuildAppOptions } from "../app.js";
@@ -9,6 +10,10 @@ const workspaceQuerySchema = z.object({
 
 const businessParamsSchema = z.object({
   businessId: z.string().uuid(),
+}).strict();
+
+const smsPolicySchema = z.object({
+  policy: z.enum(["pause_sms", "auto_top_up"]),
 }).strict();
 
 const completedJobSchema = z.object({
@@ -92,5 +97,26 @@ export async function registerWorkspaceRoutes(app: FastifyInstance, options: Bui
       consent: body.consent,
     });
     return sendData(reply, result, result.duplicate ? 200 : 201);
+  });
+
+  app.patch("/api/v1/businesses/:businessId/billing/sms-policy", async (request, reply) => {
+    requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production");
+    const actor = requireActor(request);
+    const { businessId } = businessParamsSchema.parse(request.params);
+    const { policy } = smsPolicySchema.parse(request.body);
+    await requireBusinessAccess(options.repository, actor, businessId);
+    const result = await options.repository.updateSmsOveragePolicy(
+      actor,
+      businessId,
+      policy,
+      randomUUID(),
+    );
+    if (!result.updated) {
+      if (result.reason === "access_denied") {
+        throw new ApiError(403, "BILLING_ACCESS_DENIED", "You do not have permission to change SMS billing controls.");
+      }
+      throw new ApiError(409, "BILLING_UNAVAILABLE", "SMS billing is not configured for this business.");
+    }
+    return sendData(reply, { policy: result.policy });
   });
 }

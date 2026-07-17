@@ -1,13 +1,13 @@
-# Afterword
+# Review Anchor
 
-Afterword connects a Google Business Profile to completed-job events and turns those events into neutral, consent-backed review requests by SMS or email.
+Review Anchor connects a Google Business Profile to completed-job events and turns those events into neutral, consent-backed review requests by SMS or email.
 
 This branch contains two distinct surfaces:
 
 - A polished React workspace and public QR review flow.
 - An authenticated Fastify/PostgreSQL foundation for real users, agencies, businesses, requests, consent records, reviews, audit events and provider delivery.
 
-It is a backend foundation, not a production launch. The PostgreSQL migrations and SQL tenant-isolation suite have not been executed in this workspace because no PostgreSQL runtime is available. Google Business Profile, Twilio and SendGrid have not been exercised with real credentials, and no real-business pilot has run.
+It is a backend foundation, not a production launch. The PostgreSQL migrations and SQL tenant-isolation suite have not been executed in this workspace because no PostgreSQL runtime is available. Google Business Profile, Twilio, SendGrid and Stripe have not been exercised with real credentials, and no real-business pilot has run.
 
 ## Run locally
 
@@ -19,6 +19,17 @@ npm.cmd run dev:demo
 ```
 
 Open `http://127.0.0.1:4173`. Seeded data and the role preview are available only when Vite runs with `VITE_DEMO_MODE=true` through `.env.demo`.
+
+## Cloudflare demo preview
+
+The shareable seeded demo is deployed separately from the production platform at `https://review-anchor-demo.pages.dev`. It is built with `.env.cloudflare-demo`, carries `noindex` and restrictive security headers, and does not connect to PostgreSQL, Google, Twilio, SendGrid or Stripe.
+
+```powershell
+npm.cmd run build:demo
+npm.cmd run deploy:demo
+```
+
+This Direct Upload project is intentionally demo-only. Do not attach the production customer domain or inject production secrets into it. The authenticated API, public ingress and background worker require a separate deployment design with capability-separated secrets and PostgreSQL connections.
 
 For the authenticated API and web application:
 
@@ -51,6 +62,8 @@ Do not use `DATABASE_URL` in production. `MIGRATION_DATABASE_URL` is a separate 
 - Persistent completed jobs, encrypted customer contact fields, immutable template versions, consent evidence, review requests, message jobs/outbox/attempts, suppressions, Google reviews, QR scans and audit logs.
 - An authenticated manual completed-job endpoint with stable duplicate keys and a final dispatch decision that rechecks consent, suppression, pauses, quiet hours, frequency limits, sequence limits and lease ownership.
 - A durable delivery worker with Twilio SMS and SendGrid email adapters, signed provider callbacks, STOP/unsubscribe handling, retry/backoff and ambiguous-outcome quarantine.
+- Server-owned Pro and Multi plan state, GSM-7/UCS-2 segment calculation, pooled pre-send SMS reservations, per-location usage, 75/90/100 threshold records, safe allowance holds and pilot-period resets. Paid top-ups remain disabled until Stripe is connected.
+- Stripe-hosted subscription Checkout with the setup fee on the initial invoice, server-side Price validation, tenant-bound idempotency, Customer Portal, exact-body signature verification and replay-safe webhook state. Checkout stays behind `STRIPE_CHECKOUT_ENABLED`; automatic SMS-bundle charging remains disabled.
 - Google Business Profile OAuth with PKCE, encrypted token storage, actor-bound single-use multi-profile selection, durable sync scheduling, Pub/Sub push verification and review reconciliation.
 - Google disconnect commands, token-revocation queue primitives and a 30-day maximum cache window for Google API review content.
 - Client-specific QR review flows with stable public tokens, privacy-minimised scan tracking, verified Google destinations, artwork regeneration, and PNG, SVG and print-ready PDF downloads.
@@ -63,9 +76,9 @@ Do not use `DATABASE_URL` in production. `MIGRATION_DATABASE_URL` is a separate 
 - MFA-required accounts currently fail closed. An MFA challenge/enrolment path and verified MFA evidence are still required before agency support access can go live.
 - The only completed-job intake currently exposed is the authenticated manual API: `POST /api/v1/businesses/:businessId/completed-jobs`. A signed CRM/webhook intake that derives tenant and location from server-owned integration identity is not implemented, so the first pilot must use manual authenticated intake.
 - Provider credentials, signatures, retry behaviour, STOP/unsubscribe handling, token refresh/revocation, cache purge and reconciliation must be proven against real provider accounts.
-- Billing, public registration and public launch remain disabled until the one-business pilot in [`docs/pilot-runbook.md`](docs/pilot-runbook.md) passes.
+- Stripe Checkout code is present but remains disabled until the one-business pilot in [`docs/pilot-runbook.md`](docs/pilot-runbook.md) passes. Follow [`docs/stripe-setup.md`](docs/stripe-setup.md) for test catalog, restricted-key, webhook and verification setup. Paid SMS top-ups, public registration and public launch remain disabled.
 
-Google review objects do not contain an Afterword request or customer identifier. Review conversion reporting is therefore estimated and must never be presented as deterministic person-level attribution.
+Google review objects do not contain a Review Anchor request or customer identifier. Review conversion reporting is therefore estimated and must never be presented as deterministic person-level attribution.
 
 ## Checks
 
@@ -73,7 +86,8 @@ Google review objects do not contain an Afterword request or customer identifier
 npm.cmd run typecheck
 npm.cmd run test
 npm.cmd run build
-# or all three
+npm.cmd run security:secrets
+# or run the complete gate
 npm.cmd run check
 ```
 
@@ -84,7 +98,11 @@ The Node tests exercise API/security helpers, process-surface separation and pro
 - [`docs/architecture.md`](docs/architecture.md) - trust boundaries, tenant model, provider flow and known gaps.
 - [`docs/security-launch-checklist.md`](docs/security-launch-checklist.md) - evidence-based pre-launch gates.
 - [`docs/pilot-runbook.md`](docs/pilot-runbook.md) - controlled one-business activation and acceptance plan.
+- [`docs/product-commercial-rules.md`](docs/product-commercial-rules.md) - approved plans, setup fees, SMS allowances, implementation guarantee and prospect-data boundaries.
 - [`database/migrations/003_authenticated_review_automation.sql`](database/migrations/003_authenticated_review_automation.sql) - authenticated persistence, dispatch, provider and retention foundation layered on migrations 001 and 002.
+- [`database/migrations/004_sms_billing_and_location_reporting.sql`](database/migrations/004_sms_billing_and_location_reporting.sql) - server-owned plan state, SMS segment reservation, usage thresholds and non-Stripe pilot-period controls.
+- [`database/migrations/005_stripe_checkout_and_webhooks.sql`](database/migrations/005_stripe_checkout_and_webhooks.sql) - tenant-bound Checkout attempts, Stripe identifiers, replay-safe signed event application and paid-setup activation gate.
+- [`docs/stripe-setup.md`](docs/stripe-setup.md) - Stripe test catalog, least-privilege secrets, webhook event list and end-to-end verification.
 - [`database/tests/003_tenant_isolation.sql`](database/tests/003_tenant_isolation.sql) - PostgreSQL role and tenant-isolation checks.
 
 ## Permanent QR origin
