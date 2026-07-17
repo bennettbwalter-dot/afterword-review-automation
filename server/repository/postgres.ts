@@ -293,7 +293,9 @@ export class PostgresRepository implements PlatformRepository {
           select count(distinct scan.anonymous_visitor_hash)
             filter (where scan.continued_to_provider_at is not null)::integer as unique_clicks
           from public.qr_scan_events scan
-          where scan.business_id = location.business_id and scan.location_id = location.id
+          join public.qr_codes scan_code
+            on scan_code.business_id = scan.business_id and scan_code.id = scan.qr_code_id
+          where scan.business_id = location.business_id and scan_code.location_id = location.id
         ) qr_stats on true
         left join lateral (
           select count(*)::integer as reviews_detected, avg(review.rating)::numeric(4,2) as rating

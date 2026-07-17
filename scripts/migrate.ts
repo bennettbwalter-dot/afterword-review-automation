@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import pg from "pg";
 import { databaseTlsOptions } from "../server/database-tls.js";
 import { loadLocalEnvironment } from "../server/load-env.js";
+import { migrationChecksum, migrationChecksumVariants } from "./migration-checksum.js";
 
 loadLocalEnvironment();
 
@@ -36,13 +36,13 @@ try {
 
   for (const file of files) {
     const sql = await readFile(path.join(migrationsDirectory, file), "utf8");
-    const checksum = createHash("sha256").update(sql).digest("hex");
+    const checksum = migrationChecksum(sql);
     const previous = await client.query<{ checksum_sha256: string }>(
       "select checksum_sha256 from public.schema_migrations where migration_id = $1",
       [file],
     );
     if (previous.rows[0]) {
-      if (previous.rows[0].checksum_sha256 !== checksum) {
+      if (!migrationChecksumVariants(sql).has(previous.rows[0].checksum_sha256)) {
         throw new Error(`Applied migration ${file} has changed; create a new forward-only migration instead.`);
       }
       process.stdout.write(`already applied ${file}\n`);

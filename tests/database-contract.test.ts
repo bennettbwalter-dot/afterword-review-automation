@@ -72,3 +72,45 @@ test("Stripe billing migration is replay-safe, ingress-fenced and requires paid 
   assert.doesNotMatch(schema, /grant\s+execute\s+on\s+function\s+app_private\.apply_stripe_billing_event\([^;]+to\s+afterword_runtime/i);
   assert.match(schema, /current_support_session_id\(\)\s+is\s+not\s+null[^;]+billing_checkout_access_denied/is);
 });
+
+test("Stripe readiness view grants only its required underlying columns to runtime", async () => {
+  const schema = await readFile(
+    path.resolve("database", "migrations", "006_grant_runtime_stripe_readiness_columns.sql"),
+    "utf8",
+  );
+
+  assert.match(
+    schema,
+    /grant\s+select\s*\(\s*stripe_customer_id\s*,\s*stripe_subscription_id\s*,\s*setup_fee_paid_at\s*\)\s+on\s+public\.billing_accounts\s+to\s+afterword_runtime/i,
+  );
+  assert.doesNotMatch(schema, /to\s+(?:afterword_auth|afterword_ingress|afterword_worker|public)/i);
+  assert.doesNotMatch(schema, /grant\s+(?:insert|update|delete|all)/i);
+});
+
+test("workspace reporting grants only the missing QR and consent columns", async () => {
+  const schema = await readFile(
+    path.resolve("database", "migrations", "007_grant_runtime_workspace_reporting_columns.sql"),
+    "utf8",
+  );
+
+  assert.match(
+    schema,
+    /grant\s+select\s*\(\s*anonymous_visitor_hash\s*\)\s+on\s+public\.qr_scan_events\s+to\s+afterword_runtime/i,
+  );
+  assert.match(
+    schema,
+    /grant\s+select\s*\(\s*transaction_reference\s*\)\s+on\s+public\.consent_records\s+to\s+afterword_runtime/i,
+  );
+  assert.doesNotMatch(schema, /to\s+(?:afterword_auth|afterword_ingress|afterword_worker|public)/i);
+  assert.doesNotMatch(schema, /grant\s+(?:insert|update|delete|all)/i);
+});
+
+test("location QR reporting derives location through the QR code", async () => {
+  const repository = await readFile(path.resolve("server", "repository", "postgres.ts"), "utf8");
+
+  assert.doesNotMatch(repository, /scan\.location_id/i);
+  assert.match(
+    repository,
+    /from\s+public\.qr_scan_events\s+scan\s+join\s+public\.qr_codes\s+scan_code[\s\S]+scan_code\.location_id\s*=\s*location\.id/i,
+  );
+});
