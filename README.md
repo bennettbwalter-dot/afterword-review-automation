@@ -31,7 +31,7 @@ npm.cmd run deploy:demo
 
 This Direct Upload project is intentionally demo-only. Do not attach the production customer domain or inject production secrets into it. The authenticated API, public ingress and background worker require a separate deployment design with capability-separated secrets and PostgreSQL connections.
 
-The prepared Render pilot topology and database-first activation sequence are documented in [`docs/render-pilot-deployment.md`](docs/render-pilot-deployment.md). `render.yaml` defines the two public services and one background worker but must not be synced until the separate database roles, internal connection URLs and displayed monthly price have been confirmed.
+The prepared Render topologies and database-first activation sequence are documented in [`docs/render-pilot-deployment.md`](docs/render-pilot-deployment.md). `render.yaml` defines the paid capability-separated pilot. `render.hobby.yaml` defines a disposable free preview with only the application API and public ingress; Render does not offer a Free background-worker instance. Neither Blueprint should be synced until the separate database roles and internal connection URLs have been created.
 
 For the authenticated API and web application:
 
@@ -100,7 +100,7 @@ The Node tests exercise API/security helpers, process-surface separation and pro
 - [`docs/architecture.md`](docs/architecture.md) - trust boundaries, tenant model, provider flow and known gaps.
 - [`docs/security-launch-checklist.md`](docs/security-launch-checklist.md) - evidence-based pre-launch gates.
 - [`docs/pilot-runbook.md`](docs/pilot-runbook.md) - controlled one-business activation and acceptance plan.
-- [`docs/render-pilot-deployment.md`](docs/render-pilot-deployment.md) - database-first Render provisioning, capability-separated service secrets and deployment checks.
+- [`docs/render-pilot-deployment.md`](docs/render-pilot-deployment.md) - paid and Hobby/free Render topologies, database-first provisioning, capability-separated service secrets and deployment checks.
 - [`docs/product-commercial-rules.md`](docs/product-commercial-rules.md) - approved plans, setup fees, SMS allowances, implementation guarantee and prospect-data boundaries.
 - [`database/migrations/003_authenticated_review_automation.sql`](database/migrations/003_authenticated_review_automation.sql) - authenticated persistence, dispatch, provider and retention foundation layered on migrations 001 and 002.
 - [`database/migrations/004_sms_billing_and_location_reporting.sql`](database/migrations/004_sms_billing_and_location_reporting.sql) - server-owned plan state, SMS segment reservation, usage thresholds and non-Stripe pilot-period controls.

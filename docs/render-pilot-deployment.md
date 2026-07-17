@@ -2,6 +2,16 @@
 
 The Render deployment keeps the application API, public ingress and delivery worker in separate services. The application service also serves the production React build, which keeps login cookies and authenticated API requests on one origin. `render.yaml` intentionally does not create the database because the database roles and four login URLs must exist before the services receive their secrets.
 
+## Hobby/free preview
+
+`render.hobby.yaml` is a zero-cost preview topology for a Render Hobby workspace. It deploys only the application API and public ingress as separate Free web services. It deliberately omits the delivery worker because Render does not support Free background-worker instances. Queued email/SMS delivery, scheduled Google review sync, token-revocation processing and billing-period rolls therefore do not run in this topology.
+
+Create one Free Render Postgres database separately, provision the same least-privilege roles described below, and enter only `AUTH_DATABASE_URL`, `RUNTIME_DATABASE_URL` and `INGRESS_DATABASE_URL` when the Hobby Blueprint prompts. Do not inject the administrator or migration URL into either service. The Free database is limited to 1 GB, expires after 30 days and has no backups. Free web services also spin down after 15 minutes without inbound traffic and share 750 workspace instance hours per month. Treat this as a disposable technical preview, not a customer pilot.
+
+When creating the Blueprint in Render, use `render.hobby.yaml` as the Blueprint Path. Stripe Checkout and all delivery providers remain disabled.
+
+## Paid pilot
+
 Do not deploy the Blueprint until the Render dashboard shows the expected monthly price. The Blueprint uses three paid Starter services. Use a paid PostgreSQL instance for a real pilot because Render's free database expires after 30 days and has no backups. Keep all resources in Frankfurt so the services can use Render's private database URL.
 
 ## Database first

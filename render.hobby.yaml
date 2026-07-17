@@ -1,0 +1,85 @@
+services:
+  # Free preview only. Render free web services spin down after 15 minutes.
+  # The background worker is intentionally not deployed because Render does
+  # not offer free worker instances.
+  - type: web
+    name: review-anchor-api
+    runtime: node
+    region: frankfurt
+    plan: free
+    branch: master
+    buildCommand: 'npm ci --include=dev && npm run build'
+    startCommand: 'npm run start:api'
+    healthCheckPath: /api/v1/health
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: API_HOST
+        value: 0.0.0.0
+      - key: API_PORT
+        value: 10000
+      - key: TRUST_PROXY_HOPS
+        value: 1
+      - key: DATABASE_SSL
+        value: require
+      - key: APP_ORIGIN
+        value: https://review-anchor-api.onrender.com
+      - key: EXTERNAL_WEBHOOK_BASE_URL
+        value: https://review-anchor-ingress.onrender.com
+      - key: PUBLIC_REVIEW_BASE_URL
+        value: https://review-anchor-ingress.onrender.com
+      - key: VITE_PUBLIC_REVIEW_BASE_URL
+        value: https://review-anchor-ingress.onrender.com
+      - key: SESSION_COOKIE_NAME
+        value: review_anchor_session
+      - key: SESSION_PEPPER
+        generateValue: true
+      - key: FIELD_ENCRYPTION_KEY
+        sync: false
+      - key: AUTH_DATABASE_URL
+        sync: false
+      - key: RUNTIME_DATABASE_URL
+        sync: false
+      - key: STRIPE_CHECKOUT_ENABLED
+        value: "false"
+      - key: STRIPE_MODE
+        value: test
+
+  - type: web
+    name: review-anchor-ingress
+    runtime: node
+    region: frankfurt
+    plan: free
+    branch: master
+    buildCommand: 'npm ci --include=dev && npm run typecheck'
+    startCommand: 'npm run start:ingress'
+    healthCheckPath: /api/v1/health
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: INGRESS_HOST
+        value: 0.0.0.0
+      - key: INGRESS_PORT
+        value: 10000
+      - key: TRUST_PROXY_HOPS
+        value: 1
+      - key: DATABASE_SSL
+        value: require
+      - key: APP_ORIGIN
+        value: https://review-anchor-api.onrender.com
+      - key: EXTERNAL_WEBHOOK_BASE_URL
+        value: https://review-anchor-ingress.onrender.com
+      - key: PUBLIC_REVIEW_BASE_URL
+        value: https://review-anchor-ingress.onrender.com
+      - key: SESSION_PEPPER
+        generateValue: true
+      - key: FIELD_ENCRYPTION_KEY
+        sync: false
+      - key: INGRESS_DATABASE_URL
+        sync: false
+      - key: STRIPE_CHECKOUT_ENABLED
+        value: "false"
+      - key: STRIPE_MODE
+        value: test
