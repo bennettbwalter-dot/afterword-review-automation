@@ -1,6 +1,7 @@
 import cookie from "@fastify/cookie";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
+import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 import { ZodError } from "zod";
 import type { AppConfig } from "./config.js";
@@ -28,7 +29,22 @@ export interface BuildAppOptions {
   stripeBilling?: StripeBillingClient;
   stripeWebhookVerifier?: StripeWebhookVerifier;
   externalWebhookBaseUrl?: string;
+  frontendRoot?: string;
 }
+
+const frontendContentSecurityPolicy = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "connect-src 'self'",
+  "font-src 'self' data:",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+  "img-src 'self' data: blob:",
+  "object-src 'none'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "worker-src 'self' blob:",
+].join("; ");
 
 function safeJsonParse(value: Buffer) {
   if (value.length === 0) return {};
@@ -117,6 +133,27 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   if (surface !== "application") {
     await registerPublicReviewRoutes(app, options);
     await registerWebhookRoutes(app, options);
+  }
+
+  if (surface === "application" && options.frontendRoot) {
+    await app.register(fastifyStatic, {
+      root: options.frontendRoot,
+      prefix: "/",
+      maxAge: "30d",
+      immutable: true,
+      setHeaders(reply, filePath) {
+        reply.header("Content-Security-Policy", frontendContentSecurityPolicy);
+        reply.header("Permissions-Policy", "camera=(), geolocation=(), microphone=(), payment=(), usb=()");
+        reply.header("X-Robots-Tag", "noindex, nofollow, noarchive");
+        if (filePath.endsWith(".html")) {
+          reply.header("Cache-Control", "public, max-age=0, must-revalidate");
+        }
+      },
+    });
+    app.get("/", async (_request, reply) => reply.sendFile("index.html", {
+      maxAge: 0,
+      immutable: false,
+    }));
   }
 
   app.setNotFoundHandler((request, reply) => reply.code(404).send({

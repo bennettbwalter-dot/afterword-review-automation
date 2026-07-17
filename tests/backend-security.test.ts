@@ -6,6 +6,9 @@ import {
   randomUUID,
   sign,
 } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import Stripe from "stripe";
 import { buildApp } from "../server/app.js";
@@ -38,6 +41,34 @@ const locationId = randomUUID();
 const userId = randomUUID();
 const password = "correct horse battery staple 2026";
 const passwordHash = await hashPassword(password);
+
+test("the application process serves the production frontend with hardened cache and browser headers", async () => {
+  const frontendRoot = await mkdtemp(path.join(tmpdir(), "review-anchor-frontend-"));
+  await mkdir(path.join(frontendRoot, "assets"));
+  await writeFile(path.join(frontendRoot, "index.html"), "<!doctype html><title>Review Anchor</title>");
+  await writeFile(path.join(frontendRoot, "assets", "app.js"), "console.log('review-anchor');");
+
+  const { repository } = createRepository();
+  const app = await buildApp({ config, repository, surface: "application", frontendRoot });
+  try {
+    const document = await app.inject({ method: "GET", url: "/" });
+    assert.equal(document.statusCode, 200);
+    assert.match(document.body, /Review Anchor/);
+    assert.equal(document.headers["cache-control"], "public, max-age=0, must-revalidate");
+    assert.equal(document.headers["x-robots-tag"], "noindex, nofollow, noarchive");
+    assert.match(String(document.headers["content-security-policy"]), /frame-ancestors 'none'/);
+
+    const asset = await app.inject({ method: "GET", url: "/assets/app.js" });
+    assert.equal(asset.statusCode, 200);
+    assert.match(String(asset.headers["cache-control"]), /immutable/);
+
+    const health = await app.inject({ method: "GET", url: "/api/v1/health" });
+    assert.equal(health.statusCode, 200);
+  } finally {
+    await app.close();
+    await rm(frontendRoot, { recursive: true, force: true });
+  }
+});
 
 const config = loadConfig({
   NODE_ENV: "test",
@@ -281,6 +312,23 @@ test("each production process can start without credentials for other capabiliti
     ...common,
     WORKER_DATABASE_URL: "postgresql://worker:secret@db.example.com/afterword",
   }, ["worker"]));
+});
+
+test("blank optional provider values are treated as unset while their capability is disabled", () => {
+  assert.doesNotThrow(() => loadConfig({
+    NODE_ENV: "production",
+    APP_ORIGIN: "https://app.example.com",
+    SESSION_PEPPER: sessionPepper,
+    FIELD_ENCRYPTION_KEY: encryptionKey,
+    AUTH_DATABASE_URL: "postgresql://auth:secret@db.example.com/afterword",
+    RUNTIME_DATABASE_URL: "postgresql://runtime:secret@db.example.com/afterword",
+    STRIPE_CHECKOUT_ENABLED: "false",
+    STRIPE_WEBHOOK_SECRET: "",
+    STRIPE_PRICE_SETUP_PRO: " ",
+    GOOGLE_REDIRECT_URI: "",
+    GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL: "",
+    SENDGRID_ASM_GROUP_ID: "",
+  }, ["auth", "runtime", "stripeCheckout"]));
 });
 
 test("Stripe configuration is capability-scoped, test-first and complete before checkout can start", () => {

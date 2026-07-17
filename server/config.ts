@@ -12,6 +12,13 @@ function isThirtyTwoByteBase64Url(value: string) {
   }
 }
 
+function optionalEnvironmentValue<T extends z.ZodType>(schema: T) {
+  return z.preprocess(
+    (value) => typeof value === "string" && value.trim() === "" ? undefined : value,
+    schema.optional(),
+  );
+}
+
 function databaseLoginIdentity(connectionString: string) {
   const parsed = new URL(connectionString);
   if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") {
@@ -28,44 +35,44 @@ const baseEnvironmentSchema = z.object({
   INGRESS_HOST: z.string().default("127.0.0.1"),
   INGRESS_PORT: z.coerce.number().int().min(1).max(65535).default(4175),
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(2).default(0),
-  DATABASE_URL: z.string().min(1).optional(),
-  AUTH_DATABASE_URL: z.string().min(1).optional(),
-  RUNTIME_DATABASE_URL: z.string().min(1).optional(),
-  INGRESS_DATABASE_URL: z.string().min(1).optional(),
-  WORKER_DATABASE_URL: z.string().min(1).optional(),
+  DATABASE_URL: optionalEnvironmentValue(z.string().min(1)),
+  AUTH_DATABASE_URL: optionalEnvironmentValue(z.string().min(1)),
+  RUNTIME_DATABASE_URL: optionalEnvironmentValue(z.string().min(1)),
+  INGRESS_DATABASE_URL: optionalEnvironmentValue(z.string().min(1)),
+  WORKER_DATABASE_URL: optionalEnvironmentValue(z.string().min(1)),
   DATABASE_SSL: z.enum(["disable", "require"]).default("disable"),
   APP_ORIGIN: z.string().url().default("http://127.0.0.1:4173"),
-  EXTERNAL_WEBHOOK_BASE_URL: z.string().url().optional(),
-  PUBLIC_REVIEW_BASE_URL: z.string().url().optional(),
+  EXTERNAL_WEBHOOK_BASE_URL: optionalEnvironmentValue(z.string().url()),
+  PUBLIC_REVIEW_BASE_URL: optionalEnvironmentValue(z.string().url()),
   SESSION_COOKIE_NAME: z.string().default("afterword_session"),
   SESSION_PEPPER: z.string().min(32),
   FIELD_ENCRYPTION_KEY: z.string().min(43).refine(isThirtyTwoByteBase64Url, {
     message: "FIELD_ENCRYPTION_KEY must be a canonical base64url-encoded 32-byte key.",
   }),
-  GOOGLE_CLIENT_ID: z.string().optional(),
-  GOOGLE_CLIENT_SECRET: z.string().optional(),
-  GOOGLE_REDIRECT_URI: z.string().url().optional(),
-  GOOGLE_PUBSUB_AUDIENCE: z.string().url().optional(),
-  GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL: z.string().email().optional(),
-  TWILIO_ACCOUNT_SID: z.string().optional(),
-  TWILIO_AUTH_TOKEN: z.string().optional(),
-  TWILIO_FROM_NUMBER: z.string().optional(),
-  TWILIO_MESSAGING_SERVICE_SID: z.string().optional(),
-  SENDGRID_API_KEY: z.string().optional(),
-  SENDGRID_FROM_EMAIL: z.string().email().optional(),
-  SENDGRID_ASM_GROUP_ID: z.coerce.number().int().positive().optional(),
-  SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY: z.string().optional(),
+  GOOGLE_CLIENT_ID: optionalEnvironmentValue(z.string().min(1)),
+  GOOGLE_CLIENT_SECRET: optionalEnvironmentValue(z.string().min(1)),
+  GOOGLE_REDIRECT_URI: optionalEnvironmentValue(z.string().url()),
+  GOOGLE_PUBSUB_AUDIENCE: optionalEnvironmentValue(z.string().url()),
+  GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL: optionalEnvironmentValue(z.string().email()),
+  TWILIO_ACCOUNT_SID: optionalEnvironmentValue(z.string().min(1)),
+  TWILIO_AUTH_TOKEN: optionalEnvironmentValue(z.string().min(1)),
+  TWILIO_FROM_NUMBER: optionalEnvironmentValue(z.string().min(1)),
+  TWILIO_MESSAGING_SERVICE_SID: optionalEnvironmentValue(z.string().min(1)),
+  SENDGRID_API_KEY: optionalEnvironmentValue(z.string().min(1)),
+  SENDGRID_FROM_EMAIL: optionalEnvironmentValue(z.string().email()),
+  SENDGRID_ASM_GROUP_ID: optionalEnvironmentValue(z.coerce.number().int().positive()),
+  SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY: optionalEnvironmentValue(z.string().min(1)),
   STRIPE_CHECKOUT_ENABLED: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
   STRIPE_MODE: z.enum(["test", "live"]).default("test"),
-  STRIPE_API_KEY: z.string().min(20).regex(/^(?:sk|rk)_(?:test|live)_/).optional(),
-  STRIPE_WEBHOOK_SECRET: z.string().min(20).regex(/^whsec_/).optional(),
-  STRIPE_PRICE_PRO_MONTHLY: z.string().regex(/^price_/).optional(),
-  STRIPE_PRICE_PRO_ANNUAL: z.string().regex(/^price_/).optional(),
-  STRIPE_PRICE_MULTI_MONTHLY: z.string().regex(/^price_/).optional(),
-  STRIPE_PRICE_SETUP_PRO: z.string().regex(/^price_/).optional(),
-  STRIPE_PRICE_SETUP_MULTI_2_3: z.string().regex(/^price_/).optional(),
-  STRIPE_PRICE_SETUP_MULTI_4_5: z.string().regex(/^price_/).optional(),
-  STRIPE_PORTAL_CONFIGURATION_ID: z.string().regex(/^bpc_/).optional(),
+  STRIPE_API_KEY: optionalEnvironmentValue(z.string().min(20).regex(/^(?:sk|rk)_(?:test|live)_/)),
+  STRIPE_WEBHOOK_SECRET: optionalEnvironmentValue(z.string().min(20).regex(/^whsec_/)),
+  STRIPE_PRICE_PRO_MONTHLY: optionalEnvironmentValue(z.string().regex(/^price_/)),
+  STRIPE_PRICE_PRO_ANNUAL: optionalEnvironmentValue(z.string().regex(/^price_/)),
+  STRIPE_PRICE_MULTI_MONTHLY: optionalEnvironmentValue(z.string().regex(/^price_/)),
+  STRIPE_PRICE_SETUP_PRO: optionalEnvironmentValue(z.string().regex(/^price_/)),
+  STRIPE_PRICE_SETUP_MULTI_2_3: optionalEnvironmentValue(z.string().regex(/^price_/)),
+  STRIPE_PRICE_SETUP_MULTI_4_5: optionalEnvironmentValue(z.string().regex(/^price_/)),
+  STRIPE_PORTAL_CONFIGURATION_ID: optionalEnvironmentValue(z.string().regex(/^bpc_/)),
 });
 
 const databaseEnvironmentKeys = {
