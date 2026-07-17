@@ -41,6 +41,7 @@ const baseEnvironmentSchema = z.object({
   INGRESS_DATABASE_URL: optionalEnvironmentValue(z.string().min(1)),
   WORKER_DATABASE_URL: optionalEnvironmentValue(z.string().min(1)),
   DATABASE_SSL: z.enum(["disable", "require"]).default("disable"),
+  DATABASE_CA_CERT_PATH: optionalEnvironmentValue(z.string().min(1)),
   APP_ORIGIN: z.string().url().default("http://127.0.0.1:4173"),
   EXTERNAL_WEBHOOK_BASE_URL: optionalEnvironmentValue(z.string().url()),
   PUBLIC_REVIEW_BASE_URL: optionalEnvironmentValue(z.string().url()),
@@ -146,6 +147,13 @@ function environmentSchema(requiredCapabilities: readonly ProcessCapability[]) {
       code: "custom",
       message: `Set DATABASE_URL for local development, or provide ${requiredDatabaseCapabilities.map((capability) => databaseEnvironmentKeys[capability]).join(", ")}.`,
       path: ["DATABASE_URL"],
+    });
+  }
+  if (value.DATABASE_SSL === "require" && !value.DATABASE_CA_CERT_PATH) {
+    context.addIssue({
+      code: "custom",
+      message: "DATABASE_CA_CERT_PATH is required when DATABASE_SSL=require.",
+      path: ["DATABASE_CA_CERT_PATH"],
     });
   }
   if (value.STRIPE_MODE === "live" && value.NODE_ENV !== "production") {

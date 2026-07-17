@@ -10,7 +10,13 @@
 --   create role afterword_worker          nologin nobypassrls;
 --   create role afterword_ops             nologin nobypassrls;
 --
--- The DBA must then create the dedicated database for the migration owner, for
+-- On a dedicated PostgreSQL server, the DBA must create the database for the
+-- migration owner. On managed Supabase, the database remains owned by the
+-- platform `postgres` role and the bootstrap creates the NOLOGIN
+-- `afterword_supabase_database` marker instead. Never transfer ownership of a
+-- managed Supabase database or its public schema.
+--
+-- For dedicated PostgreSQL, create the database for the migration owner, for
 -- example: create database afterword owner afterword_migration_owner; For a
 -- pre-existing empty database, also run `alter schema public owner to
 -- pg_database_owner` as the DBA after transferring database ownership. This
@@ -63,9 +69,21 @@ begin
     from pg_catalog.pg_database database_record
     join pg_catalog.pg_roles owner_role on owner_role.oid = database_record.datdba
     where database_record.datname = current_database()
-      and owner_role.rolname = 'afterword_migration_owner'
+      and (
+        owner_role.rolname = 'afterword_migration_owner'
+        or (
+          owner_role.rolname = 'postgres'
+          and exists (
+            select 1
+            from pg_catalog.pg_roles platform_marker
+            where platform_marker.rolname = 'afterword_supabase_database'
+              and not platform_marker.rolcanlogin
+              and not platform_marker.rolbypassrls
+          )
+        )
+      )
   ) then
-    raise exception 'Run only in a dedicated database owned by afterword_migration_owner';
+    raise exception 'Run only in a dedicated Afterword database or a bootstrapped managed Supabase project';
   end if;
 
   if not exists (

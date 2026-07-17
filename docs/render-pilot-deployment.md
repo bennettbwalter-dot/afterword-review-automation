@@ -2,21 +2,31 @@
 
 The Render deployment keeps the application API, public ingress and delivery worker in separate services. The application service also serves the production React build, which keeps login cookies and authenticated API requests on one origin. `render.yaml` intentionally does not create the database because the database roles and four login URLs must exist before the services receive their secrets.
 
-Do not deploy the Blueprint until the Render dashboard shows the expected monthly price. The Blueprint uses three paid Starter services. Use a paid PostgreSQL instance for a real pilot because Render's free database expires after 30 days and has no backups. Keep all resources in Frankfurt so the services can use Render's private database URL.
+## Hobby/free preview
 
-## Database first
+`render.hobby.yaml` is a zero-cost preview topology for a Render Hobby workspace. It deploys only the application API and public ingress as separate Free web services. It deliberately omits the delivery worker because Render does not support Free background-worker instances. Queued email/SMS delivery, scheduled Google review sync, token-revocation processing and billing-period rolls therefore do not run in this topology.
 
-1. Create a dedicated PostgreSQL 15 or newer database in Frankfurt. Keep its default administrator URL only as `MIGRATION_DATABASE_URL`; never inject it into an application service.
-2. Generate four independent random passwords and set `AUTH_DATABASE_PASSWORD`, `RUNTIME_DATABASE_PASSWORD`, `INGRESS_DATABASE_PASSWORD` and `WORKER_DATABASE_PASSWORD` in a local environment or secret manager.
-3. Run `npm run db:provision`. This creates six `NOLOGIN`, `NOBYPASSRLS` capability roles, four matching login roles, transfers database/schema ownership to `afterword_migration_owner`, removes public database access and grants each login only its matching group role.
-4. Run `npm run db:migrate`, then `npm run db:test:isolation`.
-5. Build four internal database URLs by replacing only the username and password in the Render internal URL:
+Use a dedicated Supabase project for this application, provision the least-privilege roles described below, and enter only `AUTH_DATABASE_URL`, `RUNTIME_DATABASE_URL` and `INGRESS_DATABASE_URL` when the Hobby Blueprint prompts. Do not inject the platform administrator or migration URL into either service. Free Render web services spin down after periods without inbound traffic and have workspace usage limits, while the Supabase Free plan has its own quotas and inactivity policy. Treat this topology as a technical preview until both providers' current limits and backup requirements have been reviewed for a real pilot.
+
+When creating the Blueprint in Render, use `render.hobby.yaml` as the Blueprint Path. Stripe Checkout and all delivery providers remain disabled.
+
+## Paid pilot
+
+Do not deploy the Blueprint until the Render dashboard shows the expected monthly price. The Blueprint uses three paid Starter services and the same capability-separated Supabase database connections as the Hobby topology. Keep the Render services in Frankfurt and the Supabase project in a nearby EU region.
+
+## Supabase database first
+
+1. Create a dedicated Supabase project. Record its project reference and Session Pooler host from the Connect dialog. Do not reuse a project owned by another product.
+2. Run `npm run db:prepare:supabase -- --project-ref <project-ref> --pooler-host <session-pooler-host>`. This preserves existing local secrets, generates independent role passwords where needed, writes the capability-specific URLs to the ignored `.env`, and creates a temporary privileged bootstrap SQL file.
+3. While signed in to that Supabase project, run the generated bootstrap SQL once in the SQL Editor. Delete the temporary file immediately after it succeeds; it contains database-role passwords. The bootstrap creates the marker, capability and login roles without granting Supabase platform privileges.
+4. Run `npm run db:migrate` twice, then `npm run db:test:isolation`. The second migration run must report every migration as already applied, proving history and checksums are stable.
+5. Copy only the capability-specific Session Pooler URLs into the matching Render services:
    - `AUTH_DATABASE_URL` uses `afterword_auth_login`.
    - `RUNTIME_DATABASE_URL` uses `afterword_runtime_login`.
    - `INGRESS_DATABASE_URL` uses `afterword_ingress_login`.
    - `WORKER_DATABASE_URL` uses `afterword_worker_login`.
 
-The application service receives auth and runtime URLs, ingress receives only the ingress URL, and the worker receives only the worker URL. All three use the same 32-byte base64url `FIELD_ENCRYPTION_KEY`; Render prompts for this and each database URL during Blueprint creation. Stripe Checkout remains disabled and provider secrets are added only to the process that uses them after the database-only pilot passes.
+The application service receives auth and runtime URLs, ingress receives only the ingress URL, and the worker receives only the worker URL. All services use `DATABASE_SSL=require` with the bundled official Supabase root certificate and share the same 32-byte base64url `FIELD_ENCRYPTION_KEY`; Render prompts for that key and each database URL during Blueprint creation. `MIGRATION_DATABASE_URL` stays local or in a deployment-only secret manager. Stripe Checkout remains disabled and provider secrets are added only to the process that uses them after the database-only pilot passes.
 
 ## Deploy services
 
@@ -27,5 +37,5 @@ After the first deploy:
 1. Confirm both `/api/v1/health` endpoints return HTTP 200.
 2. Confirm the API root serves the React application with CSP, immutable asset caching and `X-Robots-Tag: noindex, nofollow, noarchive`.
 3. Run the one-business bootstrap with `BOOTSTRAP_PLAN=pro_monthly` and keep all providers and Stripe Checkout disabled.
-4. Restrict the database's external access after migration/testing; Render services should use only the internal URLs.
+4. Confirm no Render service contains the Supabase platform administrator or migration URL; keep only its assigned least-privilege Session Pooler credentials.
 5. Continue the acceptance sequence in `pilot-runbook.md` before adding Google, Twilio, SendGrid or Stripe webhook secrets.

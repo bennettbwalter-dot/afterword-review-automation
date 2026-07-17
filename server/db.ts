@@ -1,4 +1,5 @@
 import pg, { type PoolClient } from "pg";
+import { databaseTlsOptions } from "./database-tls.js";
 import type { ActorContext } from "./types.js";
 
 const { Pool } = pg;
@@ -9,7 +10,7 @@ export function createPool(connectionString: string, requireSsl = false, applica
     max: 12,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
-    ssl: requireSsl ? { rejectUnauthorized: true } : undefined,
+    ssl: databaseTlsOptions(requireSsl),
     application_name: applicationName,
   });
 }

@@ -7,7 +7,7 @@ This branch contains two distinct surfaces:
 - A polished React workspace and public QR review flow.
 - An authenticated Fastify/PostgreSQL foundation for real users, agencies, businesses, requests, consent records, reviews, audit events and provider delivery.
 
-It is a backend foundation, not a production launch. The PostgreSQL migrations and SQL tenant-isolation suite have not been executed in this workspace because no PostgreSQL runtime is available. Google Business Profile, Twilio, SendGrid and Stripe have not been exercised with real credentials, and no real-business pilot has run.
+It is a backend foundation, not a production launch. The five PostgreSQL migrations and SQL tenant-isolation suite have been executed successfully against the dedicated Review Anchor Supabase project, including an idempotent second migration pass and a clean Supabase Security Advisor rerun. Google Business Profile, Twilio, SendGrid and Stripe have not been exercised end to end with real provider events, and no real-business pilot has run.
 
 ## Run locally
 
@@ -31,11 +31,11 @@ npm.cmd run deploy:demo
 
 This Direct Upload project is intentionally demo-only. Do not attach the production customer domain or inject production secrets into it. The authenticated API, public ingress and background worker require a separate deployment design with capability-separated secrets and PostgreSQL connections.
 
-The prepared Render pilot topology and database-first activation sequence are documented in [`docs/render-pilot-deployment.md`](docs/render-pilot-deployment.md). `render.yaml` defines the two public services and one background worker but must not be synced until the separate database roles, internal connection URLs and displayed monthly price have been confirmed.
+The prepared Render topologies and database-first activation sequence are documented in [`docs/render-pilot-deployment.md`](docs/render-pilot-deployment.md). `render.yaml` defines the paid capability-separated pilot. `render.hobby.yaml` defines a disposable free preview with only the application API and public ingress; Render does not offer a Free background-worker instance. Neither Blueprint should be synced until the separate database roles and internal connection URLs have been created.
 
 For the authenticated API and web application:
 
-1. Provision PostgreSQL 15.9 or newer and the `NOLOGIN`, `NOBYPASSRLS` group roles described in [`docs/architecture.md`](docs/architecture.md).
+1. Provision PostgreSQL 15.9 or newer and the `NOLOGIN`, `NOBYPASSRLS` group roles described in [`docs/architecture.md`](docs/architecture.md). For Supabase, follow the managed-project bootstrap in [`docs/render-pilot-deployment.md`](docs/render-pilot-deployment.md).
 2. Copy `.env.example` to `.env` and replace every placeholder. The entrypoints load this local file automatically. Production must inject only the credentials each process needs: auth/runtime for the application API, ingress for the public edge, and worker for the background worker.
 3. Apply the forward-only migrations and bootstrap the first business owner:
 
@@ -100,7 +100,7 @@ The Node tests exercise API/security helpers, process-surface separation and pro
 - [`docs/architecture.md`](docs/architecture.md) - trust boundaries, tenant model, provider flow and known gaps.
 - [`docs/security-launch-checklist.md`](docs/security-launch-checklist.md) - evidence-based pre-launch gates.
 - [`docs/pilot-runbook.md`](docs/pilot-runbook.md) - controlled one-business activation and acceptance plan.
-- [`docs/render-pilot-deployment.md`](docs/render-pilot-deployment.md) - database-first Render provisioning, capability-separated service secrets and deployment checks.
+- [`docs/render-pilot-deployment.md`](docs/render-pilot-deployment.md) - paid and Hobby/free Render topologies, database-first provisioning, capability-separated service secrets and deployment checks.
 - [`docs/product-commercial-rules.md`](docs/product-commercial-rules.md) - approved plans, setup fees, SMS allowances, implementation guarantee and prospect-data boundaries.
 - [`database/migrations/003_authenticated_review_automation.sql`](database/migrations/003_authenticated_review_automation.sql) - authenticated persistence, dispatch, provider and retention foundation layered on migrations 001 and 002.
 - [`database/migrations/004_sms_billing_and_location_reporting.sql`](database/migrations/004_sms_billing_and_location_reporting.sql) - server-owned plan state, SMS segment reservation, usage thresholds and non-Stripe pilot-period controls.

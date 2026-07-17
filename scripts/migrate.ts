@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import pg from "pg";
+import { databaseTlsOptions } from "../server/database-tls.js";
 import { loadLocalEnvironment } from "../server/load-env.js";
 
 loadLocalEnvironment();
@@ -13,7 +14,8 @@ if (!connectionString) {
   throw new Error("MIGRATION_DATABASE_URL is required and must be able to SET ROLE afterword_migration_owner.");
 }
 
-const client = new Client({ connectionString, application_name: "afterword-migrator" });
+const ssl = databaseTlsOptions(process.env.DATABASE_SSL === "require");
+const client = new Client({ connectionString, ssl, application_name: "afterword-migrator" });
 const migrationsDirectory = path.resolve("database", "migrations");
 
 await client.connect();
