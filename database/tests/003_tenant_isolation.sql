@@ -34,7 +34,7 @@ insert into public.message_template_versions (
    'review-sms', 1, 'sms', 'Thanks for choosing Business A. Review us: {{review_link}} Reply STOP to opt out.', true, true,
    '11111111-1111-4111-8111-111111111111'),
   ('aaaaaaaa-0000-4000-8000-000000000102', 'aaaaaaaa-0000-4000-8000-000000000001', 'aaaaaaaa-0000-4000-8000-000000000012',
-   'review-sms', 1, 'sms', 'Thanks for choosing Business A. Review us: {{review_link}} Reply STOP to opt out.', true, true,
+   'review-sms', 2, 'sms', 'Thanks for choosing Business A. Review us: {{review_link}} Reply STOP to opt out.', true, true,
    '11111111-1111-4111-8111-111111111111');
 insert into public.location_messaging_policies (
   business_id, location_id, channel, enabled, timezone, allowed_weekdays,
