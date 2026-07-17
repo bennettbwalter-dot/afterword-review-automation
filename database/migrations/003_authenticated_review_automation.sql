@@ -1967,17 +1967,17 @@ begin
       stop_reason = 'google_connection_disconnected', updated_at = statement_timestamp()
   where business_id = p_business_id and location_id = p_location_id
     and status in ('scheduled', 'active');
-  delete from public.review_records
-  where business_id = p_business_id and location_id = p_location_id
-    and integration_id = v_integration.id;
-  delete from public.google_profile_locations
-  where business_id = p_business_id and location_id = p_location_id
-    and integration_id = v_integration.id;
+  delete from public.review_records cached_review
+  where cached_review.business_id = p_business_id and cached_review.location_id = p_location_id
+    and cached_review.integration_id = v_integration.id;
+  delete from public.google_profile_locations google_location
+  where google_location.business_id = p_business_id and google_location.location_id = p_location_id
+    and google_location.integration_id = v_integration.id;
   update public.review_destinations
   set active = false, updated_at = statement_timestamp()
   where business_id = p_business_id and location_id = p_location_id and provider = 'google' and active;
-  delete from app_private.integration_secrets
-  where business_id = p_business_id and integration_id = v_integration.id;
+  delete from app_private.integration_secrets secret
+  where secret.business_id = p_business_id and secret.integration_id = v_integration.id;
   delete from app_private.oauth_authorization_states
   where business_id = p_business_id and location_id = p_location_id;
   delete from app_private.google_profile_selection_states
