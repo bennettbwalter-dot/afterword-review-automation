@@ -20,6 +20,8 @@ services:
         value: 1
       - key: DATABASE_SSL
         value: require
+      - key: DATABASE_CA_CERT_PATH
+        value: database/certificates/supabase-prod-ca-2021.crt
       - key: APP_ORIGIN
         value: https://review-anchor-api.onrender.com
       - key: EXTERNAL_WEBHOOK_BASE_URL
@@ -64,6 +66,8 @@ services:
         value: 1
       - key: DATABASE_SSL
         value: require
+      - key: DATABASE_CA_CERT_PATH
+        value: database/certificates/supabase-prod-ca-2021.crt
       - key: APP_ORIGIN
         value: https://review-anchor-api.onrender.com
       - key: EXTERNAL_WEBHOOK_BASE_URL
@@ -96,6 +100,8 @@ services:
         value: production
       - key: DATABASE_SSL
         value: require
+      - key: DATABASE_CA_CERT_PATH
+        value: database/certificates/supabase-prod-ca-2021.crt
       - key: APP_ORIGIN
         value: https://review-anchor-api.onrender.com
       - key: EXTERNAL_WEBHOOK_BASE_URL

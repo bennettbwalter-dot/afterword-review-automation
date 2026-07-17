@@ -1,4 +1,5 @@
 import pg from "pg";
+import { databaseTlsOptions } from "../server/database-tls.js";
 import { loadLocalEnvironment } from "../server/load-env.js";
 
 loadLocalEnvironment();
@@ -36,7 +37,8 @@ const groupRoles = [
   "afterword_ops",
 ] as const;
 
-const client = new Client({ connectionString, application_name: "afterword-database-provisioner" });
+const ssl = databaseTlsOptions(process.env.DATABASE_SSL === "require");
+const client = new Client({ connectionString, ssl, application_name: "afterword-database-provisioner" });
 await client.connect();
 
 try {

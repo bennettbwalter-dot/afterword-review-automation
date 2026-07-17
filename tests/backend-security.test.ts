@@ -13,6 +13,7 @@ import test from "node:test";
 import Stripe from "stripe";
 import { buildApp } from "../server/app.js";
 import { loadConfig } from "../server/config.js";
+import { databaseTlsOptions } from "../server/database-tls.js";
 import {
   StripeSdkWebhookVerifier,
   type StripeBillingClient,
@@ -232,6 +233,20 @@ test("production configuration requires separate least-privilege database connec
     SESSION_PEPPER: sessionPepper,
     FIELD_ENCRYPTION_KEY: encryptionKey,
   }), /Production requires AUTH_DATABASE_URL/i);
+});
+
+test("database TLS requires and loads an explicit trusted CA", async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "review-anchor-tls-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const certificatePath = path.join(directory, "database-ca.crt");
+  await writeFile(certificatePath, "test trusted CA\n", "utf8");
+
+  assert.equal(databaseTlsOptions(false), undefined);
+  assert.throws(() => databaseTlsOptions(true, ""), /DATABASE_CA_CERT_PATH is required/i);
+  assert.deepEqual(databaseTlsOptions(true, certificatePath), {
+    ca: "test trusted CA\n",
+    rejectUnauthorized: true,
+  });
 });
 
 test("production configuration rejects example secrets and insecure application origins", () => {

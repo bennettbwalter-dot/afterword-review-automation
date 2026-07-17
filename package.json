@@ -25,6 +25,7 @@
     "test:security": "node --import tsx --test tests/platform-security.test.ts tests/backend-security.test.ts",
     "check": "npm run security:secrets && npm run typecheck && npm run test && npm run build",
     "db:migrate": "tsx scripts/migrate.ts",
+    "db:prepare:supabase": "tsx scripts/prepare-supabase.ts",
     "db:provision": "tsx scripts/provision-database.ts",
     "db:test:isolation": "tsx scripts/test-database-isolation.ts",
     "db:bootstrap": "tsx scripts/bootstrap.ts",

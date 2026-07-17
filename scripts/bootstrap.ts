@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import pg from "pg";
+import { databaseTlsOptions } from "../server/database-tls.js";
 import { loadLocalEnvironment } from "../server/load-env.js";
 import { hashPassword } from "../server/security/crypto.js";
 
@@ -45,7 +46,8 @@ const slug = (process.env.BOOTSTRAP_BUSINESS_SLUG?.trim() || businessName)
 if (!slug) throw new Error("The business name could not be converted to a valid slug.");
 
 const passwordHash = await hashPassword(password);
-const client = new Client({ connectionString, application_name: "afterword-bootstrap" });
+const ssl = databaseTlsOptions(process.env.DATABASE_SSL === "require");
+const client = new Client({ connectionString, ssl, application_name: "afterword-bootstrap" });
 await client.connect();
 try {
   await client.query("set role afterword_migration_owner");

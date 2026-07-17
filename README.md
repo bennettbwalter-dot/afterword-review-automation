@@ -7,7 +7,7 @@ This branch contains two distinct surfaces:
 - A polished React workspace and public QR review flow.
 - An authenticated Fastify/PostgreSQL foundation for real users, agencies, businesses, requests, consent records, reviews, audit events and provider delivery.
 
-It is a backend foundation, not a production launch. The PostgreSQL migrations and SQL tenant-isolation suite have not been executed in this workspace because no PostgreSQL runtime is available. Google Business Profile, Twilio, SendGrid and Stripe have not been exercised with real credentials, and no real-business pilot has run.
+It is a backend foundation, not a production launch. The five PostgreSQL migrations and SQL tenant-isolation suite have been executed successfully against the dedicated Review Anchor Supabase project, including an idempotent second migration pass and a clean Supabase Security Advisor rerun. Google Business Profile, Twilio, SendGrid and Stripe have not been exercised end to end with real provider events, and no real-business pilot has run.
 
 ## Run locally
 
@@ -35,7 +35,7 @@ The prepared Render topologies and database-first activation sequence are docume
 
 For the authenticated API and web application:
 
-1. Provision PostgreSQL 15.9 or newer and the `NOLOGIN`, `NOBYPASSRLS` group roles described in [`docs/architecture.md`](docs/architecture.md).
+1. Provision PostgreSQL 15.9 or newer and the `NOLOGIN`, `NOBYPASSRLS` group roles described in [`docs/architecture.md`](docs/architecture.md). For Supabase, follow the managed-project bootstrap in [`docs/render-pilot-deployment.md`](docs/render-pilot-deployment.md).
 2. Copy `.env.example` to `.env` and replace every placeholder. The entrypoints load this local file automatically. Production must inject only the credentials each process needs: auth/runtime for the application API, ingress for the public edge, and worker for the background worker.
 3. Apply the forward-only migrations and bootstrap the first business owner:
 
