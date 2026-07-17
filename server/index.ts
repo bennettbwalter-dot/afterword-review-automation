@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { buildApp } from "./app.js";
 import { databaseUrl, loadConfig } from "./config.js";
 import { createPool } from "./db.js";
@@ -30,6 +31,7 @@ async function main() {
     webhookSecurity,
     stripeBilling,
     externalWebhookBaseUrl: config.EXTERNAL_WEBHOOK_BASE_URL,
+    frontendRoot: config.NODE_ENV === "production" ? resolve("dist") : undefined,
   });
 
   let closing = false;
