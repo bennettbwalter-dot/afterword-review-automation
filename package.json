@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "engines": {
-    "node": "^20.19.0 || >=22.12.0"
+    "node": ">=22.12.0"
   },
   "scripts": {
     "dev": "concurrently -k -n api,ingress,web -c magenta,yellow,cyan \"npm:dev:api\" \"npm:dev:ingress\" \"npm:dev:web\"",
@@ -38,6 +38,8 @@
     "@fontsource-variable/fraunces": "^5.2.9",
     "@fontsource-variable/geist": "^5.2.9",
     "@fontsource-variable/geist-mono": "^5.2.8",
+    "@supabase/ssr": "0.12.3",
+    "@supabase/supabase-js": "2.110.7",
     "fastify": "^5.10.0",
     "jose": "^6.2.3",
     "jspdf": "^4.2.1",
