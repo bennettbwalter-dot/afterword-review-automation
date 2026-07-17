@@ -3,5 +3,10 @@ dist/
 .vite/
 *.local
 *.log
+.env
+.env.*
+!.env.example
+!.env.demo
+!.env.cloudflare-demo
 .playwright-cli/
 output/playwright/

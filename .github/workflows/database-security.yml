@@ -1,0 +1,69 @@
+name: Database security
+
+on:
+  pull_request:
+    paths:
+      - "database/**"
+      - "server/repository/postgres.ts"
+      - "server/types.ts"
+      - "tests/database-contract.test.ts"
+      - ".github/workflows/database-security.yml"
+  push:
+    branches: [master, main, "codex/**"]
+    paths:
+      - "database/**"
+      - "server/repository/postgres.ts"
+      - "server/types.ts"
+      - "tests/database-contract.test.ts"
+      - ".github/workflows/database-security.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-isolation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install --yes postgresql-client
+      - name: Create least-privilege group roles and database
+        run: |
+          psql --dbname postgres --set ON_ERROR_STOP=1 <<'SQL'
+          create role afterword_migration_owner nologin nobypassrls;
+          create role afterword_runtime nologin nobypassrls;
+          create role afterword_ingress nologin nobypassrls;
+          create role afterword_worker nologin nobypassrls;
+          create role afterword_ops nologin nobypassrls;
+          create role afterword_auth nologin nobypassrls;
+          SQL
+          createdb --owner afterword_migration_owner afterword_test
+      - name: Apply migrations as migration owner
+        run: |
+          for migration in database/migrations/*.sql; do
+            psql --dbname afterword_test --set ON_ERROR_STOP=1 \
+              --command "set role afterword_migration_owner" \
+              --file "$migration"
+          done
+      - name: Prove session binding, tenant RLS, dispatch fencing and webhook dedupe
+        run: psql --dbname afterword_test --set ON_ERROR_STOP=1 --file database/tests/003_tenant_isolation.sql

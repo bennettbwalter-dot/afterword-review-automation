@@ -1,0 +1,50 @@
+name: Application security
+
+on:
+  pull_request:
+    paths:
+      - "server/**"
+      - "src/**"
+      - "scripts/**"
+      - "tests/**"
+      - "database/**"
+      - "docs/**"
+      - ".env.example"
+      - "README.md"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - ".github/workflows/application-security.yml"
+  push:
+    branches: [master, main, "codex/**"]
+    paths:
+      - "server/**"
+      - "src/**"
+      - "scripts/**"
+      - "tests/**"
+      - "database/**"
+      - "docs/**"
+      - ".env.example"
+      - "README.md"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - ".github/workflows/application-security.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck-test-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.17.0
+          cache: npm
+      - run: npm ci
+      - run: npm run check

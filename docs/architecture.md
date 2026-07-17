@@ -1,14 +1,18 @@
-# Afterword architecture
+# Review Anchor architecture
 
 ## Status and implementation boundary
 
-Afterword is currently a front-end prototype plus an unexecuted PostgreSQL design draft. The browser experience is not connected to the migration, does not authenticate users, and does not send messages or call Google. Nothing in this document should be treated as evidence that a production control has passed.
+Review Anchor has an authenticated Fastify application API, a restricted Fastify public-ingress service, a PostgreSQL persistence/security layer, a worker process and provider adapters behind the React workspace. Outside explicit `VITE_DEMO_MODE=true`, the browser loads its session and workspace from the server and does not seed tenants or select its own authoritative role.
 
-The target remains one multi-tenant SaaS application. Client workspaces and the agency portfolio share one identity system, API and PostgreSQL database. Navigation is derived from memberships and capabilities; there is no separate, implicitly trusted admin application.
+This is code-complete foundation work, not production evidence. The PostgreSQL migrations and SQL isolation suite have not been executed in this workspace because no PostgreSQL runtime is available. No real Google Business Profile, Twilio, SendGrid or Stripe credentials have been used, and the one-business pilot has not run. Nothing in this document should be treated as evidence that a launch control has passed.
 
-`database/migrations/001_multi_tenant_foundation.sql` targets PostgreSQL 15.9 or newer. This workspace has no PostgreSQL runtime, so the migration has received static review only. Executing it and running integration and concurrency tests as the real database roles are launch blockers.
+The system is one multi-tenant SaaS application. Client workspaces and the agency portfolio share one identity system and PostgreSQL database. The authenticated application, public ingress and worker are separate least-privilege processes. Navigation is derived from memberships and capabilities; there is no separate, implicitly trusted admin application.
 
-The migration requires a dedicated database owned by `afterword_migration_owner`. The `public` schema must belong to that role or PostgreSQL 15's `pg_database_owner` role. Those ownership rules let the migration revoke public schema creation; a plain `CREATE` grant does not satisfy the bootstrap contract.
+Migrations 001 through 005 target PostgreSQL 15.9 or newer. `scripts/migrate.ts` applies them in filename order, stores SHA-256 checksums and refuses to alter an already-applied migration. `database/tests/003_tenant_isolation.sql` and `.github/workflows/database-security.yml` define executable role, RLS, dispatch and webhook-deduplication checks. They are present in code but have not been run locally; a clean database run and two-connection concurrency tests remain launch blockers.
+
+The migrations require a dedicated database owned by `afterword_migration_owner`. The `public` schema must belong to that role or PostgreSQL 15's `pg_database_owner` role. Those ownership rules let the migration revoke public schema creation; a plain `CREATE` grant does not satisfy the bootstrap contract. The `afterword_*` database roles and other lowercase prefixes remain stable legacy implementation identifiers after the product rename.
+
+Google Business Profile is an external launch dependency. The Google Cloud project must be approved for the Business Profile APIs and the business must have a verified profile. Google provides no Business Profile API sandbox, so real OAuth, review sync and Pub/Sub validation can only be proven in the controlled pilot.
 
 ## Client QR review flow
 
@@ -22,39 +26,48 @@ Only a business owner/admin or a configuration-scoped support session may replac
 
 ```text
 Browser
-  -> Identity provider
-  -> Afterword API (trusted request-context boundary)
-       -> afterword_runtime
+  -> Review Anchor API (opaque cookie and trusted request-context boundary)
+       -> afterword_auth (credentials and server sessions)
+       -> afterword_runtime (tenant queries and audited commands)
        -> PostgreSQL RLS + audited command functions
-       -> Secret manager
 
-Webhook receiver -> afterword_ingress -> authenticated durable ingress functions
-Delivery worker  -> afterword_worker  -> lease/outbox/attempt functions -> providers
-Operations       -> afterword_ops     -> global pause + reconciliation functions
+Provider webhooks/QR -> public ingress process -> signature/OIDC verification -> afterword_ingress -> durable deduplicated receipts
+Authenticated billing action -> application API -> Stripe-hosted Checkout/Portal
+Stripe event -> public ingress -> exact-body signature verification -> replay-safe billing state
+Delivery/review worker -> afterword_worker -> lease/outbox/sync functions -> Google, Twilio, SendGrid
+Operations -> afterword_ops -> global pause and reconciliation functions
+Migration/bootstrap -> afterword_migration_owner only during controlled deployment
 ```
 
 The browser never connects to PostgreSQL and never receives provider secrets. Login roles inherit exactly one matching `NOLOGIN`, `NOBYPASSRLS` group role:
 
+- `afterword_auth` can call credential, opaque-session and OAuth-state commands only.
 - `afterword_runtime` can read RLS-filtered safe columns and execute named user commands.
 - `afterword_ingress` can record nonces and authenticated webhook receipts only.
 - `afterword_worker` can claim, renew and finish message work only.
 - `afterword_ops` can control global pauses and reconcile ambiguous provider results only.
-- `afterword_migration_owner` owns the draft objects and is never inherited by an application login.
+- `afterword_migration_owner` owns schema objects and is never inherited by an application login.
 
-The migration revokes direct runtime DML, schema creation and default `PUBLIC EXECUTE` on private functions. It repeats the function revoke after all functions are created, then grants only named entry points. A production DBA must verify these catalog privileges. Splitting authorization, command, audit and worker functions across narrower owner roles would further reduce the blast radius of a defect in a `SECURITY DEFINER` function and remains an architecture sign-off decision.
+Production deployment requires four distinct login identities across the system. The authenticated application receives auth/runtime URLs only, the public-ingress process receives ingress only, and the worker receives worker only; a shared production environment file would defeat this boundary. `DATABASE_URL` is a development-only fallback. The migration credential is separate and must not be present in application processes. The migration revokes direct runtime DML, schema creation and default `PUBLIC EXECUTE` on private functions, then grants only named entry points. A production DBA must still verify those catalog privileges.
+
+`TRUST_PROXY_HOPS` defaults to zero. Set it only when the origin is reachable exclusively through that exact number of trusted reverse-proxy hops; otherwise client-IP rate limits and privacy-minimised QR hashes can be spoofed or collapsed to the proxy address.
 
 ## Request context
 
-For each API request, the API must begin a transaction and set trusted context with transaction-local settings only:
+For each tenant API request, the server begins a transaction and binds the database context to the hashed opaque session token:
 
 ```sql
-select set_config('app.user_id', :verified_user_id, true);
-select set_config('app.mfa_verified_at', :verified_mfa_time, true);
-select set_config('app.step_up_verified_at', :verified_step_up_time_or_empty, true);
-select set_config('app.support_session_id', :exact_session_id_or_empty, true);
+select app_private.set_request_context_from_session(
+  :verified_session_token_hash,
+  :support_session_id_or_null
+);
 ```
 
-The API must explicitly clear absent values and reset pooled connections before reuse. Custom PostgreSQL settings are not authentication: any principal with arbitrary SQL access could forge them. Database connections therefore belong only to the trusted, parameterized API and never to browser clients or user-supplied SQL.
+The database resolves that hash against `app_private.auth_sessions` and derives the user, MFA and step-up evidence from the stored session. Legacy caller-supplied identity settings are blanked. The support-session ID is accepted only when it belongs to the authenticated actor and is active; tenant and scope checks are repeated by protected commands and RLS helpers. The context is transaction-local, so pooled connections do not retain it after commit or rollback.
+
+Custom PostgreSQL settings are still not authentication for a principal with arbitrary SQL access. Database connections therefore belong only to the trusted, parameterized API and never to browser clients or user-supplied SQL. This boundary must be exercised under pooled-connection reuse before launch.
+
+The schema supports MFA and step-up timestamps and the application fails closed when an account has `mfa_required=true`. There is not yet an MFA challenge or enrolment path that can populate verified evidence. Agency support access must remain disabled until that path is implemented and tested.
 
 ## Tenant and location model
 
@@ -63,7 +76,7 @@ The API must explicitly clear absent values and reset pooled connections before 
 - A location is a scope within one business.
 - Tenant identifiers are immutable after insert.
 - Every tenant-owned operational row carries `business_id NOT NULL`.
-- RLS is enabled and forced on every table in the draft; missing runtime policies default to deny.
+- RLS is enabled and forced on every tenant table in the migrations; missing runtime policies default to deny.
 - Composite foreign keys bind business/location, business/membership, agency/business, business/integration, business/location/ingress, business/job/outbox/attempt and audit/support-session attribution.
 - Child-key indexes support those constraints and policy lookups.
 
@@ -118,11 +131,15 @@ RLS protects rows, not columns. Runtime access to sensitive tables is column-sco
 - Worker lease tokens and redacted provider response metadata.
 - Message deduplication keys and provider idempotency keys.
 
-Secrets themselves belong in a secret manager and are referenced by opaque IDs only. Raw-event evidence belongs in encrypted object storage with an explicit retention policy.
+The implemented server encrypts customer destinations, rendered message content, Google OAuth tokens and provider webhook evidence before storage. Passwords use scrypt hashes; opaque session tokens are stored only as keyed hashes. `FIELD_ENCRYPTION_KEY`, `SESSION_PEPPER` and provider credentials must come from a production secret manager and must never be written to logs or tenant-visible metadata.
+
+Encrypted provider webhook evidence is capped at 30 days by the schema and has a purge command. Google review bodies, reviewer display names and replies are Google API Content: `review_records.cache_expires_at` is capped at 30 days from the last sync, runtime queries exclude expired rows, and the worker/operations purge path must be scheduled and proven before pilot activation.
 
 ## Webhook, queue and outbox model
 
-The receiver must verify HTTPS, HMAC, timestamp freshness and body limits before calling the database. `accept_ingress_nonce` provides replay protection, and `record_ingress_event` stores a durable, tenant-bound receipt with database uniqueness for simultaneous duplicate deliveries. A webhook request never sends a customer message directly.
+The server applies provider-specific verification before database ingestion: Twilio request signatures over the exact callback URL and form fields, SendGrid's signed timestamp/body, Google Pub/Sub OIDC with exact issuer, audience and service-account identity, and Stripe signatures over the unchanged raw body. Request bodies are size-limited. Provider event IDs are persisted with uniqueness so at-least-once callbacks can be deduplicated. A webhook request never sends a customer message directly.
+
+Stripe Checkout is created only for an authenticated business owner, admin or billing member, never from public pricing input or an agency support session. The database snapshots the server-owned plan and amounts into an idempotent Checkout attempt before the Stripe API call. The application then validates the configured GBP Prices against those amounts and binds the returned Session to the attempt. Subscription metadata repeats only tenant and attempt identifiers created by the server. The ingress process holds the endpoint signing secret but no Stripe API key. Billing activation requires both an active Stripe subscription state and a signature-verified paid setup fee; browser redirects are not payment evidence. Event creation timestamps fence stale subscription updates, and an event ID replay with a different payload hash fails closed.
 
 Message execution uses a logical job plus a durable provider outbox and attempt history:
 
@@ -130,26 +147,39 @@ Message execution uses a logical job plus a durable provider outbox and attempt 
 2. Every lease has an unguessable token; renew and completion calls require worker ID plus the exact token.
 3. Global/agency and tenant/location/channel/automation pauses are checked at claim time.
 4. The pause predicate is checked again when an attempt starts, immediately before the provider call.
-5. One stable provider idempotency key is reused for every attempt of the logical message.
+5. One stable local idempotency key is reused for every attempt of the logical message.
 6. Accepted sends complete the job. Definite failures back off or dead-letter at the attempt limit.
 7. Unknown provider results and expired leases that were already `sending` enter `reconciliation_required`; they are never blindly retried.
 8. A separate operations principal resolves reconciliation after querying provider state.
 
-Database deduplication does not create exactly-once delivery at an external provider. Launch requires a provider that honors the stable idempotency key or exposes reliable reconciliation. A provider/credential kill switch is also required because a tiny race remains between the last database pause check and the network call.
+Database deduplication does not create exactly-once delivery at an external provider. Twilio does not accept a provider idempotency key for message creation, so an ambiguous network outcome must remain in reconciliation and must never be blindly retried. The SendGrid adapter includes an attempt identifier in signed event metadata, but its timeout and duplicate behaviour must also be proven. A provider/credential kill switch is required because a small race remains between the last database pause check and the network call.
 
-## Deliberately incomplete production work
+Google Pub/Sub notifications are scheduling hints, not the review source of truth. Notifications are verified, deduplicated and used to request a durable reconciliation. The worker then fetches the canonical review list from Google. Google review objects do not contain a Review Anchor request or customer ID, so conversion reporting is estimated rather than deterministic person-level attribution.
 
-The draft does not yet model or enforce the full message decision at dispatch. Jobs are not linked to a destination, enrolment, template/version, consent evidence or suppression decision, so the database cannot yet recheck consent, STOP suppression, quiet hours, frequency limits or the maximum three-message sequence. No production message should be sent until those entities and a single dispatch-authorization command exist.
+## Implementation status and deliberate launch limits
 
-Other launch-blocking work includes:
+The code now models and persists the message decision that the earlier design draft lacked. A completed job is linked to an encrypted customer destination, immutable template version, consent record, review request, sequence and durable message job. `evaluate_message_dispatch` rechecks active consent, suppressions, Google destination, pause controls, permitted local time, per-request sequence, destination frequency, hourly rate and exact worker lease before the provider payload is released.
 
-- Execute the migration on PostgreSQL 15.9+ and add catalog, RLS, role and two-connection race tests.
-- Build the trusted API transaction/context layer and validate connection-pool reset behavior.
-- Add audited invitation acceptance, agency bootstrap, integration rotate/revoke and dead-letter replay commands.
-- Add an operation-key registry so retried create commands cannot create a second resource with a new target ID.
-- Add the durable enrolment-to-job creation command; ingress currently records receipts but does not schedule customer messages.
-- Integrate identity, secret management, provider credentials, Google OAuth, reporting and retention workflows.
-- Prove provider idempotency/reconciliation behavior and emergency kill-switch operation.
-- Complete legal, privacy, consent and regional launch review.
+The following are implemented in code but not yet proven against a live PostgreSQL/provider environment:
 
-The current React UI remains a design and interaction prototype. It is not evidence that any backend, provider or compliance path is live.
+- Opaque login sessions, forced-RLS tenant reads, audited user commands and time-limited agency support sessions.
+- Persistent completed jobs, consent evidence, review requests, outbox/attempt history, provider webhooks, Google review cache and audit events.
+- Google OAuth/PKCE, encrypted tokens, actor-bound single-use account/location selection, scheduled review sync, Pub/Sub verification, token refresh/disconnect primitives and cached-review purge.
+- Twilio and SendGrid delivery adapters, signed callbacks, STOP/unsubscribe suppression and dispatch-time quiet-hour/retry fencing.
+- Forward-only billing/SMS migration 004 with exact Pro/Multi prices, pooled segment reservations before Twilio, per-location usage, safe allowance holds, threshold records and non-Stripe pilot-period resets.
+- Forward-only Stripe migration 005 plus hosted Checkout, Customer Portal, server-side Price verification, exact-body signature checks, replay-safe events and paid-setup activation fencing.
+- Combined business reporting with durable per-location job, delivery, click, review and SMS totals.
+- Public QR resolution, privacy-minimised scans and provider continuation tracking.
+
+Launch blockers that remain outside or incomplete in the current code path:
+
+- Execute all migrations and `database/tests/003_tenant_isolation.sql` on clean PostgreSQL as the real least-privilege roles; add the remaining two-connection race and pool-reuse evidence.
+- Complete MFA challenge/enrolment and verified step-up evidence before any agency support user handles live tenant data.
+- Execute Google account/location selection against the approved pilot account, including a multi-profile account if available, and attach evidence that access and refresh tokens never reach the browser.
+- Add a signed completed-job CRM/webhook endpoint that derives tenant and location from a server-owned integration identity. Until then, pilot intake is manual through the authenticated business API.
+- Deploy through a real secret manager and prove key rotation, Google token revocation, provider timeout reconciliation, dead-letter recovery, emergency pause and 30-day purge jobs.
+- Obtain Google Business Profile API approval, configure real Twilio/SendGrid accounts, and run the full one-business pilot before enabling Stripe Checkout, paid SMS bundles or public registration.
+- Rotate the exposed Stripe test key, configure a least-privilege replacement and test-mode Prices/webhook, then prove successful, failed, delayed, expired, cancelled, past-due and replayed event paths against clean PostgreSQL before live mode.
+- Complete legal, privacy, consent, retention, regional-hosting and subprocessor review for the launch regions.
+
+The React workspace demonstrates the intended operation of these paths. It is not evidence that PostgreSQL, provider or compliance controls are live until the checklist and pilot have attached results.
