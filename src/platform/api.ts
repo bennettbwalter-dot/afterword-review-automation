@@ -59,6 +59,23 @@ export interface CompletedJobResult {
   duplicate: boolean;
 }
 
+export type ServiceKey =
+  | "google"
+  | "sms"
+  | "email"
+  | "whatsapp"
+  | "stripeCheckout"
+  | "stripeBillingPortal"
+  | "reviewSync";
+
+export interface ServiceStatus {
+  key: ServiceKey;
+  label: string;
+  configured: boolean;
+  requires: string[];
+  detail: string;
+}
+
 export interface PublicReviewFlowPayload {
   provider: "google";
   businessName?: string;
@@ -190,6 +207,14 @@ export const platformApi = {
   async getWorkspace(businessId?: string) {
     const query = businessId ? `?businessId=${encodeURIComponent(businessId)}` : "";
     return normalizeWorkspace(await request<unknown>(`/api/v1/workspace${query}`));
+  },
+
+  async getServiceStatus() {
+    const payload = unwrapData(await request<unknown>("/api/v1/service-status"));
+    if (!isRecord(payload) || !Array.isArray(payload.services)) {
+      throw new ApiError("The server returned an invalid service status.", 502, "INVALID_SERVICE_STATUS");
+    }
+    return payload.services as ServiceStatus[];
   },
 
   async createCompletedJob(businessId: string, draft: CompletedJobDraft) {

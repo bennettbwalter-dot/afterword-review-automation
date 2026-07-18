@@ -17,8 +17,8 @@ export default function TopBar() {
 
   return (
     <header className="flex items-center justify-between rounded-2xl border border-slate-100 bg-white px-5 py-3 shadow-sm">
-      <div className="flex items-center gap-3 text-[13.5px] text-slate-500">
-        Here's your overview for:
+      <div className="flex min-w-0 items-center gap-3 text-[13.5px] text-slate-500">
+        <span className="hidden shrink-0 sm:inline">Here's your overview for:</span>
         <div className="relative" ref={ref}>
           <button
             type="button"
@@ -59,7 +59,7 @@ export default function TopBar() {
           )}
         </div>
       </div>
-      <div className="flex items-center gap-4">
+      <div className="flex shrink-0 items-center gap-4">
         <span className="hidden text-xs font-bold text-slate-400 md:block">{branding.agencyName}</span>
         <button type="button" className="relative text-slate-400 hover:text-slate-600">
           <Bell size={18} />

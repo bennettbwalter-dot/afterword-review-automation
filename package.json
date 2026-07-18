@@ -29,6 +29,7 @@
     "db:provision": "tsx scripts/provision-database.ts",
     "db:test:isolation": "tsx scripts/test-database-isolation.ts",
     "db:bootstrap": "tsx scripts/bootstrap.ts",
+    "verify:journeys": "tsx scripts/verify-journeys.ts",
     "preview": "vite preview --host 127.0.0.1 --port 4173"
   },
   "dependencies": {

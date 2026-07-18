@@ -56,10 +56,13 @@ export default function GrowthSuite() {
       <MemoryRouter initialEntries={["/dashboard"]}>
         <div className="growth-suite">
           <div className="growth-suite__notice">
-            <span className="demo-label">Sample data</span>
+            <span className="demo-label">Preview · sample data</span>
             <p>
-              The growth suite runs on simulated data while its live ranking, listing and sales services are connected.
-              Nothing in this section contacts a customer or changes billing.
+              These tools are a design preview running on sample data. They are not connected to your live workspace and
+              nothing here contacts a customer, changes billing or writes to your records. Each area needs its own data
+              source before it can go live: map-rank tracking needs a rank-tracking provider, listings need a citation
+              distributor, and the sales workspace needs a lead provider. Your live review requests, reviews, QR codes,
+              billing and integrations are in the main workspace navigation.
             </p>
           </div>
           <TopBar />

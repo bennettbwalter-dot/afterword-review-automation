@@ -13,6 +13,7 @@ import { registerAuthRoutes } from "./routes/auth.js";
 import { registerBillingRoutes } from "./routes/billing.js";
 import { registerGoogleRoutes } from "./routes/google.js";
 import { registerPublicReviewRoutes } from "./routes/public-review.js";
+import { registerServiceStatusRoutes } from "./routes/service-status.js";
 import { registerSupportRoutes } from "./routes/support.js";
 import { ApiError } from "./routes/shared.js";
 import { registerWebhookRoutes } from "./routes/webhooks.js";
@@ -128,6 +129,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     await registerBillingRoutes(app, options);
     await registerWorkspaceRoutes(app, options);
     await registerGoogleRoutes(app, options);
+    await registerServiceStatusRoutes(app, options);
     await registerSupportRoutes(app, options);
   }
   if (surface !== "application") {

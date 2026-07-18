@@ -189,7 +189,7 @@ const priceDefinitions = [
     interval: "month",
   },
   {
-    envKey: "STRIPE_PRICE_SETUP_149",
+    envKey: "STRIPE_PRICE_SETUP_PRO",
     productKey: "setup",
     lookupKey: "review_anchor_setup_149",
     nickname: "Setup — £149",
@@ -197,7 +197,7 @@ const priceDefinitions = [
     type: "one_time",
   },
   {
-    envKey: "STRIPE_PRICE_SETUP_249",
+    envKey: "STRIPE_PRICE_SETUP_MULTI_2_3",
     productKey: "setup",
     lookupKey: "review_anchor_setup_249",
     nickname: "Setup — £249",
@@ -205,7 +205,7 @@ const priceDefinitions = [
     type: "one_time",
   },
   {
-    envKey: "STRIPE_PRICE_SETUP_349",
+    envKey: "STRIPE_PRICE_SETUP_MULTI_4_5",
     productKey: "setup",
     lookupKey: "review_anchor_setup_349",
     nickname: "Setup — £349",

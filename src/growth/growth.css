@@ -61,15 +61,32 @@
   font-variation-settings: "SOFT" 70, "WONK" 1;
 }
 
-/* Suite shell inside the workspace content area */
+/* Suite shell inside the workspace content area.
+   min-width:0 stops the grid from being widened by its content, and the body
+   scrolls wide ported tables inside itself so the page never scrolls
+   horizontally on small screens. */
 .growth-suite {
   display: grid;
+  min-width: 0;
   gap: var(--space-md);
+}
+
+.growth-suite > * {
+  min-width: 0;
+}
+
+.growth-suite__body {
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding-block-end: var(--space-2xs);
 }
 
 .growth-suite__notice {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  min-width: 0;
   gap: var(--space-sm);
   padding: var(--space-sm) var(--space-md);
   border: var(--rule-hair) solid var(--color-rule);

@@ -65,6 +65,7 @@ import {
   platformApi,
   type CompletedJobDraft,
   type GoogleProfileSelectionPayload,
+  type ServiceStatus,
   type WorkspacePayload,
 } from "./platform/api";
 import {
@@ -1282,29 +1283,60 @@ function ReportsView({ business }: { business: BusinessAccount }) {
   );
 }
 
-function IntegrationsView({ business, onConnect, canConfigure }: { business: BusinessAccount; onConnect: () => void; canConfigure: boolean }) {
+function IntegrationsView({ business, onConnect, canConfigure, services, servicesLoading }: { business: BusinessAccount; onConnect: () => void; canConfigure: boolean; services: ServiceStatus[]; servicesLoading: boolean }) {
   const integrations = [
     { key: "google", name: "Google Business Profile", detail: "Review sync and direct review destination", state: business.integrations.google, icon: MapPin },
     { key: "messaging", name: "Messaging provider", detail: "SMS and email delivery events", state: business.integrations.messaging, icon: Send },
     { key: "jobIntake", name: "Completed-job intake", detail: "Receives genuine customer job completions", state: business.integrations.jobIntake, icon: Webhook },
   ];
   const attentionCount = integrations.filter((integration) => integration.state.tone !== "success").length;
+  const googleService = services.find((service) => service.key === "google");
+  const googleAvailable = googleService?.configured ?? false;
   return (
     <div className="view-stack">
       <DemoNotice />
       <section className="integration-grid">
         {integrations.map((integration) => {
           const Icon = integration.icon;
+          const isGoogle = integration.key === "google";
+          const blocked = isGoogle && !IS_DEMO_MODE && !servicesLoading && !googleAvailable;
           return (
             <article className="integration-card" key={integration.name}>
               <span className="integration-card__icon"><Icon size={22} /></span>
               <div><h2>{integration.name}</h2><p>{integration.detail}</p></div>
-              <StatusPill tone={integration.state.tone}>{integration.state.status}</StatusPill>
-              <Button variant="secondary" disabled={!canConfigure || integration.key !== "google"} onClick={integration.key === "google" ? onConnect : undefined}>{integration.key === "google" ? "Review setup" : IS_DEMO_MODE ? "Details · Demo" : "Details unavailable"}</Button>
+              <StatusPill tone={blocked ? "warning" : integration.state.tone}>{blocked ? "Not configured" : integration.state.status}</StatusPill>
+              <Button
+                variant="secondary"
+                disabled={!canConfigure || !isGoogle || blocked}
+                onClick={isGoogle && !blocked ? onConnect : undefined}
+              >
+                {isGoogle ? (blocked ? "Unavailable" : "Review setup") : IS_DEMO_MODE ? "Details · Demo" : "Details unavailable"}
+              </Button>
             </article>
           );
         })}
       </section>
+      {!IS_DEMO_MODE && services.length > 0 && (
+        <section className="panel integration-log">
+          <header className="panel__head">
+            <div><h2>Service availability</h2><p>What this deployment can currently do</p></div>
+            <StatusPill tone={services.every((service) => service.configured) ? "success" : "warning"}>
+              {services.filter((service) => service.configured).length}/{services.length} configured
+            </StatusPill>
+          </header>
+          {services.map((service) => (
+            <div key={service.key}>
+              <span>
+                {service.configured ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />} {service.label}
+              </span>
+              <small>
+                {service.detail}
+                {!service.configured && service.requires.length > 0 && ` Needs: ${service.requires.join(", ")}.`}
+              </small>
+            </div>
+          ))}
+        </section>
+      )}
       <section className="panel integration-log">
         <header className="panel__head"><div><h2>Integration event log</h2><p>{IS_DEMO_MODE ? "Latest sample events" : "Latest provider state"} · {business.name}</p></div><StatusPill tone={attentionCount ? "warning" : "success"}>{attentionCount ? `${attentionCount} need attention` : "No failures"}</StatusPill></header>
         {integrations.map((integration) => <div key={integration.key}><span>{integration.state.tone === "success" ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />} {integration.name}</span><small>{integration.state.lastEvent}</small></div>)}
@@ -1632,6 +1664,8 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
   const [googleSelectionSaving, setGoogleSelectionSaving] = useState(false);
   const [googleSelectionError, setGoogleSelectionError] = useState("");
   const stripeCheckoutAttempts = useRef(new Map<string, string>());
+  const [services, setServices] = useState<ServiceStatus[]>([]);
+  const [servicesLoading, setServicesLoading] = useState(!IS_DEMO_MODE);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "auto" }));
@@ -1678,6 +1712,17 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
     void load();
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (IS_DEMO_MODE || workspaceState !== "authenticated") return;
+    let active = true;
+    setServicesLoading(true);
+    void platformApi.getServiceStatus()
+      .then((loaded) => { if (active) setServices(loaded); })
+      .catch(() => { if (active) setServices([]); })
+      .finally(() => { if (active) setServicesLoading(false); });
+    return () => { active = false; };
+  }, [workspaceState]);
 
   useEffect(() => {
     if (IS_DEMO_MODE || workspaceState !== "authenticated" || !selectionToken) return;
@@ -2118,12 +2163,16 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
     }
   };
 
+  const googleConnectAvailable = IS_DEMO_MODE
+    || servicesLoading
+    || (services.find((service) => service.key === "google")?.configured ?? false);
+
   const headerActions = agencyMode ? (
       <IconButton label={IS_DEMO_MODE ? "Agency alerts are simulated in this demo" : "Agency alerts"} disabled><Bell size={19} /></IconButton>
   ) : (
     <>
       <IconButton label={IS_DEMO_MODE ? "Alerts are simulated in this demo" : "Alerts"} disabled><Bell size={19} /></IconButton>
-      {view === "overview" || view === "requests" ? <Button disabled={!canConfigure} onClick={() => setAddJobOpen(true)}><Plus size={16} /> Add job</Button> : view === "integrations" ? <Button disabled={!canConfigure} onClick={() => void beginGoogleConnection()}><Link2 size={16} /> Connect Google</Button> : undefined}
+      {view === "overview" || view === "requests" ? <Button disabled={!canConfigure} onClick={() => setAddJobOpen(true)}><Plus size={16} /> Add job</Button> : view === "integrations" ? <Button disabled={!canConfigure || !googleConnectAvailable} onClick={() => void beginGoogleConnection()}><Link2 size={16} /> {googleConnectAvailable ? "Connect Google" : "Google unavailable"}</Button> : undefined}
     </>
   );
 
@@ -2166,7 +2215,7 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
           {!agencyMode && canReadTenant && view === "reviews" && <ReviewsView business={business} reviews={reviews} />}
           {!agencyMode && canReadTenant && view === "qr-codes" && qrCodesByBusiness[business.id] && <QrCodesView business={business} record={qrCodesByBusiness[business.id]} canConfigure={canConfigure && IS_DEMO_MODE} onUpdate={updateQrCode} onAudit={recordQrAudit} />}
           {!agencyMode && canReadTenant && view === "reports" && <ReportsView business={business} />}
-          {!agencyMode && canReadTenant && view === "integrations" && <IntegrationsView business={business} onConnect={() => void beginGoogleConnection()} canConfigure={canConfigure} />}
+          {!agencyMode && canReadTenant && view === "integrations" && <IntegrationsView business={business} onConnect={() => void beginGoogleConnection()} canConfigure={canConfigure} services={services} servicesLoading={servicesLoading} />}
           {!agencyMode && canReadTenant && view === "team-billing" && <TeamBillingView business={business} canConfigure={canConfigure} onSaveSmsPolicy={saveSmsOveragePolicy} onStartCheckout={startStripeCheckout} onOpenBillingPortal={openStripeBillingPortal} stripeActionsEnabled={!IS_DEMO_MODE} />}
           {(agencyMode || canReadTenant) && view === "growth" && <GrowthSuite />}
         </div>

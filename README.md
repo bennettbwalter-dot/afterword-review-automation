@@ -93,10 +93,24 @@ npm.cmd run security:secrets
 npm.cmd run check
 ```
 
+Once an API process is running, verify the critical journeys against it:
+
+```powershell
+npm.cmd run verify:journeys
+```
+
+`verify:journeys` signs in, loads a workspace, exercises consent and
+idempotency on a completed job, checks the billing and agency-support
+boundaries, and confirms the session is invalidated on sign-out. Point it at a
+deployment with `API_BASE`, `VERIFY_EMAIL` and `VERIFY_PASSWORD`. It creates one
+clearly-labelled completed job, which the consent rules block while no Google
+review destination is connected.
+
 The Node tests exercise API/security helpers, process-surface separation and provider-signature behaviour without a live database. Database proof is separate: apply all migrations to a clean PostgreSQL instance and run `database/tests/003_tenant_isolation.sql` as the real least-privilege roles. The repository includes `.github/workflows/application-security.yml` and `.github/workflows/database-security.yml`, but their presence is not evidence that either workflow has passed.
 
 ## Architecture and launch artifacts
 
+- [`docs/production-readiness.md`](docs/production-readiness.md) - what is verified working, what is blocked on credentials, what is not implemented, and the go-live checklist.
 - [`docs/architecture.md`](docs/architecture.md) - trust boundaries, tenant model, provider flow and known gaps.
 - [`docs/security-launch-checklist.md`](docs/security-launch-checklist.md) - evidence-based pre-launch gates.
 - [`docs/pilot-runbook.md`](docs/pilot-runbook.md) - controlled one-business activation and acceptance plan.
