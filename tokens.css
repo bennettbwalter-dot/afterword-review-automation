@@ -1,35 +1,77 @@
-/* Review Anchor design tokens · Hallmark Coral register */
+/* Review Anchor design tokens · Harbor register
+   Identity: deep harbor teal + ink navy + brass. One token set drives the
+   marketing site, workspace, reports and public review flow in light and dark. */
 :root {
   color-scheme: light;
 
   --color-transparent: oklch(0% 0 0 / 0);
-  --color-paper: oklch(96.5% 0.005 50);
-  --color-paper-2: oklch(94% 0.006 50);
-  --color-paper-3: oklch(91% 0.008 50);
-  --color-surface: oklch(98.5% 0.004 50);
-  --color-rule: oklch(86% 0.008 50);
-  --color-rule-2: oklch(72% 0.01 50);
-  --color-muted: oklch(49% 0.012 50);
-  --color-neutral: oklch(38% 0.012 45);
-  --color-ink-2: oklch(28% 0.012 40);
-  --color-ink: oklch(20% 0.01 35);
-  --color-ink-soft: oklch(24% 0.018 150);
-  --color-accent: oklch(64% 0.165 28);
-  --color-accent-soft: oklch(92% 0.035 30);
-  --color-accent-ink: oklch(20% 0.01 35);
-  --color-focus: oklch(38% 0.1 28);
-  --color-success: oklch(53% 0.135 155);
-  --color-success-soft: oklch(92% 0.035 155);
-  --color-warning: oklch(72% 0.14 78);
-  --color-warning-soft: oklch(94% 0.035 78);
-  --color-error: oklch(54% 0.18 24);
-  --color-error-soft: oklch(93% 0.035 24);
-  --color-star: oklch(76% 0.145 82);
-  --color-google-blue: oklch(54% 0.18 250);
-  --color-overlay: oklch(14% 0.01 35 / 0.5);
 
-  --font-display: "Geist Variable", "General Sans", ui-sans-serif, sans-serif;
-  --font-body: "Geist Variable", "General Sans", ui-sans-serif, sans-serif;
+  /* Canvas and surfaces */
+  --color-paper: oklch(96.8% 0.006 215);
+  --color-paper-2: oklch(94.4% 0.008 215);
+  --color-paper-3: oklch(91.5% 0.01 215);
+  --color-surface: oklch(99% 0.003 215);
+  --color-rule: oklch(87.5% 0.009 215);
+  --color-rule-2: oklch(73% 0.013 215);
+
+  /* Ink scale */
+  --color-muted: oklch(48.5% 0.018 225);
+  --color-neutral: oklch(37.5% 0.02 228);
+  --color-ink-2: oklch(27.5% 0.022 230);
+  --color-ink: oklch(20% 0.02 232);
+  --color-ink-soft: oklch(24% 0.02 210);
+
+  /* Primary action · harbor teal */
+  --color-primary: oklch(48% 0.093 212);
+  --color-primary-strong: oklch(42.5% 0.09 213);
+  --color-primary-press: oklch(38% 0.085 214);
+  --color-primary-contrast: oklch(98.5% 0.004 210);
+  --color-primary-soft: oklch(92.5% 0.028 210);
+
+  /* Accent aliases · consumed across the existing system */
+  --color-accent: oklch(48% 0.093 212);
+  --color-accent-soft: oklch(92.5% 0.028 210);
+  --color-accent-ink: oklch(98.5% 0.004 210);
+  --color-focus: oklch(38% 0.09 214);
+
+  /* Brass · stars, featured moments */
+  --color-star: oklch(74% 0.135 84);
+  --color-brass: oklch(66% 0.115 80);
+  --color-brass-soft: oklch(93.5% 0.035 85);
+
+  /* Status */
+  --color-success: oklch(52.5% 0.125 158);
+  --color-success-soft: oklch(93% 0.032 158);
+  --color-warning: oklch(69% 0.125 74);
+  --color-warning-soft: oklch(94.5% 0.035 80);
+  --color-error: oklch(53% 0.175 25);
+  --color-error-soft: oklch(93.5% 0.032 25);
+
+  /* Charts and ranking heatmaps */
+  --color-chart-1: oklch(52% 0.1 210);
+  --color-chart-2: oklch(42% 0.075 255);
+  --color-chart-3: oklch(68% 0.12 82);
+  --color-chart-4: oklch(63% 0.13 32);
+  --color-heat-1: oklch(56% 0.13 152);
+  --color-heat-2: oklch(70% 0.13 110);
+  --color-heat-3: oklch(76% 0.13 82);
+  --color-heat-4: oklch(64% 0.15 48);
+  --color-heat-5: oklch(50% 0.17 27);
+
+  --color-google-blue: oklch(54% 0.18 250);
+  --color-overlay: oklch(14% 0.015 230 / 0.52);
+
+  /* Workspace shell · the sidebar stays deep harbor navy in both modes */
+  --color-shell: oklch(22% 0.03 225);
+  --color-shell-2: oklch(27% 0.032 222);
+  --color-shell-rule: oklch(34.5% 0.03 222);
+  --color-shell-ink: oklch(96% 0.006 210);
+  --color-shell-muted: oklch(72.5% 0.02 215);
+  --color-shell-active: oklch(38% 0.058 212);
+
+  /* Type · Plus Jakarta carries the interface, Fraunces carries the wordmark */
+  --font-display: "Plus Jakarta Sans Variable", "Geist Variable", ui-sans-serif, sans-serif;
+  --font-body: "Plus Jakarta Sans Variable", "Geist Variable", ui-sans-serif, sans-serif;
   --font-wordmark: "Fraunces Variable", ui-serif, serif;
   --font-label: "Geist Mono Variable", ui-monospace, monospace;
 
@@ -56,11 +98,11 @@
   --space-3xl: 6rem;
   --space-4xl: 9rem;
 
-  --radius-xs: 0.375rem;
-  --radius-sm: 0.625rem;
-  --radius-md: 0.875rem;
-  --radius-lg: 1.25rem;
-  --radius-xl: 1.75rem;
+  --radius-xs: 0.5rem;
+  --radius-sm: 0.75rem;
+  --radius-md: 1rem;
+  --radius-lg: 1.375rem;
+  --radius-xl: 1.875rem;
   --radius-pill: 999px;
 
   --rule-hair: 1px;
@@ -69,10 +111,10 @@
   --measure: 65ch;
   --banner-height: 4.25rem;
 
-  --shadow-whisper: 0 1px 2px oklch(20% 0.01 35 / 0.06);
-  --shadow-card: 0 18px 50px -32px oklch(20% 0.01 35 / 0.28), 0 1px 2px oklch(20% 0.01 35 / 0.08);
-  --shadow-nav: 0 18px 44px -26px oklch(20% 0.01 35 / 0.34), 0 0 0 1px oklch(98% 0.005 50 / 0.55) inset;
-  --shadow-dialog: 0 40px 90px -32px oklch(14% 0.01 35 / 0.5);
+  --shadow-whisper: 0 1px 2px oklch(20% 0.02 232 / 0.06);
+  --shadow-card: 0 18px 50px -32px oklch(20% 0.02 232 / 0.26), 0 1px 2px oklch(20% 0.02 232 / 0.07);
+  --shadow-nav: 0 18px 44px -26px oklch(20% 0.02 232 / 0.32), 0 0 0 1px oklch(98% 0.005 215 / 0.55) inset;
+  --shadow-dialog: 0 40px 90px -32px oklch(14% 0.015 230 / 0.5);
 
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
@@ -90,4 +132,136 @@
   --z-modal: 400;
   --z-toast: 500;
   --z-tooltip: 600;
+}
+
+/* Dark mode · explicit selection */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --color-paper: oklch(17.5% 0.016 232);
+  --color-paper-2: oklch(20.5% 0.017 232);
+  --color-paper-3: oklch(24% 0.018 232);
+  --color-surface: oklch(22% 0.017 232);
+  --color-rule: oklch(31% 0.02 230);
+  --color-rule-2: oklch(42% 0.022 228);
+
+  --color-muted: oklch(66% 0.02 220);
+  --color-neutral: oklch(76% 0.018 218);
+  --color-ink-2: oklch(86% 0.014 215);
+  --color-ink: oklch(93.5% 0.01 212);
+  --color-ink-soft: oklch(90% 0.015 205);
+
+  --color-primary: oklch(72% 0.095 205);
+  --color-primary-strong: oklch(78% 0.095 203);
+  --color-primary-press: oklch(66% 0.09 207);
+  --color-primary-contrast: oklch(16% 0.02 232);
+  --color-primary-soft: oklch(29.5% 0.05 212);
+
+  --color-accent: oklch(72% 0.095 205);
+  --color-accent-soft: oklch(29.5% 0.05 212);
+  --color-accent-ink: oklch(16% 0.02 232);
+  --color-focus: oklch(78% 0.09 203);
+
+  --color-star: oklch(80% 0.135 86);
+  --color-brass: oklch(76% 0.12 82);
+  --color-brass-soft: oklch(30% 0.05 85);
+
+  --color-success: oklch(70% 0.125 158);
+  --color-success-soft: oklch(28% 0.05 158);
+  --color-warning: oklch(78% 0.125 80);
+  --color-warning-soft: oklch(30% 0.05 80);
+  --color-error: oklch(70% 0.15 25);
+  --color-error-soft: oklch(29% 0.055 25);
+
+  --color-chart-1: oklch(72% 0.1 205);
+  --color-chart-2: oklch(64% 0.085 255);
+  --color-chart-3: oklch(78% 0.12 82);
+  --color-chart-4: oklch(72% 0.12 32);
+  --color-heat-1: oklch(68% 0.13 152);
+  --color-heat-2: oklch(76% 0.13 110);
+  --color-heat-3: oklch(80% 0.13 82);
+  --color-heat-4: oklch(70% 0.14 48);
+  --color-heat-5: oklch(62% 0.16 27);
+
+  --color-google-blue: oklch(68% 0.14 250);
+  --color-overlay: oklch(8% 0.01 230 / 0.62);
+
+  --color-shell: oklch(15.5% 0.018 230);
+  --color-shell-2: oklch(19.5% 0.02 228);
+  --color-shell-rule: oklch(28% 0.022 226);
+  --color-shell-ink: oklch(94% 0.008 212);
+  --color-shell-muted: oklch(68% 0.02 215);
+  --color-shell-active: oklch(32% 0.05 212);
+
+  --shadow-whisper: 0 1px 2px oklch(5% 0.01 230 / 0.4);
+  --shadow-card: 0 18px 50px -32px oklch(5% 0.01 230 / 0.7), 0 1px 2px oklch(5% 0.01 230 / 0.5);
+  --shadow-nav: 0 18px 44px -26px oklch(5% 0.01 230 / 0.75), 0 0 0 1px oklch(40% 0.02 230 / 0.35) inset;
+  --shadow-dialog: 0 40px 90px -32px oklch(3% 0.005 230 / 0.85);
+}
+
+/* Dark mode · follow the system when no explicit choice is stored */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="dark"]) {
+    color-scheme: dark;
+
+    --color-paper: oklch(17.5% 0.016 232);
+    --color-paper-2: oklch(20.5% 0.017 232);
+    --color-paper-3: oklch(24% 0.018 232);
+    --color-surface: oklch(22% 0.017 232);
+    --color-rule: oklch(31% 0.02 230);
+    --color-rule-2: oklch(42% 0.022 228);
+
+    --color-muted: oklch(66% 0.02 220);
+    --color-neutral: oklch(76% 0.018 218);
+    --color-ink-2: oklch(86% 0.014 215);
+    --color-ink: oklch(93.5% 0.01 212);
+    --color-ink-soft: oklch(90% 0.015 205);
+
+    --color-primary: oklch(72% 0.095 205);
+    --color-primary-strong: oklch(78% 0.095 203);
+    --color-primary-press: oklch(66% 0.09 207);
+    --color-primary-contrast: oklch(16% 0.02 232);
+    --color-primary-soft: oklch(29.5% 0.05 212);
+
+    --color-accent: oklch(72% 0.095 205);
+    --color-accent-soft: oklch(29.5% 0.05 212);
+    --color-accent-ink: oklch(16% 0.02 232);
+    --color-focus: oklch(78% 0.09 203);
+
+    --color-star: oklch(80% 0.135 86);
+    --color-brass: oklch(76% 0.12 82);
+    --color-brass-soft: oklch(30% 0.05 85);
+
+    --color-success: oklch(70% 0.125 158);
+    --color-success-soft: oklch(28% 0.05 158);
+    --color-warning: oklch(78% 0.125 80);
+    --color-warning-soft: oklch(30% 0.05 80);
+    --color-error: oklch(70% 0.15 25);
+    --color-error-soft: oklch(29% 0.055 25);
+
+    --color-chart-1: oklch(72% 0.1 205);
+    --color-chart-2: oklch(64% 0.085 255);
+    --color-chart-3: oklch(78% 0.12 82);
+    --color-chart-4: oklch(72% 0.12 32);
+    --color-heat-1: oklch(68% 0.13 152);
+    --color-heat-2: oklch(76% 0.13 110);
+    --color-heat-3: oklch(80% 0.13 82);
+    --color-heat-4: oklch(70% 0.14 48);
+    --color-heat-5: oklch(62% 0.16 27);
+
+    --color-google-blue: oklch(68% 0.14 250);
+    --color-overlay: oklch(8% 0.01 230 / 0.62);
+
+    --color-shell: oklch(15.5% 0.018 230);
+    --color-shell-2: oklch(19.5% 0.02 228);
+    --color-shell-rule: oklch(28% 0.022 226);
+    --color-shell-ink: oklch(94% 0.008 212);
+    --color-shell-muted: oklch(68% 0.02 215);
+    --color-shell-active: oklch(32% 0.05 212);
+
+    --shadow-whisper: 0 1px 2px oklch(5% 0.01 230 / 0.4);
+    --shadow-card: 0 18px 50px -32px oklch(5% 0.01 230 / 0.7), 0 1px 2px oklch(5% 0.01 230 / 0.5);
+    --shadow-nav: 0 18px 44px -26px oklch(5% 0.01 230 / 0.75), 0 0 0 1px oklch(40% 0.02 230 / 0.35) inset;
+    --shadow-dialog: 0 40px 90px -32px oklch(3% 0.005 230 / 0.85);
+  }
 }

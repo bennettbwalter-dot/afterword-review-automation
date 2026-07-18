@@ -21,6 +21,7 @@ import {
   MapPin,
   Menu,
   MessageSquareText,
+  Moon,
   PauseCircle,
   Plug,
   Plus,
@@ -30,13 +31,17 @@ import {
   Send,
   ShieldCheck,
   Smartphone,
+  Sparkles,
   Star,
+  Sun,
   UsersRound,
   Webhook,
   X,
   type LucideIcon,
 } from "lucide-react";
 import {
+  createContext,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -53,6 +58,7 @@ import {
   TeamBillingView,
 } from "./platform/AgencyViews";
 import { LivePublicReviewFlow, PublicReviewFlow, QrCodesView } from "./platform/QrCodesView";
+import GrowthSuite from "./growth/GrowthSuite";
 import {
   ApiError,
   IS_DEMO_MODE,
@@ -93,7 +99,7 @@ import {
 } from "./platform/domain";
 
 type Surface = "site" | "app";
-type AppView = WorkspaceView;
+type AppView = WorkspaceView | "growth";
 type WorkspaceLoadState = "loading" | "anonymous" | "authenticated" | "error";
 type PricingOfferId = "pro-monthly" | "pro-annual" | "multi-monthly";
 
@@ -195,6 +201,7 @@ const CLIENT_NAV: Array<{ id: AppView; label: string; icon: LucideIcon }> = [
   { id: "reports", label: "Reports", icon: FileText },
   { id: "integrations", label: "Integrations", icon: Plug },
   { id: "team-billing", label: "Team & billing", icon: Building2 },
+  { id: "growth", label: "Growth suite", icon: Sparkles },
 ];
 
 const AGENCY_NAV: Array<{ id: AppView; label: string; icon: LucideIcon }> = [
@@ -202,6 +209,7 @@ const AGENCY_NAV: Array<{ id: AppView; label: string; icon: LucideIcon }> = [
   { id: "clients", label: "Clients", icon: Building2 },
   { id: "exceptions", label: "Exceptions", icon: AlertTriangle },
   { id: "audit", label: "Audit log", icon: ClipboardCheck },
+  { id: "growth", label: "Growth suite", icon: Sparkles },
 ];
 
 const STATUS_TONES: Record<RequestStatus, string> = {
@@ -217,11 +225,87 @@ function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
 }
 
+type ResolvedTheme = "light" | "dark";
+const THEME_STORAGE_KEY = "review-anchor-theme";
+
+const ThemeContext = createContext<{ resolved: ResolvedTheme; toggle: () => void }>({
+  resolved: "light",
+  toggle: () => undefined,
+});
+
+function readStoredTheme(): ResolvedTheme | "system" {
+  try {
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+    return stored === "light" || stored === "dark" ? stored : "system";
+  } catch {
+    return "system";
+  }
+}
+
+function systemPrefersDark() {
+  return typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
+function ThemeProvider({ children }: { children: ReactNode }) {
+  const [theme, setTheme] = useState<ResolvedTheme | "system">(readStoredTheme);
+  const [systemDark, setSystemDark] = useState(systemPrefersDark);
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const update = () => setSystemDark(media.matches);
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === "system") {
+      delete root.dataset.theme;
+    } else {
+      root.dataset.theme = theme;
+    }
+    try {
+      if (theme === "system") window.localStorage.removeItem(THEME_STORAGE_KEY);
+      else window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      /* storage unavailable — theme still applies for this visit */
+    }
+  }, [theme]);
+
+  const resolved: ResolvedTheme = theme === "system" ? (systemDark ? "dark" : "light") : theme;
+  const value = useMemo(() => ({
+    resolved,
+    toggle: () => setTheme(resolved === "dark" ? "light" : "dark"),
+  }), [resolved]);
+
+  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
+}
+
+function ThemeToggle({ className }: { className?: string }) {
+  const { resolved, toggle } = useContext(ThemeContext);
+  return (
+    <IconButton
+      label={resolved === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+      className={className}
+      onClick={toggle}
+    >
+      {resolved === "dark" ? <Sun size={18} aria-hidden="true" /> : <Moon size={18} aria-hidden="true" />}
+    </IconButton>
+  );
+}
+
 function LogoMark() {
   return (
     <svg className="brand-mark" viewBox="0 0 36 36" role="img" aria-label="Review Anchor mark">
-      <path d="M7 10.5A3.5 3.5 0 0 1 10.5 7h15A3.5 3.5 0 0 1 29 10.5v9a3.5 3.5 0 0 1-3.5 3.5H17l-6.5 5v-5A3.5 3.5 0 0 1 7 19.5v-9Z" />
-      <path d="M12 13h12M12 17h8" />
+      <rect x="1" y="1" width="34" height="34" rx="10.5" stroke="none" />
+      <g fill="none">
+        <circle cx="18" cy="9.4" r="2.6" />
+        <path d="M18 12v15.4" />
+        <path d="M12.7 16.2h10.6" />
+        <path d="M8.9 20.9c1 5.3 5 7.4 9.1 7.4s8.1-2.1 9.1-7.4" />
+        <path d="M8.9 20.9 6.7 19.4" />
+        <path d="M27.1 20.9l2.2-1.5" />
+      </g>
     </svg>
   );
 }
@@ -375,6 +459,7 @@ function MarketingNav({ onOpenDemo, onStartSetup }: { onOpenDemo: () => void; on
           <a href="#pricing" onClick={() => setMenuOpen(false)}>Pricing</a>
         <button type="button" className="nav-demo-link" onClick={onOpenDemo}>{IS_DEMO_MODE ? "Open demo" : "Sign in"}</button>
         </nav>
+        <ThemeToggle className="marketing-nav__theme" />
         <Button variant="primary" className="marketing-nav__cta" onClick={onStartSetup}>
           Connect Google
         </Button>
@@ -457,9 +542,16 @@ function JourneyCanvas({ activeStep }: { activeStep: number }) {
             </dl>
           )}
           {activeStep === 1 && (
-            <div className="journey-message-preview">
-              <p>Hi Amelia, thanks for choosing Harbour &amp; Hearth. If you have 30 seconds, we’d appreciate an honest Google review.</p>
-              <span>Review on Google <ExternalLink size={13} /></span>
+            <div className="journey-phone">
+              <span className="journey-phone__speaker" aria-hidden="true" />
+              <div className="journey-phone__screen">
+                <span className="journey-phone__meta"><Smartphone size={12} aria-hidden="true" /> SMS · today 14:06</span>
+                <p className="journey-phone__bubble">
+                  Hi Amelia, thanks for choosing Harbour &amp; Hearth. If you have 30 seconds, we’d appreciate an honest
+                  Google review: <span className="journey-phone__link">g.page/r/harbour-hearth</span> Reply STOP to opt out.
+                </p>
+                <span className="journey-phone__receipt"><CheckCircle2 size={12} aria-hidden="true" /> Delivered</span>
+              </div>
             </div>
           )}
           {activeStep === 2 && (
@@ -589,7 +681,7 @@ function MarketingSite({ onOpenDemo, onStartSetup }: { onOpenDemo: () => void; o
         <section className="workflow-section" id="workflow" aria-labelledby="workflow-title">
           <header className="section-heading">
             <h2 id="workflow-title">One honest line from finished work to Google.</h2>
-            <p>The screenshots show the right ingredients—merge fields, delays and follow-ups. Review Anchor removes the sprawling workflow builder and keeps the part a local business actually needs.</p>
+            <p>Merge fields, polite timing and follow-ups without a sprawling workflow builder. Scroll the journey — every completed job follows the same neutral route from the moment it arrives to the monthly report.</p>
           </header>
           <div className="workflow-story">
             <div className="workflow-story__steps">
@@ -816,7 +908,11 @@ function AppSidebar({
         </select>
         <small>Switches the seeded interface only.</small>
       </label>}
-      <div className="app-sidebar__meta"><span>{supportSession ? "Support access recorded" : demoMode ? "Demo workspace" : "Authenticated workspace"}</span><button type="button" onClick={demoMode ? onBack : onLogout}>{demoMode ? "View website" : "Sign out"}</button></div>
+      <div className="app-sidebar__meta">
+        <ThemeToggle className="app-sidebar__theme" />
+        <span>{supportSession ? "Support access recorded" : demoMode ? "Demo workspace" : "Authenticated workspace"}</span>
+        <button type="button" onClick={demoMode ? onBack : onLogout}>{demoMode ? "View website" : "Sign out"}</button>
+      </div>
     </aside>
   );
 }
@@ -1720,6 +1816,7 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
     clients: "Managed businesses, integrations and scoped controls.",
     exceptions: "Operational failures with impact and safe resolution paths.",
     audit: "Append-only evidence for administrative and support actions.",
+    growth: "Local marketing tools running on sample data while their live services are connected.",
   };
 
   const recordAudit = (event: Omit<AuditEvent, "id" | "correlationId">) => {
@@ -2071,6 +2168,7 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
           {!agencyMode && canReadTenant && view === "reports" && <ReportsView business={business} />}
           {!agencyMode && canReadTenant && view === "integrations" && <IntegrationsView business={business} onConnect={() => void beginGoogleConnection()} canConfigure={canConfigure} />}
           {!agencyMode && canReadTenant && view === "team-billing" && <TeamBillingView business={business} canConfigure={canConfigure} onSaveSmsPolicy={saveSmsOveragePolicy} onStartCheckout={startStripeCheckout} onOpenBillingPortal={openStripeBillingPortal} stripeActionsEnabled={!IS_DEMO_MODE} />}
+          {(agencyMode || canReadTenant) && view === "growth" && <GrowthSuite />}
         </div>
       </main>
       <AddJobDialog open={addJobOpen && canConfigure} onClose={() => setAddJobOpen(false)} onAdd={addRequest} locationId={business.locationId} demoMode={IS_DEMO_MODE} />
@@ -2112,9 +2210,13 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: "auto" });
   };
 
-  if (publicQrCode) return <PublicReviewFlow business={getBusiness(publicQrCode.businessId)} record={publicQrCode} />;
-  if (!IS_DEMO_MODE && publicToken) return <LivePublicReviewFlow publicToken={publicToken} />;
-  if (surface === "site") return <MarketingSite onOpenDemo={() => openApp()} onStartSetup={startSetup} />;
+  if (publicQrCode) return <ThemeProvider><PublicReviewFlow business={getBusiness(publicQrCode.businessId)} record={publicQrCode} /></ThemeProvider>;
+  if (!IS_DEMO_MODE && publicToken) return <ThemeProvider><LivePublicReviewFlow publicToken={publicToken} /></ThemeProvider>;
+  if (surface === "site") return <ThemeProvider><MarketingSite onOpenDemo={() => openApp()} onStartSetup={startSetup} /></ThemeProvider>;
 
-  return <AppShell initialView={initialView} onBack={() => { setSurface("site"); setOnboardingOpen(false); }} onboardingOpen={onboardingOpen} setOnboardingOpen={setOnboardingOpen} />;
+  return (
+    <ThemeProvider>
+      <AppShell initialView={initialView} onBack={() => { setSurface("site"); setOnboardingOpen(false); }} onboardingOpen={onboardingOpen} setOnboardingOpen={setOnboardingOpen} />
+    </ThemeProvider>
+  );
 }

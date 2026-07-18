@@ -1,0 +1,120 @@
+/* Growth suite · Tailwind v4 utilities mapped onto the Harbor token system.
+   Preflight is intentionally omitted so the existing global stylesheet keeps
+   control of base elements; only the theme and utilities layers are loaded.
+   Palette classes used by the ported pages resolve to Review Anchor tokens,
+   so the whole suite follows light and dark mode automatically. */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+@theme inline {
+  /* Brand · runtime-overridable from the white-label settings page */
+  --color-brand: var(--growth-brand, var(--color-primary));
+  --color-brand-deep: var(--growth-brand-deep, var(--color-primary-strong));
+  --color-brand-soft: var(--growth-brand-soft, var(--color-primary-soft));
+
+  /* Suite tokens riding the global Harbor set */
+  --color-ink: var(--color-ink);
+  --color-paper: var(--color-paper);
+  --color-navy: var(--color-shell);
+  --color-peach: var(--color-warning-soft);
+  --color-peachline: color-mix(in oklab, var(--color-warning) 40%, var(--color-warning-soft));
+
+  /* Neutral scale → surfaces and ink so dark mode just works */
+  --color-white: var(--color-surface);
+  --color-slate-50: var(--color-paper-2);
+  --color-slate-100: var(--color-paper-3);
+  --color-slate-200: var(--color-rule);
+  --color-slate-300: var(--color-rule-2);
+  --color-slate-400: var(--color-muted);
+  --color-slate-500: var(--color-muted);
+  --color-slate-600: var(--color-neutral);
+  --color-slate-700: var(--color-ink-2);
+  --color-slate-800: var(--color-ink-2);
+  --color-slate-900: var(--color-ink);
+
+  /* Status scales → Harbor status tokens */
+  --color-emerald-50: var(--color-success-soft);
+  --color-emerald-100: var(--color-success-soft);
+  --color-emerald-500: var(--color-success);
+  --color-emerald-600: var(--color-success);
+  --color-emerald-700: var(--color-success);
+  --color-orange-50: var(--color-warning-soft);
+  --color-orange-200: color-mix(in oklab, var(--color-warning) 45%, var(--color-warning-soft));
+  --color-orange-400: var(--color-warning);
+  --color-orange-500: var(--color-warning);
+  --color-amber-50: var(--color-brass-soft);
+  --color-amber-200: color-mix(in oklab, var(--color-brass) 40%, var(--color-brass-soft));
+  --color-amber-400: var(--color-star);
+  --color-amber-500: var(--color-star);
+  --color-amber-600: var(--color-brass);
+  --color-red-50: var(--color-error-soft);
+  --color-red-400: var(--color-error);
+  --color-red-500: var(--color-error);
+  --color-rose-50: var(--color-error-soft);
+  --color-fuchsia-100: var(--color-brass-soft);
+  --color-sky-400: var(--color-primary);
+}
+
+/* Script accent used by the suite wordmark moments · rides the brand serif */
+.font-script {
+  font-family: var(--font-wordmark);
+  font-variation-settings: "SOFT" 70, "WONK" 1;
+}
+
+/* Suite shell inside the workspace content area */
+.growth-suite {
+  display: grid;
+  gap: var(--space-md);
+}
+
+.growth-suite__notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border: var(--rule-hair) solid var(--color-rule);
+  border-radius: var(--radius-md);
+  background: var(--color-paper-2);
+  color: var(--color-neutral);
+  font-size: var(--text-xs);
+}
+
+.growth-suite__notice .demo-label {
+  flex: 0 0 auto;
+}
+
+.growth-tabs {
+  display: flex;
+  gap: var(--space-2xs);
+  overflow-x: auto;
+  padding-block-end: var(--space-2xs);
+  scrollbar-width: thin;
+}
+
+.growth-tabs a {
+  display: inline-flex;
+  min-height: 2.5rem;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 0 var(--space-sm);
+  border: var(--rule-hair) solid var(--color-transparent);
+  border-radius: var(--radius-pill);
+  color: var(--color-neutral);
+  font-size: var(--text-sm);
+  font-weight: 560;
+  white-space: nowrap;
+  transition: background-color var(--dur-short) var(--ease-out), color var(--dur-short) var(--ease-out), border-color var(--dur-short) var(--ease-out);
+}
+
+.growth-tabs a:hover {
+  background: var(--color-paper-2);
+  color: var(--color-ink);
+}
+
+.growth-tabs a.is-active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  font-weight: 660;
+}
