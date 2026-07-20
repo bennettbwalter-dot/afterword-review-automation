@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -21,6 +21,7 @@ import {
   buildHyperdriveListInvocation,
   buildWranglerWhoamiInvocation,
   createSecretMaterial,
+  createdHyperdriveCleanupTargets,
   deriveWorkersDevOrigins,
   parseHyperdriveCreateOutput,
   parseHyperdriveGetOutput,
@@ -33,6 +34,7 @@ import {
   redactWranglerInvocation,
   restoreCompatibilityConfig,
   selectReusableHyperdrive,
+  assertHyperdriveCleanupTarget,
   validateAccountEvidence,
   validateCapacityEvidence,
   verifySecretPayloads,
@@ -521,9 +523,10 @@ test("Hyperdrive get parser accepts captured Wrangler JSON metadata and refuses 
 });
 
 test("Hyperdrive create parser accepts only the exact captured Wrangler 4.112.0 success line", () => {
+  const resource = hyperdriveResource(0);
   assert.deepEqual(
-    parseHyperdriveCreateOutput(`✅ Created new Hyperdrive PostgreSQL config: ${"12".repeat(16)}\n`),
-    { scheme: "PostgreSQL", id: "12".repeat(16) },
+    parseHyperdriveCreateOutput(capturedCreate(resource)),
+    { scheme: "PostgreSQL", id: resource.id },
   );
   assert.throws(
     () => parseHyperdriveCreateOutput(JSON.stringify({ success: true, id: "12".repeat(16) })),
@@ -531,6 +534,15 @@ test("Hyperdrive create parser accepts only the exact captured Wrangler 4.112.0 
   );
   assert.throws(
     () => parseHyperdriveCreateOutput(`✅ Created new Hyperdrive postgresql config: ${"12".repeat(16)}\n`),
+    /exact Wrangler 4\.112\.0 success contract/,
+  );
+  const secondId = "ab".repeat(16);
+  assert.throws(
+    () => parseHyperdriveCreateOutput(`${capturedCreate(resource)}✅ Created new Hyperdrive PostgreSQL config: ${secondId}\n`),
+    /exactly one.*success/i,
+  );
+  assert.throws(
+    () => parseHyperdriveCreateOutput(capturedCreate(resource).replace(resource.id, `${resource.id} ${secondId}`)),
     /exact Wrangler 4\.112\.0 success contract/,
   );
 });
@@ -688,6 +700,80 @@ test("prepare transaction rolls back every prior replacement at multiple injecte
   }
 });
 
+test("secret atomic replacement stages plaintext only inside the ignored transaction directory and recovers an interrupted rename", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-secret-atomic-"));
+  const paths = await writePreparationFixture(root);
+  const gitignore = await readFile(new URL("../.gitignore", import.meta.url), "utf8");
+  const originalEnvironment = await readFile(paths.environment, "utf8");
+  let byte = 1;
+  let inspected = false;
+  await assert.rejects(
+    prepareStagingFiles({
+      paths,
+      confirmations: {
+        application: "https://review-anchor-staging.review-anchor-staging-test.workers.dev",
+        ingress: "https://review-anchor-staging-ingress.review-anchor-staging-test.workers.dev",
+      },
+      randomBytes: (size) => Buffer.alloc(size, byte++),
+      rotate: false,
+      confirmedEmptyStagingData: false,
+      transactionHooks: {
+        beforeAtomicRename: (temporaryPath, destination) => {
+          if (destination !== paths.secretFiles.application) return;
+          inspected = true;
+          const relative = path.relative(root, temporaryPath).replaceAll("\\", "/");
+          assert.match(relative, /^\.cloudflare\/evidence\/staging-prepare-[0-9a-f-]+\/\d+\.staged$/);
+          assert.match(gitignore, /^\.cloudflare\/evidence\/$/m);
+          throw new Error("synthetic crash before secret rename");
+        },
+      },
+    }),
+    /rolled back/,
+  );
+  assert.equal(inspected, true);
+  assert.equal(await readFile(paths.environment, "utf8"), originalEnvironment);
+  assert.equal(await fileExists(paths.secretFiles.application), false);
+  assert.equal(await fileExists(paths.transactionJournal), false);
+});
+
+test("prepare cleans an interrupted pre-mutation staging journal containing plaintext only in the ignored directory", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-staging-recovery-"));
+  const paths = await writePreparationFixture(root);
+  const runId = "90000000-0000-4000-8000-000000000013";
+  const transactionDirectory = path.join(path.dirname(paths.transactionJournal), `staging-prepare-${runId}`);
+  const stagedPath = path.join(transactionDirectory, "0.staged");
+  const backupPath = path.join(transactionDirectory, "0.backup");
+  await mkdir(transactionDirectory, { recursive: true });
+  await writeFile(stagedPath, "synthetic plaintext runtime secret\n");
+  await writeFile(paths.transactionJournal, JSON.stringify({
+    version: 1,
+    runId,
+    status: "staging",
+    transactionDirectory,
+    entries: [{
+      destination: paths.secretFiles.application,
+      stagedPath,
+      backupPath,
+      existed: false,
+    }],
+  }));
+
+  let byte = 1;
+  await prepareStagingFiles({
+    paths,
+    confirmations: {
+      application: "https://review-anchor-staging.review-anchor-staging-test.workers.dev",
+      ingress: "https://review-anchor-staging-ingress.review-anchor-staging-test.workers.dev",
+    },
+    randomBytes: (size) => Buffer.alloc(size, byte++),
+    rotate: false,
+    confirmedEmptyStagingData: false,
+  });
+  assert.equal(await fileExists(stagedPath), false);
+  assert.equal(await fileExists(paths.transactionJournal), false);
+  assert.equal((await readFile(paths.secretFiles.application, "utf8")).includes("synthetic plaintext runtime secret"), false);
+});
+
 test("prepare retry recovers a valid interrupted transaction before generating new outputs", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-recover-"));
   const paths = await writePreparationFixture(root);
@@ -728,6 +814,58 @@ test("prepare retry recovers a valid interrupted transaction before generating n
   assert.match(recovered, /migration:keep/);
   assert.equal(recovered.includes("migration:interrupted"), false);
   assert.equal(await fileExists(paths.transactionJournal), false);
+});
+
+test("rollback recovery is idempotent after cleanup removes backups and then fails", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-two-pass-recovery-"));
+  const paths = await writePreparationFixture(root);
+  const runId = "90000000-0000-4000-8000-000000000012";
+  const transactionDirectory = path.join(path.dirname(paths.transactionJournal), `staging-prepare-${runId}`);
+  const stagedPath = path.join(transactionDirectory, "0.staged");
+  const backupPath = path.join(transactionDirectory, "0.backup");
+  const blockerPath = path.join(transactionDirectory, "synthetic-cleanup-blocker");
+  const originalEnvironment = await readFile(paths.environment, "utf8");
+  await mkdir(transactionDirectory, { recursive: true });
+  await writeFile(stagedPath, "synthetic staged output\n");
+  await writeFile(backupPath, originalEnvironment);
+  await writeFile(blockerPath, "force first cleanup to fail\n");
+  await writeFile(paths.environment, originalEnvironment.replace("migration:keep", "migration:interrupted"));
+  await writeFile(paths.transactionJournal, JSON.stringify({
+    version: 1,
+    runId,
+    status: "prepared",
+    transactionDirectory,
+    entries: [{ destination: paths.environment, stagedPath, backupPath, existed: true }],
+  }));
+
+  await assert.rejects(prepareStagingFiles({
+    paths,
+    confirmations: {
+      application: "https://review-anchor-staging.review-anchor-staging-test.workers.dev",
+      ingress: "https://review-anchor-staging-ingress.review-anchor-staging-test.workers.dev",
+    },
+    randomBytes: (size) => Buffer.alloc(size, 1),
+    rotate: false,
+    confirmedEmptyStagingData: false,
+  }));
+  assert.equal(await readFile(paths.environment, "utf8"), originalEnvironment);
+  assert.equal((JSON.parse(await readFile(paths.transactionJournal, "utf8")) as { status: string }).status, "rolled_back");
+  assert.equal(await fileExists(backupPath), false);
+
+  await unlink(blockerPath);
+  let byte = 1;
+  await prepareStagingFiles({
+    paths,
+    confirmations: {
+      application: "https://review-anchor-staging.review-anchor-staging-test.workers.dev",
+      ingress: "https://review-anchor-staging-ingress.review-anchor-staging-test.workers.dev",
+    },
+    randomBytes: (size) => Buffer.alloc(size, byte++),
+    rotate: false,
+    confirmedEmptyStagingData: false,
+  });
+  assert.equal(await fileExists(paths.transactionJournal), false);
+  assert.match(await readFile(paths.environment, "utf8"), /migration:keep/);
 });
 
 test("prepare refuses an invalid recovery journal without touching any destination", async () => {
@@ -858,7 +996,20 @@ function capturedHyperdriveList(resources: Array<ReturnType<typeof hyperdriveRes
 }
 
 function capturedCreate(resource: ReturnType<typeof hyperdriveResource>) {
-  return `✅ Created new Hyperdrive PostgreSQL config: ${resource.id}\n`;
+  return [
+    `🚧 Creating '${resource.name}'`,
+    `✅ Created new Hyperdrive PostgreSQL config: ${resource.id}`,
+    "To access your new Hyperdrive Config in your Worker, add the following snippet to your configuration file:",
+    "{",
+    '  "hyperdrive": [',
+    "    {",
+    '      "binding": "HYPERDRIVE",',
+    `      "id": "${resource.id}"`,
+    "    }",
+    "  ]",
+    "}",
+    "",
+  ].join("\n");
 }
 
 function whoamiResult(accountId = accountEvidence().accountId) {
@@ -988,7 +1139,7 @@ test("cleanup helpers return only current-run created resources and refuse reuse
   );
 });
 
-test("ambiguous create output re-lists, gets, and reconciles once without creating twice", async () => {
+test("a concurrent resource appearing after ambiguous create is reused and cleanup-ineligible", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-ambiguous-"));
   const paths = await writeHyperdriveFixture(root);
   let listCount = 0;
@@ -1017,6 +1168,68 @@ test("ambiguous create output re-lists, gets, and reconciles once without creati
   });
   assert.equal(createCount, 4);
   assert.equal(listCount, 2);
+  const evidence = JSON.parse(await readFile(paths.accountEvidence, "utf8")) as AccountEvidence;
+  const operation = evidence.hyperdriveOperation;
+  assert.ok(operation);
+  assert.equal(operation.resources.AUTH_DB.disposition, "reused");
+  assert.equal(operation.resources.AUTH_DB.attempted, true);
+  assert.equal(createdHyperdriveCleanupTargets(evidence, SYNTHETIC_RUN_ID).some(({ binding }) => binding === "AUTH_DB"), false);
+  assert.throws(
+    () => assertHyperdriveCleanupTarget(evidence, SYNTHETIC_RUN_ID, "AUTH_DB", created[0].id),
+    /reused/,
+  );
+});
+
+test("resume after an attempted create treats a newly listed resource as reused and never cleanup-owned", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-resume-conflict-"));
+  const paths = await writeHyperdriveFixture(root);
+  const resources = HYPERDRIVE_SPECS.map((_, index) => hyperdriveResource(index));
+  await writeFile(paths.accountEvidence, JSON.stringify({
+    ...accountEvidence(),
+    hyperdriveOperation: {
+      runId: SYNTHETIC_RUN_ID,
+      startedAt: new Date().toISOString(),
+      status: "pending",
+      resources: Object.fromEntries(HYPERDRIVE_SPECS.map((spec, index) => [spec.binding, index === 0
+        ? {
+            descriptor: hyperdriveDescriptor(index),
+            state: "pending",
+            attempted: true,
+            runId: SYNTHETIC_RUN_ID,
+          }
+        : {
+            descriptor: hyperdriveDescriptor(index),
+            state: "resolved",
+            attempted: false,
+            id: resources[index].id,
+            disposition: "reused",
+            runId: SYNTHETIC_RUN_ID,
+          }])),
+    },
+  }));
+  let createCount = 0;
+  await provisionHyperdrives({
+    cwd: root,
+    paths,
+    runner: async (invocation) => {
+      if (invocation.args.includes("whoami")) return { exitCode: 0, stdout: whoamiResult(), stderr: "" };
+      if (invocation.args.includes("list")) return { exitCode: 0, stdout: capturedHyperdriveList(resources), stderr: "" };
+      if (invocation.args.includes("get")) {
+        const resource = resources.find(({ id }) => id === invocation.args.at(-1));
+        return { exitCode: 0, stdout: JSON.stringify(resource, null, 2), stderr: "" };
+      }
+      createCount += 1;
+      return { exitCode: 0, stdout: capturedCreate(resources[0]), stderr: "" };
+    },
+  });
+  assert.equal(createCount, 0);
+  const evidence = JSON.parse(await readFile(paths.accountEvidence, "utf8")) as AccountEvidence;
+  assert.equal(evidence.hyperdriveOperation?.resources.AUTH_DB.disposition, "reused");
+  assert.equal(createdHyperdriveCleanupTargets(evidence, SYNTHETIC_RUN_ID).length, 0);
+  assert.throws(
+    () => assertHyperdriveCleanupTarget(evidence, SYNTHETIC_RUN_ID, "AUTH_DB", resources[0].id),
+    /reused/,
+  );
 });
 
 test("malformed get output and unresolved ambiguous create fail closed without a second create on retry", async () => {

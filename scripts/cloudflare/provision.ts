@@ -131,6 +131,7 @@ export interface PrepareStagingOptions {
   randomBytes?: (size: number) => Uint8Array;
   rotate: boolean;
   transactionHooks?: {
+    beforeAtomicRename?: (temporaryPath: string, destination: string) => Promise<void> | void;
     beforeReplace?: (index: number, destination: string) => Promise<void> | void;
   };
 }
@@ -733,7 +734,13 @@ export function parseHyperdriveListOutput(stdout: string) {
 }
 
 export function parseHyperdriveCreateOutput(stdout: string) {
-  const match = /^✅ Created new Hyperdrive (PostgreSQL) config: ([0-9a-f]{32})\r?\n?$/.exec(stdout);
+  const candidates = stdout.replace(/\r\n/g, "\n").split("\n")
+    .filter((line) => line.startsWith("✅ Created new Hyperdrive"));
+  assertSafe(
+    candidates.length === 1,
+    "Hyperdrive create did not return the exact Wrangler 4.112.0 success contract: expected exactly one exact success line and ID.",
+  );
+  const match = /^✅ Created new Hyperdrive (PostgreSQL) config: ([0-9a-f]{32})$/.exec(candidates[0] as string);
   assertSafe(match, "Hyperdrive create did not return the exact Wrangler 4.112.0 success contract.");
   return { scheme: match[1] as string, id: match[2] as string };
 }
@@ -843,7 +850,7 @@ interface PreparationTransactionEntry {
 interface PreparationTransactionJournal {
   entries: PreparationTransactionEntry[];
   runId: string;
-  status: "prepared" | "committed";
+  status: "staging" | "prepared" | "rolling_back" | "rolled_back" | "committed";
   transactionDirectory: string;
   version: 1;
 }
@@ -864,7 +871,14 @@ function preparationDestinations(paths: PreparationPaths) {
 function validatePreparationJournal(value: unknown, paths: PreparationPaths) {
   assertSafe(isObject(value) && value.version === 1, "The staging preparation transaction journal is invalid.");
   assertRunId(value.runId);
-  assertSafe(value.status === "prepared" || value.status === "committed", "The staging preparation transaction status is invalid.");
+  assertSafe(
+    value.status === "staging"
+      || value.status === "prepared"
+      || value.status === "rolling_back"
+      || value.status === "rolled_back"
+      || value.status === "committed",
+    "The staging preparation transaction status is invalid.",
+  );
   const expectedDirectory = path.resolve(path.dirname(paths.transactionJournal), `staging-prepare-${value.runId}`);
   assertSafe(value.transactionDirectory === expectedDirectory, "The staging preparation transaction directory is invalid.");
   assertSafe(Array.isArray(value.entries) && value.entries.length > 0, "The staging preparation transaction entries are invalid.");
@@ -895,9 +909,10 @@ async function cleanupPreparationTransaction(
   journal: PreparationTransactionJournal,
   journalPath: string,
 ) {
-  for (const entry of journal.entries) {
+  for (const [index, entry] of journal.entries.entries()) {
     await unlinkIfPresent(entry.stagedPath);
     await unlinkIfPresent(entry.backupPath);
+    await unlinkIfPresent(path.join(journal.transactionDirectory, `${index}.restore.pending`));
   }
   await rmdirIfPresent(journal.transactionDirectory);
   await unlinkIfPresent(journalPath);
@@ -907,14 +922,25 @@ async function rollbackPreparationTransaction(
   journal: PreparationTransactionJournal,
   journalPath: string,
 ) {
-  for (const entry of journal.entries) {
+  if (journal.status === "prepared") {
+    const rollingBack = { ...journal, status: "rolling_back" as const };
+    await writeAtomic(journalPath, `${JSON.stringify(rollingBack, null, 2)}\n`);
+    journal.status = "rolling_back";
+  }
+  assertSafe(journal.status === "rolling_back", "Only a prepared transaction can be rolled back.");
+  for (const [index, entry] of journal.entries.entries()) {
     if (entry.existed) {
       assertSafe(await exists(entry.backupPath), "A staging preparation transaction backup is missing; rollback was refused.");
-      await writeAtomic(entry.destination, await readFile(entry.backupPath, "utf8"));
+      const restorePath = path.join(journal.transactionDirectory, `${index}.restore.pending`);
+      await writeFile(restorePath, await readFile(entry.backupPath), { mode: 0o600 });
+      await rename(restorePath, entry.destination);
     } else {
       await unlinkIfPresent(entry.destination);
     }
   }
+  const rolledBack = { ...journal, status: "rolled_back" as const };
+  await writeAtomic(journalPath, `${JSON.stringify(rolledBack, null, 2)}\n`);
+  journal.status = "rolled_back";
   await cleanupPreparationTransaction(journal, journalPath);
 }
 
@@ -924,14 +950,18 @@ async function recoverPreparationTransaction(paths: PreparationPaths) {
     await readJson(paths.transactionJournal, "Staging preparation transaction journal"),
     paths,
   );
-  if (journal.status === "prepared") await rollbackPreparationTransaction(journal, paths.transactionJournal);
-  else await cleanupPreparationTransaction(journal, paths.transactionJournal);
+  if (journal.status === "prepared" || journal.status === "rolling_back") {
+    await rollbackPreparationTransaction(journal, paths.transactionJournal);
+  } else {
+    await cleanupPreparationTransaction(journal, paths.transactionJournal);
+  }
 }
 
 async function commitPreparationTransaction(
   paths: PreparationPaths,
   outputs: Array<{ contents: string; destination: string }>,
   hook?: (index: number, destination: string) => Promise<void> | void,
+  atomicRenameHook?: (temporaryPath: string, destination: string) => Promise<void> | void,
 ) {
   const runId = randomUUID();
   const transactionDirectory = path.resolve(path.dirname(paths.transactionJournal), `staging-prepare-${runId}`);
@@ -945,28 +975,39 @@ async function commitPreparationTransaction(
       const stagedPath = path.join(transactionDirectory, `${index}.staged`);
       const backupPath = path.join(transactionDirectory, `${index}.backup`);
       const existed = await exists(destination);
-      await writeFile(stagedPath, output.contents, { mode: 0o600 });
-      if (existed) await writeFile(backupPath, await readFile(destination), { mode: 0o600 });
       entries.push({ destination, stagedPath, backupPath, existed });
     }
     assertSafe(
       new Set(entries.map(({ destination }) => destination)).size === entries.length,
       "Staging preparation contains duplicate transaction destinations.",
     );
-    journal = { version: 1, runId, status: "prepared", transactionDirectory, entries };
+    journal = { version: 1, runId, status: "staging", transactionDirectory, entries };
     validatePreparationJournal(journal, paths);
     await writeAtomic(paths.transactionJournal, `${JSON.stringify(journal, null, 2)}\n`);
     journalWritten = true;
+    for (const [index, output] of outputs.entries()) {
+      const entry = entries[index] as PreparationTransactionEntry;
+      await writeFile(entry.stagedPath, output.contents, { mode: 0o600 });
+      if (entry.existed) await writeFile(entry.backupPath, await readFile(entry.destination), { mode: 0o600 });
+    }
+    const prepared = { ...journal, status: "prepared" as const };
+    await writeAtomic(paths.transactionJournal, `${JSON.stringify(prepared, null, 2)}\n`);
+    journal.status = "prepared";
     for (const [index, entry] of entries.entries()) {
       await hook?.(index, entry.destination);
-      await writeAtomic(entry.destination, await readFile(entry.stagedPath, "utf8"));
+      await atomicRenameHook?.(entry.stagedPath, entry.destination);
+      await rename(entry.stagedPath, entry.destination);
     }
+    const committed = { ...journal, status: "committed" as const };
+    await writeAtomic(paths.transactionJournal, `${JSON.stringify(committed, null, 2)}\n`);
     journal.status = "committed";
-    await writeAtomic(paths.transactionJournal, `${JSON.stringify(journal, null, 2)}\n`);
     await cleanupPreparationTransaction(journal, paths.transactionJournal);
   } catch (error) {
     try {
-      if (journalWritten && journal) await rollbackPreparationTransaction(journal, paths.transactionJournal);
+      if (journalWritten && journal && (journal.status === "prepared" || journal.status === "rolling_back")) {
+        await rollbackPreparationTransaction(journal, paths.transactionJournal);
+      }
+      else if (journalWritten && journal) await cleanupPreparationTransaction(journal, paths.transactionJournal);
       else if (journal) await cleanupPreparationTransaction(journal, paths.transactionJournal);
       else {
         for (const entry of entries) {
@@ -1031,7 +1072,12 @@ export async function prepareStagingFiles(options: PrepareStagingOptions) {
       contents: `${JSON.stringify(secretMaterial.payloads[runtime], null, 2)}\n`,
     });
   }
-  await commitPreparationTransaction(options.paths, outputs, options.transactionHooks?.beforeReplace);
+  await commitPreparationTransaction(
+    options.paths,
+    outputs,
+    options.transactionHooks?.beforeReplace,
+    options.transactionHooks?.beforeAtomicRename,
+  );
   return { origins };
 }
 
@@ -1229,7 +1275,8 @@ async function reconcileAmbiguousCreate(
     const entry = selectExactListEntry(parseHyperdriveListOutput(listOutput), spec, origin);
     assertSafe(entry, "The ambiguous create was not present in the reconciled list.");
     assertSafe(parsedCreateId === undefined || entry.id === parsedCreateId, "The reconciled Hyperdrive ID differs from create output.");
-    return await fetchExactHyperdrive(runner, options.cwd, account.accountId, entry, spec, origin);
+    const resource = await fetchExactHyperdrive(runner, options.cwd, account.accountId, entry, spec, origin);
+    return { resource, disposition: parsedCreateId === undefined ? "reused" as const : "created" as const };
   } catch {
     throw new SafeProvisionError("Hyperdrive create command failed safely; ambiguous create could not be reconciled.");
   }
@@ -1258,7 +1305,7 @@ async function createAndVerifyHyperdrive(
       const resource = parseHyperdriveGetOutput(stdout);
       assertSafe(resource.id === parsedCreateId, "The created Hyperdrive ID does not match get metadata.");
       selectReusableHyperdrive([resource], spec, origin);
-      return resource;
+      return { resource, disposition: "created" as const };
     }
   } catch {
     // A thrown command, malformed output, or invalid get result is ambiguous and must be reconciled.
@@ -1361,7 +1408,7 @@ export async function provisionHyperdrives(options: ProvisionHyperdrivesOptions)
           ...entry,
           state: "resolved",
           id: listed.id,
-          disposition: entry.attempted ? "created" : "reused",
+          disposition: "reused",
         };
       } else {
         assertSafe(
@@ -1390,8 +1437,8 @@ export async function provisionHyperdrives(options: ProvisionHyperdrivesOptions)
     operation.resources[spec.binding] = {
       ...operation.resources[spec.binding],
       state: "resolved",
-      id: created.id,
-      disposition: "created",
+      id: created.resource.id,
+      disposition: created.disposition,
     };
     if (Object.values(operation.resources).every(({ state }) => state === "resolved")) operation.status = "complete";
     await persistOperation(options.paths.accountEvidence, account, operation);
