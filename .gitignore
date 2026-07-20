@@ -10,3 +10,7 @@ dist/
 !.env.cloudflare-demo
 .playwright-cli/
 output/playwright/
+.cloudflare/*-secrets.json
+.cloudflare/staging-resource-ids.json
+.cloudflare/pre-rotation-secrets.json
+.cloudflare/evidence/
