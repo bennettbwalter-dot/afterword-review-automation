@@ -1,0 +1,8 @@
+{
+  "name": "review-anchor-staging-compat",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-20",
+  "compatibility_flags": ["nodejs_compat", "enable_nodejs_http_server_modules"],
+  "workers_dev": true,
+  "observability": { "enabled": true }
+}

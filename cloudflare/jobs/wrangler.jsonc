@@ -1,0 +1,14 @@
+{
+  "name": "review-anchor-staging-jobs",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-20",
+  "compatibility_flags": ["nodejs_compat", "enable_nodejs_http_server_modules"],
+  "workers_dev": false,
+  "observability": { "enabled": true },
+  "vars": {
+    "NODE_ENV": "production",
+    "PROVIDER_DELIVERY_ENABLED": "false",
+    "STRIPE_CHECKOUT_ENABLED": "false",
+    "STRIPE_MODE": "test"
+  }
+}
