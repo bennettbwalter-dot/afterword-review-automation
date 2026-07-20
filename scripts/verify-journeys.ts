@@ -11,8 +11,10 @@
  *   npm run verify:journeys
  *
  * Falls back to API_HOST/API_PORT and BOOTSTRAP_EMAIL/BOOTSTRAP_PASSWORD for
- * local runs. Read-only apart from one clearly-labelled completed job, which
- * the consent rules are expected to block or queue.
+ * local runs. Apart from one clearly-labelled completed job, the default run
+ * is idempotent: it re-saves the existing SMS policy and does not create a
+ * Stripe Checkout Session. Set VERIFY_ALLOW_STRIPE_SESSION=true only against
+ * an account where creating a test Checkout Session is intentional.
  */
 import { loadLocalEnvironment } from "../server/load-env.js";
 
@@ -23,6 +25,7 @@ const apiBase = process.env.API_BASE
 const origin = process.env.APP_ORIGIN ?? "http://127.0.0.1:4173";
 const email = process.env.VERIFY_EMAIL ?? process.env.BOOTSTRAP_EMAIL;
 const password = process.env.VERIFY_PASSWORD ?? process.env.BOOTSTRAP_PASSWORD;
+const allowStripeSession = process.env.VERIFY_ALLOW_STRIPE_SESSION === "true";
 
 if (!email || !password) {
   console.error("Set VERIFY_EMAIL and VERIFY_PASSWORD (or BOOTSTRAP_EMAIL/BOOTSTRAP_PASSWORD).");
@@ -200,11 +203,16 @@ async function main() {
 
   console.log("\nBilling permissions");
   if (business) {
-    const policy = await call(`/api/v1/businesses/${business.id}/billing/sms-policy`, {
-      method: "PATCH",
-      body: JSON.stringify({ policy: "pause_sms" }),
-    });
-    record("SMS overage policy update authorised", policy.status === 200, `status ${policy.status}`);
+    const currentPolicy = business.billing?.smsOveragePolicy;
+    if (currentPolicy) {
+      const policy = await call(`/api/v1/businesses/${business.id}/billing/sms-policy`, {
+        method: "PATCH",
+        body: JSON.stringify({ policy: currentPolicy }),
+      });
+      record("SMS overage policy update authorised", policy.status === 200, `status ${policy.status}; unchanged (${currentPolicy})`);
+    } else {
+      record("SMS overage policy update", true, "skipped; billing is not configured for this business");
+    }
 
     const badPolicy = await call(`/api/v1/businesses/${business.id}/billing/sms-policy`, {
       method: "PATCH",
@@ -212,16 +220,20 @@ async function main() {
     });
     record("invalid billing policy rejected", badPolicy.status === 400, `status ${badPolicy.status}`);
 
-    const checkout = await call(`/api/v1/businesses/${business.id}/billing/checkout`, {
-      method: "POST",
-      body: JSON.stringify({ attemptId: crypto.randomUUID() }),
-    });
-    const checkoutHandled = checkout.status === 200 || checkout.status === 403 || checkout.status === 409 || checkout.status === 503;
-    record(
-      "checkout returns a definite outcome",
-      checkoutHandled,
-      checkout.status === 200 ? "session created" : `${checkout.status} ${checkout.body?.error?.code ?? ""}`,
-    );
+    if (allowStripeSession) {
+      const checkout = await call(`/api/v1/businesses/${business.id}/billing/checkout`, {
+        method: "POST",
+        body: JSON.stringify({ attemptId: crypto.randomUUID() }),
+      });
+      const checkoutHandled = checkout.status === 200 || checkout.status === 403 || checkout.status === 409 || checkout.status === 503;
+      record(
+        "checkout returns a definite outcome",
+        checkoutHandled,
+        checkout.status === 200 ? "test session created" : `${checkout.status} ${checkout.body?.error?.code ?? ""}`,
+      );
+    } else {
+      record("checkout creation", true, "skipped; set VERIFY_ALLOW_STRIPE_SESSION=true for an intentional test session");
+    }
   }
 
   console.log("\nAgency support boundary");

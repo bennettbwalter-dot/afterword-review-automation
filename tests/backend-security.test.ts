@@ -25,6 +25,7 @@ import { synchronizeDueGoogleConnections, type GoogleBusinessProfileClient } fro
 import { encryptField, hashOpaqueToken, hashPassword, verifyPassword } from "../server/security/crypto.js";
 import type {
   ActorContext,
+  BusinessRole,
   CompletedJobInput,
   EncryptedPayload,
   GoogleConnectionInput,
@@ -38,7 +39,9 @@ const encryptionKey = randomBytes(32).toString("base64url");
 const sessionPepper = "test-session-pepper-that-is-longer-than-32-characters";
 const businessId = randomUUID();
 const otherBusinessId = randomUUID();
+const foreignBusinessId = randomUUID();
 const locationId = randomUUID();
+const otherLocationId = randomUUID();
 const userId = randomUUID();
 const password = "correct horse battery staple 2026";
 const passwordHash = await hashPassword(password);
@@ -63,6 +66,20 @@ test("the application process serves the production frontend with hardened cache
     assert.equal(asset.statusCode, 200);
     assert.match(String(asset.headers["cache-control"]), /immutable/);
 
+    const directWorkspaceRoute = await app.inject({ method: "GET", url: "/app/reviews?business=demo&location=main" });
+    assert.equal(directWorkspaceRoute.statusCode, 200);
+    assert.match(directWorkspaceRoute.body, /Review Anchor/);
+    assert.equal(directWorkspaceRoute.headers["cache-control"], "public, max-age=0, must-revalidate");
+
+    const uppercaseWorkspaceRoute = await app.inject({ method: "GET", url: "/APP/REVIEWS" });
+    assert.equal(uppercaseWorkspaceRoute.statusCode, 200);
+    const legacyWorkspaceRoute = await app.inject({ method: "GET", url: "/workspace" });
+    assert.equal(legacyWorkspaceRoute.statusCode, 200);
+
+    const unknownApi = await app.inject({ method: "GET", url: "/api/v1/not-a-route" });
+    assert.equal(unknownApi.statusCode, 404);
+    assert.equal(unknownApi.json().error.code, "NOT_FOUND");
+
     const health = await app.inject({ method: "GET", url: "/api/v1/health" });
     assert.equal(health.statusCode, 200);
   } finally {
@@ -79,65 +96,79 @@ const config = loadConfig({
   FIELD_ENCRYPTION_KEY: encryptionKey,
 });
 
-function workspace(actor: ActorContext): WorkspacePayload {
+function workspace(actor: ActorContext, accessibleBusinessIds: string[] = [businessId]): WorkspacePayload {
+  const businesses: WorkspacePayload["businesses"] = accessibleBusinessIds.map((accessibleBusinessId) => ({
+    id: accessibleBusinessId,
+    agencyId: randomUUID(),
+    locationId: accessibleBusinessId === businessId ? locationId : otherLocationId,
+    name: accessibleBusinessId === businessId ? "Pilot Plumbing" : "Second Pilot Plumbing",
+    locationName: accessibleBusinessId === businessId ? "Main location" : "Second location",
+    initials: accessibleBusinessId === businessId ? "PP" : "SP",
+    country: "GB" as const,
+    timezone: "Europe/London",
+    health: "Healthy",
+    healthTone: "success" as const,
+    automationState: "Live",
+    integrationSummary: "Server connected",
+    lastSuccess: "Awaiting provider activity",
+    affectedCount: 0,
+    plan: "Reputation Pro",
+    locationReports: [],
+    seedRequestCount: 0,
+    metrics: {
+      completedJobs: 0,
+      eligibleCustomers: 0,
+      delivered: 0,
+      uniqueClicks: 0,
+      reviewsDetected: 0,
+      rating: 0,
+      totalReviews: 0,
+    },
+    teamMembers: [],
+    integrations: {
+      google: { status: "Connected", tone: "success" as const, lastEvent: "Now" },
+      messaging: { status: "Connected", tone: "success" as const, lastEvent: "Now" },
+      jobIntake: { status: "Listening", tone: "success" as const, lastEvent: "Now" },
+    },
+  }));
   return {
     session: {
       userId: actor.userId,
       userName: actor.userName,
       email: actor.email,
       role: actor.role,
+      businessRole: actor.businessRole,
       businessId: actor.businessId,
       agencyId: actor.agencyId,
       mfaVerified: actor.mfaVerified,
       stepUpVerifiedAt: actor.stepUpVerifiedAt,
       supportSessionId: actor.supportSessionId,
     },
-    businesses: [{
-      id: businessId,
-      agencyId: randomUUID(),
-      locationId,
-      name: "Pilot Plumbing",
-      locationName: "Main location",
-      initials: "PP",
-      country: "GB",
-      timezone: "Europe/London",
-      health: "Healthy",
-      healthTone: "success",
-      automationState: "Live",
-      integrationSummary: "Server connected",
-      lastSuccess: "Awaiting provider activity",
-      affectedCount: 0,
-      plan: "Reputation Pro",
-      locationReports: [],
-      seedRequestCount: 0,
-      metrics: {
-        completedJobs: 0,
-        eligibleCustomers: 0,
-        delivered: 0,
-        uniqueClicks: 0,
-        reviewsDetected: 0,
-        rating: 0,
-        totalReviews: 0,
-      },
-      teamMembers: [],
-      integrations: {
-        google: { status: "Connected", tone: "success", lastEvent: "Now" },
-        messaging: { status: "Connected", tone: "success", lastEvent: "Now" },
-        jobIntake: { status: "Listening", tone: "success", lastEvent: "Now" },
-      },
-    }],
-    requestsByBusiness: { [businessId]: [] },
-    reviewsByBusiness: { [businessId]: [] },
+    businesses,
+    requestsByBusiness: Object.fromEntries(accessibleBusinessIds.map((id) => [id, []])),
+    reviewsByBusiness: Object.fromEntries(accessibleBusinessIds.map((id) => [id, []])),
     qrCodesByBusiness: {},
+    workflowsByLocation: {},
     exceptions: [],
     auditEvents: [],
   };
 }
 
-function createRepository() {
+interface TestActorOptions {
+  role?: ActorContext["role"];
+  mfaVerified?: boolean;
+  agencyId?: string;
+  initialBusinessId?: string | null;
+  accessibleBusinessIds?: string[];
+  businessRoles?: Partial<Record<string, BusinessRole>>;
+}
+
+function createRepository(actorOptions: TestActorOptions = {}) {
   const sessionActors = new Map<string, ActorContext>();
   let capturedJob: CompletedJobInput | undefined;
   let capturedSmsPolicy: "auto_top_up" | "pause_sms" | undefined;
+  let capturedWorkspaceContext: { businessId?: string; locationId?: string } | undefined;
+  let activeSupportSession: Awaited<ReturnType<PlatformRepository["getActiveSupportSession"]>> = null;
   const loginResults: Array<{ email: string; succeeded: boolean }> = [];
   const repository: PlatformRepository = {
     async findCredentialByEmail(email) {
@@ -152,9 +183,14 @@ function createRepository() {
         userId,
         userName: "Owner",
         email: "owner@example.com",
-        role: "business_owner",
-        businessId,
-        mfaVerified: false,
+        role: actorOptions.role ?? "business_owner",
+        businessId: actorOptions.role === "agency_admin"
+          ? undefined
+          : actorOptions.initialBusinessId === null
+            ? undefined
+            : actorOptions.initialBusinessId ?? businessId,
+        agencyId: actorOptions.role === "agency_admin" ? actorOptions.agencyId ?? randomUUID() : undefined,
+        mfaVerified: actorOptions.mfaVerified ?? false,
         sessionId,
         sessionTokenHash: input.tokenHash,
       });
@@ -166,15 +202,35 @@ function createRepository() {
     async revokeLoginSession(_sessionId, tokenHash) {
       sessionActors.delete(tokenHash.toString("hex"));
     },
-    async getWorkspace(actor) {
-      return workspace(actor);
+    async getWorkspace(actor, selectedBusinessId, selectedLocationId) {
+      capturedWorkspaceContext = { businessId: selectedBusinessId, locationId: selectedLocationId };
+      const accessibleBusinessIds = actorOptions.accessibleBusinessIds ?? [businessId];
+      const projectedActor = actor.role === "business_owner" && selectedBusinessId
+        ? {
+            ...actor,
+            businessId: selectedBusinessId,
+            businessRole: actorOptions.businessRoles?.[selectedBusinessId],
+          }
+        : actor;
+      return workspace(projectedActor, accessibleBusinessIds);
     },
     async updateSmsOveragePolicy(_actor, _businessId, policy) {
       capturedSmsPolicy = policy;
       return { updated: true, policy, reason: "saved" };
     },
-    async startSupportSession() { return randomUUID(); },
-    async endSupportSession() { return true; },
+    async startSupportSession(_actor, input) {
+      const id = randomUUID();
+      activeSupportSession = {
+        id,
+        businessId: input.businessId,
+        scope: input.scope,
+        startedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + input.durationMinutes * 60_000).toISOString(),
+      };
+      return id;
+    },
+    async getActiveSupportSession() { return activeSupportSession; },
+    async endSupportSession() { activeSupportSession = null; return true; },
     async createCompletedJob(_actor, input) {
       capturedJob = input;
       return { requestId: randomUUID(), status: "Queued", duplicate: false };
@@ -206,12 +262,13 @@ function createRepository() {
     repository,
     getCapturedJob: () => capturedJob,
     getCapturedSmsPolicy: () => capturedSmsPolicy,
+    getCapturedWorkspaceContext: () => capturedWorkspaceContext,
     getLoginResults: () => loginResults,
   };
 }
 
-async function authenticatedApp() {
-  const state = createRepository();
+async function authenticatedApp(actorOptions: TestActorOptions = {}) {
+  const state = createRepository(actorOptions);
   const app = await buildApp({ config, repository: state.repository });
   const login = await app.inject({
     method: "POST",
@@ -378,6 +435,7 @@ test("Stripe Checkout and portal routes are same-origin, tenant-bound and server
   const state = createRepository();
   let checkoutContext: StripeCheckoutContext | undefined;
   let boundSessionId: string | undefined;
+  let portalReturnUrl: string | undefined;
   state.repository.prepareStripeCheckout = async (_actor, requestedBusinessId, attemptId) => ({
     allowed: true,
     reason: "ready",
@@ -405,8 +463,9 @@ test("Stripe Checkout and portal routes are same-origin, tenant-bound and server
         livemode: false,
       };
     },
-    async createCustomerPortal(customerId) {
+    async createCustomerPortal(customerId, returnUrl) {
       assert.equal(customerId, "cus_test_customer");
+      portalReturnUrl = returnUrl;
       return { url: "https://billing.stripe.com/p/session/test_portal" };
     },
   };
@@ -441,7 +500,7 @@ test("Stripe Checkout and portal routes are same-origin, tenant-bound and server
     method: "POST",
     url: `/api/v1/businesses/${businessId}/billing/checkout`,
     headers: { cookie, origin: "https://attacker.example" },
-    payload: { attemptId },
+    payload: { attemptId, locationId },
   });
   assert.equal(wrongOrigin.statusCode, 403);
 
@@ -449,7 +508,7 @@ test("Stripe Checkout and portal routes are same-origin, tenant-bound and server
     method: "POST",
     url: `/api/v1/businesses/${otherBusinessId}/billing/checkout`,
     headers: { cookie, origin: appOrigin },
-    payload: { attemptId },
+    payload: { attemptId, locationId },
   });
   assert.equal(crossTenant.statusCode, 403);
 
@@ -457,23 +516,82 @@ test("Stripe Checkout and portal routes are same-origin, tenant-bound and server
     method: "POST",
     url: `/api/v1/businesses/${businessId}/billing/checkout`,
     headers: { cookie, origin: appOrigin },
-    payload: { attemptId },
+    payload: { attemptId, locationId },
   });
   assert.equal(checkout.statusCode, 201);
   assert.equal(checkout.json().data.url, "https://checkout.stripe.com/c/pay/cs_test_server_owned");
   assert.equal(checkoutContext?.businessId, businessId);
   assert.equal(checkoutContext?.subscriptionPricePence, 3900);
   assert.equal(checkoutContext?.setupFeePence, 14900);
+  assert.match(checkoutContext?.successUrl ?? "", new RegExp(`business=${businessId}`));
+  assert.match(checkoutContext?.successUrl ?? "", new RegExp(`location=${locationId}`));
+  assert.match(checkoutContext?.successUrl ?? "", /checkout=success/);
+  assert.match(checkoutContext?.successUrl ?? "", /session_id=\{CHECKOUT_SESSION_ID\}/);
+  assert.match(checkoutContext?.cancelUrl ?? "", /checkout=cancelled/);
   assert.equal(boundSessionId, "cs_test_server_owned");
+
+  const businessScopedCheckout = await app.inject({
+    method: "POST",
+    url: `/api/v1/businesses/${businessId}/billing/checkout`,
+    headers: { cookie, origin: appOrigin },
+    payload: { attemptId: randomUUID() },
+  });
+  assert.equal(businessScopedCheckout.statusCode, 201);
+  assert.match(checkoutContext?.successUrl ?? "", new RegExp(`business=${businessId}`));
+  assert.doesNotMatch(checkoutContext?.successUrl ?? "", /[?&]location=/);
+  assert.match(checkoutContext?.cancelUrl ?? "", new RegExp(`business=${businessId}`));
+  assert.doesNotMatch(checkoutContext?.cancelUrl ?? "", /[?&]location=/);
+
+  const wrongLocation = await app.inject({
+    method: "POST",
+    url: `/api/v1/businesses/${businessId}/billing/checkout`,
+    headers: { cookie, origin: appOrigin },
+    payload: { attemptId: randomUUID(), locationId: otherBusinessId },
+  });
+  assert.equal(wrongLocation.statusCode, 404);
+  assert.equal(wrongLocation.json().error.code, "LOCATION_NOT_FOUND");
 
   const portal = await app.inject({
     method: "POST",
     url: `/api/v1/businesses/${businessId}/billing/portal`,
     headers: { cookie, origin: appOrigin },
-    payload: {},
+    payload: { locationId },
   });
   assert.equal(portal.statusCode, 201);
   assert.equal(portal.json().data.url, "https://billing.stripe.com/p/session/test_portal");
+  assert.match(portalReturnUrl ?? "", new RegExp(`business=${businessId}`));
+  assert.match(portalReturnUrl ?? "", new RegExp(`location=${locationId}`));
+  assert.match(portalReturnUrl ?? "", /billing=return/);
+
+  const businessScopedPortal = await app.inject({
+    method: "POST",
+    url: `/api/v1/businesses/${businessId}/billing/portal`,
+    headers: { cookie, origin: appOrigin },
+    payload: {},
+  });
+  assert.equal(businessScopedPortal.statusCode, 201);
+  assert.match(portalReturnUrl ?? "", new RegExp(`business=${businessId}`));
+  assert.doesNotMatch(portalReturnUrl ?? "", /[?&]location=/);
+  assert.match(portalReturnUrl ?? "", /billing=return/);
+});
+
+test("support sessions cannot begin Google Business Profile OAuth", async (t) => {
+  const { app, cookie } = await authenticatedApp({ role: "agency_admin", mfaVerified: true });
+  t.after(() => app.close());
+
+  const response = await app.inject({
+    method: "POST",
+    url: `/api/v1/businesses/${businessId}/locations/${locationId}/integrations/google/oauth/start`,
+    headers: {
+      cookie,
+      origin: appOrigin,
+      "x-support-session-id": randomUUID(),
+    },
+  });
+
+  assert.equal(response.statusCode, 403);
+  assert.equal(response.json().error.code, "GOOGLE_OWNER_REQUIRED");
+  assert.match(response.json().error.message, /direct business owner or administrator/i);
 });
 
 test("Stripe webhook route verifies first and persists the exact raw body", async (t) => {
@@ -624,6 +742,121 @@ test("login uses an opaque HttpOnly cookie and records durable success and failu
     { email: "owner@example.com", succeeded: true },
     { email: "missing@example.com", succeeded: false },
   ]);
+});
+
+test("workspace deep links validate and forward business and location context", async (t) => {
+  const { app, cookie, getCapturedWorkspaceContext } = await authenticatedApp();
+  t.after(() => app.close());
+
+  const selected = await app.inject({
+    method: "GET",
+    url: `/api/v1/workspace?businessId=${businessId}&locationId=${locationId}`,
+    headers: { cookie },
+  });
+  assert.equal(selected.statusCode, 200);
+  assert.deepEqual(getCapturedWorkspaceContext(), { businessId, locationId });
+
+  const unavailableLocation = await app.inject({
+    method: "GET",
+    url: `/api/v1/workspace?businessId=${businessId}&locationId=${otherBusinessId}`,
+    headers: { cookie },
+  });
+  assert.equal(unavailableLocation.statusCode, 404);
+  assert.equal(unavailableLocation.json().error.code, "LOCATION_NOT_FOUND");
+
+  const malformedLocation = await app.inject({
+    method: "GET",
+    url: `/api/v1/workspace?businessId=${businessId}&locationId=not-a-uuid`,
+    headers: { cookie },
+  });
+  assert.equal(malformedLocation.statusCode, 400);
+});
+
+test("ambiguous multi-business sessions authorize selected owner and billing memberships through the repository", async (t) => {
+  const { app, cookie, getCapturedSmsPolicy } = await authenticatedApp({
+    initialBusinessId: null,
+    accessibleBusinessIds: [businessId, otherBusinessId],
+    businessRoles: {
+      [businessId]: "owner",
+      [otherBusinessId]: "billing",
+    },
+  });
+  t.after(() => app.close());
+
+  const ownerWorkspace = await app.inject({
+    method: "GET",
+    url: `/api/v1/workspace?businessId=${businessId}&locationId=${locationId}`,
+    headers: { cookie },
+  });
+  assert.equal(ownerWorkspace.statusCode, 200);
+  assert.equal(ownerWorkspace.json().data.session.businessId, businessId);
+  assert.equal(ownerWorkspace.json().data.session.businessRole, "owner");
+
+  const billingWorkspace = await app.inject({
+    method: "GET",
+    url: `/api/v1/workspace?businessId=${otherBusinessId}&locationId=${otherLocationId}`,
+    headers: { cookie },
+  });
+  assert.equal(billingWorkspace.statusCode, 200);
+  assert.equal(billingWorkspace.json().data.session.businessId, otherBusinessId);
+  assert.equal(billingWorkspace.json().data.session.businessRole, "billing");
+
+  const billingCommand = await app.inject({
+    method: "PATCH",
+    url: `/api/v1/businesses/${otherBusinessId}/billing/sms-policy`,
+    headers: { cookie, origin: appOrigin },
+    payload: { policy: "pause_sms" },
+  });
+  assert.equal(billingCommand.statusCode, 200);
+  assert.equal(getCapturedSmsPolicy(), "pause_sms");
+
+  const foreignWorkspace = await app.inject({
+    method: "GET",
+    url: `/api/v1/workspace?businessId=${foreignBusinessId}`,
+    headers: { cookie },
+  });
+  assert.equal(foreignWorkspace.statusCode, 403);
+  assert.equal(foreignWorkspace.json().error.code, "BUSINESS_ACCESS_DENIED");
+});
+
+test("agency support context can be restored after a browser refresh and explicitly ended", async (t) => {
+  const { app, cookie } = await authenticatedApp({ role: "agency_admin", mfaVerified: true });
+  t.after(() => app.close());
+
+  const before = await app.inject({ method: "GET", url: "/api/v1/support-sessions/active", headers: { cookie } });
+  assert.equal(before.statusCode, 200);
+  assert.equal(before.json().data.session, null);
+
+  const started = await app.inject({
+    method: "POST",
+    url: "/api/v1/support-sessions",
+    headers: { cookie, origin: appOrigin },
+    payload: {
+      businessId,
+      scope: "view",
+      reason: "Investigate the location integration safely",
+      durationMinutes: 15,
+    },
+  });
+  assert.equal(started.statusCode, 201);
+  const supportSessionId = started.json().data.id as string;
+
+  const restored = await app.inject({ method: "GET", url: "/api/v1/support-sessions/active", headers: { cookie } });
+  assert.equal(restored.statusCode, 200);
+  assert.equal(restored.json().data.session.id, supportSessionId);
+  assert.equal(restored.json().data.session.businessId, businessId);
+
+  const ended = await app.inject({
+    method: "DELETE",
+    url: `/api/v1/support-sessions/${supportSessionId}`,
+    headers: { cookie, origin: appOrigin },
+    payload: { reason: "Support investigation completed safely" },
+  });
+  assert.equal(ended.statusCode, 204);
+
+  const after = await app.inject({ method: "GET", url: "/api/v1/support-sessions/active", headers: { cookie } });
+  assert.equal(after.statusCode, 200);
+  assert.equal(after.json().data.session, null);
 });
 
 test("origin guard and path-derived tenant prevent browser-selected authority", async (t) => {

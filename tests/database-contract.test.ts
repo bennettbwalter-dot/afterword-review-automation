@@ -36,6 +36,18 @@ test("token revocation has no unfenced authentication-role shortcut", async () =
   assert.match(schema, /grant\s+execute[^;]*finish_google_token_revocation[^;]*afterword_worker/i);
 });
 
+test("authenticated sessions expose only an unambiguous initial tenant role without replacing the legacy resolver", async () => {
+  const schema = await readFile(
+    path.resolve("database", "migrations", "008_expose_business_membership_role.sql"),
+    "utf8",
+  );
+  assert.match(schema, /returns\s+table\s*\([^)]*business_role\s+public\.business_role/is);
+  assert.match(schema, /select\s+membership\.business_id,\s*membership\.role/is);
+  assert.match(schema, /not\s+exists\s*\([^)]*other_membership\.user_id\s*=\s*users\.id[^)]*other_membership\.business_id\s*<>\s*membership\.business_id/is);
+  assert.match(schema, /grant\s+execute\s+on\s+function\s+app_private\.resolve_auth_session_with_role\(bytea\)\s+to\s+afterword_auth/i);
+  assert.doesNotMatch(schema, /drop\s+function\s+app_private\.resolve_auth_session/i);
+});
+
 test("SMS billing migration is forward-only, tenant-isolated and worker-fenced", async () => {
   const schema = await readFile(
     path.resolve("database", "migrations", "004_sms_billing_and_location_reporting.sql"),

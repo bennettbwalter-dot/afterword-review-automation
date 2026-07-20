@@ -32,4 +32,10 @@ export async function setActorContext(client: PoolClient, actor: ActorContext) {
     "select app_private.set_request_context_from_session($1, $2::uuid)",
     [actor.sessionTokenHash, actor.supportSessionId ?? null],
   );
+  if (actor.supportSessionId) {
+    await client.query(
+      "select app_private.touch_support_session($1::uuid)",
+      [actor.supportSessionId],
+    );
+  }
 }

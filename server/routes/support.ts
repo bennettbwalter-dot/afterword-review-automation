@@ -21,6 +21,14 @@ function requireAgencyAdmin(actor: ActorContext) {
 }
 
 export async function registerSupportRoutes(app: FastifyInstance, options: BuildAppOptions) {
+  app.get("/api/v1/support-sessions/active", async (request, reply) => {
+    const actor = requireActor(request);
+    requireAgencyAdmin(actor);
+    const session = await options.repository.getActiveSupportSession(actor);
+    reply.header("cache-control", "no-store");
+    return sendData(reply, { session });
+  });
+
   app.post("/api/v1/support-sessions", async (request, reply) => {
     requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production");
     const actor = requireActor(request);

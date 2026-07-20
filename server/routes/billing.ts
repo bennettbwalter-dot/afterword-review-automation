@@ -2,10 +2,34 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { BuildAppOptions } from "../app.js";
+import type { BusinessSummary } from "../types.js";
 import { ApiError, requireActor, requireBusinessAccess, requireSameOrigin, sendData } from "./shared.js";
 
 const businessParamsSchema = z.object({ businessId: z.string().uuid() }).strict();
-const checkoutSchema = z.object({ attemptId: z.string().uuid() }).strict();
+const checkoutSchema = z.object({ attemptId: z.string().uuid(), locationId: z.string().uuid().optional() }).strict();
+const portalSchema = z.object({ locationId: z.string().uuid().optional() }).strict();
+
+function requireBusinessLocation(business: BusinessSummary, locationId: string) {
+  const available = business.locationId === locationId
+    || business.locationReports.some((location) => location.id === locationId);
+  if (!available) {
+    throw new ApiError(404, "LOCATION_NOT_FOUND", "This location is not available in the selected business workspace.");
+  }
+}
+
+function billingReturnUrl(
+  appOrigin: string,
+  businessId: string,
+  locationId: string | undefined,
+  result: { checkout?: "success" | "cancelled"; billing?: "return" },
+) {
+  const url = new URL("/app/team-billing", appOrigin);
+  url.searchParams.set("business", businessId);
+  if (locationId) url.searchParams.set("location", locationId);
+  if (result.checkout) url.searchParams.set("checkout", result.checkout);
+  if (result.billing) url.searchParams.set("billing", result.billing);
+  return url.toString();
+}
 
 function requireRepositoryMethod<T extends (...parameters: never[]) => unknown>(operation: T | undefined): T {
   if (typeof operation !== "function") {
@@ -29,8 +53,9 @@ export async function registerBillingRoutes(app: FastifyInstance, options: Build
     requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production");
     const actor = requireActor(request);
     const { businessId } = businessParamsSchema.parse(request.params);
-    const { attemptId } = checkoutSchema.parse(request.body);
+    const { attemptId, locationId } = checkoutSchema.parse(request.body);
     const business = await requireBusinessAccess(options.repository, actor, businessId);
+    if (locationId) requireBusinessLocation(business, locationId);
     if (!options.config.STRIPE_CHECKOUT_ENABLED || !options.stripeBilling) {
       throw new ApiError(503, "STRIPE_CHECKOUT_DISABLED", "Stripe Checkout is not enabled for this environment.");
     }
@@ -56,6 +81,8 @@ export async function registerBillingRoutes(app: FastifyInstance, options: Build
       subscriptionPricePence: prepared.subscriptionPricePence,
       setupFeePence: prepared.setupFeePence,
       customerId: prepared.customerId,
+      successUrl: `${billingReturnUrl(options.config.APP_ORIGIN, businessId, locationId, { checkout: "success" })}&session_id={CHECKOUT_SESSION_ID}`,
+      cancelUrl: billingReturnUrl(options.config.APP_ORIGIN, businessId, locationId, { checkout: "cancelled" }),
     });
     const bindSession = requireRepositoryMethod(options.repository.bindStripeCheckoutSession)?.bind(options.repository);
     await bindSession(
@@ -75,7 +102,9 @@ export async function registerBillingRoutes(app: FastifyInstance, options: Build
     requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production");
     const actor = requireActor(request);
     const { businessId } = businessParamsSchema.parse(request.params);
-    await requireBusinessAccess(options.repository, actor, businessId);
+    const { locationId } = portalSchema.parse(request.body);
+    const business = await requireBusinessAccess(options.repository, actor, businessId);
+    if (locationId) requireBusinessLocation(business, locationId);
     if (!options.stripeBilling) {
       throw new ApiError(503, "STRIPE_PORTAL_DISABLED", "Stripe billing management is not configured.");
     }
@@ -88,7 +117,7 @@ export async function registerBillingRoutes(app: FastifyInstance, options: Build
     }
     const session = await options.stripeBilling.createCustomerPortal(
       customer.customerId,
-      `${options.config.APP_ORIGIN}/?billing=return`,
+      billingReturnUrl(options.config.APP_ORIGIN, businessId, locationId, { billing: "return" }),
     );
     reply.header("cache-control", "no-store");
     return sendData(reply, { url: session.url }, 201);
