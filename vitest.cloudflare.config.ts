@@ -1,5 +1,8 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { builtinModules } from "node:module";
 import { defineConfig } from "vitest/config";
+
+const nodeBuiltins = [...builtinModules, ...builtinModules.map((name) => `node:${name}`)];
 
 export default defineConfig({
   plugins: [
@@ -14,6 +17,17 @@ export default defineConfig({
     }),
   ],
   test: {
+    deps: {
+      optimizer: {
+        ssr: {
+          enabled: true,
+          include: ["fastify", "pg"],
+          rolldownOptions: {
+            external: nodeBuiltins,
+          },
+        },
+      },
+    },
     include: ["tests/cloudflare/**/*.test.ts"],
   },
 });

@@ -26,6 +26,7 @@
     "typecheck:cloudflare": "tsc -p tsconfig.cloudflare.json --noEmit && tsc -p tests/cloudflare/tsconfig.json --noEmit",
     "cf:types": "wrangler types cloudflare/application/worker-configuration.d.ts --config cloudflare/application/wrangler.jsonc && wrangler types cloudflare/ingress/worker-configuration.d.ts --config cloudflare/ingress/wrangler.jsonc && wrangler types cloudflare/jobs/worker-configuration.d.ts --config cloudflare/jobs/wrangler.jsonc && wrangler types cloudflare/compat/worker-configuration.d.ts --config cloudflare/compat/wrangler.jsonc",
     "cf:dry-run": "wrangler deploy --dry-run --strict --config cloudflare/application/wrangler.jsonc && wrangler deploy --dry-run --strict --config cloudflare/ingress/wrangler.jsonc && wrangler deploy --dry-run --strict --config cloudflare/jobs/wrangler.jsonc && wrangler deploy --dry-run --strict --config cloudflare/compat/wrangler.jsonc",
+    "cf:compat": "tsx scripts/cloudflare/verify-compat.ts",
     "test:security": "node --import tsx --test tests/platform-security.test.ts tests/backend-security.test.ts",
     "check": "npm run security:secrets && npm run typecheck && npm run test && npm run build",
     "db:migrate": "tsx scripts/migrate.ts",
