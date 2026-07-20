@@ -2397,6 +2397,14 @@ textarea[aria-invalid="true"] {
   font-size: var(--text-xs);
 }
 
+.automation-canvas__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-xs);
+}
+
 .switch-control {
   display: inline-flex;
   min-height: 2.75rem;
@@ -2812,6 +2820,42 @@ textarea[aria-invalid="true"] {
 
 .report-toolbar > div {
   display: grid;
+}
+
+.report-toolbar > .report-toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.review-feed__provider-status {
+  color: var(--color-muted);
+  font-size: var(--text-xs);
+}
+
+.report-scope-toggle {
+  display: flex;
+  padding: 0.2rem;
+  border: var(--rule-hair) solid var(--color-rule);
+  border-radius: var(--radius-md);
+  background: var(--color-paper-2);
+}
+
+.report-scope-toggle button {
+  padding: 0.45rem 0.7rem;
+  border: 0;
+  border-radius: calc(var(--radius-md) - 0.2rem);
+  background: transparent;
+  color: var(--color-muted);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.report-scope-toggle button.is-active {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  box-shadow: var(--shadow-xs);
 }
 
 .report-toolbar span {
@@ -5513,7 +5557,8 @@ textarea[aria-invalid="true"] {
 
 .workspace-auth-loading,
 .workspace-auth-error,
-.workspace-inline-error {
+.workspace-inline-error,
+.workspace-inline-notice {
   display: flex;
   align-items: center;
   gap: var(--space-xs);
@@ -5547,11 +5592,38 @@ textarea[aria-invalid="true"] {
   margin-block-end: var(--space-md);
 }
 
-.workspace-inline-error > span {
+.workspace-inline-notice {
+  margin-block-end: var(--space-md);
+  border: var(--rule-hair) solid var(--color-border);
+  background: var(--color-paper-2);
+  color: var(--color-ink);
+}
+
+.workspace-inline-notice--success {
+  border-color: var(--color-success);
+  background: var(--color-success-soft);
+  color: var(--color-success);
+}
+
+.workspace-inline-notice--warning {
+  border-color: var(--color-warning);
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+}
+
+.workspace-inline-notice--error {
+  border-color: var(--color-error);
+  background: var(--color-error-soft);
+  color: var(--color-error);
+}
+
+.workspace-inline-error > span,
+.workspace-inline-notice > span {
   flex: 1;
 }
 
-.workspace-inline-error > button {
+.workspace-inline-error > button,
+.workspace-inline-notice > button {
   display: grid;
   width: 2rem;
   height: 2rem;

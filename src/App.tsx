@@ -5,14 +5,12 @@ import {
   BarChart3,
   Bell,
   Building2,
-  CalendarDays,
   Check,
   CheckCircle2,
   ChevronDown,
   Circle,
   ClipboardCheck,
   Clock3,
-  ExternalLink,
   FileText,
   Gauge,
   Link2,
@@ -22,7 +20,6 @@ import {
   Menu,
   MessageSquareText,
   Moon,
-  PauseCircle,
   Plug,
   Plus,
   Printer,
@@ -50,6 +47,7 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
+import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import {
   AgencyOverviewView,
   AuditLogView,
@@ -66,6 +64,7 @@ import {
   type CompletedJobDraft,
   type GoogleProfileSelectionPayload,
   type ServiceStatus,
+  type WorkspaceAccess,
   type WorkspacePayload,
 } from "./platform/api";
 import {
@@ -78,16 +77,17 @@ import {
   PLATFORM_EXCEPTIONS,
   REVIEWS_BY_BUSINESS,
   canConfigureTenant,
+  canManageBilling,
   canReadTenantData,
   getBusiness,
   getQrCodeByToken,
   makeAuditEvent,
   startSupportSession,
-  validateNeutralReviewTemplate,
   type ActorRole,
   type AuditEvent,
   type BusinessAccount,
   type Channel,
+  type LocationWorkflowSummary,
   type RequestRecord,
   type RequestStatus,
   type ReviewRecord,
@@ -96,12 +96,20 @@ import {
   type SmsOveragePolicy,
   type SupportScope,
   type SupportSession,
-  type WorkspaceView,
 } from "./platform/domain";
+import {
+  appViewFromPath,
+  defaultAppView,
+  isAppViewAllowed,
+  workspaceBusinessForSession,
+  workspaceContextFromSearch,
+  workspaceLocationForBusiness,
+  workspaceRoute,
+  type AppView,
+} from "./routing";
 
-type Surface = "site" | "app";
-type AppView = WorkspaceView | "growth";
 type WorkspaceLoadState = "loading" | "anonymous" | "authenticated" | "error";
+type WorkspaceNotice = { tone: "success" | "warning" | "error"; message: string };
 type PricingOfferId = "pro-monthly" | "pro-annual" | "multi-monthly";
 
 interface PricingOffer {
@@ -122,9 +130,6 @@ interface StoryStep {
   detail: string;
   icon: LucideIcon;
 }
-
-const DEFAULT_TEMPLATE =
-  "Hi {{first_name}}, thanks for choosing {{business_name}}. If you have 30 seconds, we’d appreciate an honest Google review: {{review_link}}. Reply STOP to opt out.";
 
 const STORY_STEPS: StoryStep[] = [
   {
@@ -194,15 +199,14 @@ const PRICING_OFFERS: PricingOffer[] = [
 ];
 
 const CLIENT_NAV: Array<{ id: AppView; label: string; icon: LucideIcon }> = [
-  { id: "overview", label: "Overview", icon: Gauge },
-  { id: "requests", label: "Requests", icon: UsersRound },
-  { id: "automation", label: "Automation", icon: Activity },
-  { id: "reviews", label: "Reviews", icon: Star },
+  { id: "growth", label: "Growth dashboard", icon: Sparkles },
+  { id: "reviews", label: "Review Anchor", icon: Star },
+  { id: "requests", label: "Customer requests", icon: UsersRound },
+  { id: "automation", label: "Review workflow", icon: Activity },
   { id: "qr-codes", label: "QR codes", icon: QrCode },
   { id: "reports", label: "Reports", icon: FileText },
   { id: "integrations", label: "Integrations", icon: Plug },
   { id: "team-billing", label: "Team & billing", icon: Building2 },
-  { id: "growth", label: "Growth suite", icon: Sparkles },
 ];
 
 const AGENCY_NAV: Array<{ id: AppView; label: string; icon: LucideIcon }> = [
@@ -210,7 +214,7 @@ const AGENCY_NAV: Array<{ id: AppView; label: string; icon: LucideIcon }> = [
   { id: "clients", label: "Clients", icon: Building2 },
   { id: "exceptions", label: "Exceptions", icon: AlertTriangle },
   { id: "audit", label: "Audit log", icon: ClipboardCheck },
-  { id: "growth", label: "Growth suite", icon: Sparkles },
+  { id: "growth", label: "Growth dashboard", icon: Sparkles },
 ];
 
 const STATUS_TONES: Record<RequestStatus, string> = {
@@ -444,7 +448,7 @@ function useMediaQuery(query: string) {
   return matches;
 }
 
-function MarketingNav({ onOpenDemo, onStartSetup }: { onOpenDemo: () => void; onStartSetup: () => void }) {
+function MarketingNav({ onOpenDemo }: { onOpenDemo: () => void }) {
   const floating = useFloatingNav();
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -455,14 +459,13 @@ function MarketingNav({ onOpenDemo, onStartSetup }: { onOpenDemo: () => void; on
           <Brand />
         </a>
         <nav className="marketing-nav__links" aria-label="Main navigation">
-          <a href="#workflow" onClick={() => setMenuOpen(false)}>Workflow</a>
-          <a href="#control" onClick={() => setMenuOpen(false)}>Control</a>
+          <a href="#workflow" onClick={() => setMenuOpen(false)}>How it works</a>
           <a href="#pricing" onClick={() => setMenuOpen(false)}>Pricing</a>
-        <button type="button" className="nav-demo-link" onClick={onOpenDemo}>{IS_DEMO_MODE ? "Open demo" : "Sign in"}</button>
+          <button type="button" className="nav-demo-link" onClick={onOpenDemo}>Growth Suite</button>
         </nav>
         <ThemeToggle className="marketing-nav__theme" />
-        <Button variant="primary" className="marketing-nav__cta" onClick={onStartSetup}>
-          Connect Google
+        <Button variant="primary" className="marketing-nav__cta" onClick={onOpenDemo}>
+          {IS_DEMO_MODE ? "Open product" : "Sign in"}
         </Button>
         <IconButton label={menuOpen ? "Close navigation" : "Open navigation"} className="marketing-nav__menu" onClick={() => setMenuOpen((value) => !value)}>
           {menuOpen ? <X size={20} aria-hidden="true" /> : <Menu size={20} aria-hidden="true" />}
@@ -650,7 +653,7 @@ function MarketingSite({ onOpenDemo, onStartSetup }: { onOpenDemo: () => void; o
 
   return (
     <div className="marketing-site" id="top">
-      <MarketingNav onOpenDemo={onOpenDemo} onStartSetup={onStartSetup} />
+      <MarketingNav onOpenDemo={onOpenDemo} />
       <main>
         <section className="hero-section" aria-labelledby="hero-title">
           <div className="hero-copy reveal-sequence">
@@ -658,7 +661,7 @@ function MarketingSite({ onOpenDemo, onStartSetup }: { onOpenDemo: () => void; o
             <h1 id="hero-title">Get more reviews. Win more customers.</h1>
             <p className="hero-lede">Review Anchor gives local businesses one place to build customer trust, starting with genuine Google reviews. Ask every customer, follow up politely and track what changes.</p>
             <div className="hero-actions">
-              <Button onClick={onStartSetup}>Connect Google profile <ArrowRight size={17} aria-hidden="true" /></Button>
+              <Button onClick={onStartSetup}>Open Growth Suite <ArrowRight size={17} aria-hidden="true" /></Button>
               <Button variant="secondary" onClick={() => document.getElementById("workflow")?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" })}>
                 Watch the workflow
               </Button>
@@ -705,18 +708,18 @@ function MarketingSite({ onOpenDemo, onStartSetup }: { onOpenDemo: () => void; o
           </div>
         </section>
 
-        <section className="control-section" id="control" aria-labelledby="control-title">
+        <section className="control-section" id="monitoring" aria-labelledby="control-title">
           <div className="control-copy">
-            <span className="plain-label">A quiet control room</span>
-            <h2 id="control-title">See the outcome. Touch only the exceptions.</h2>
-            <p>Delivery failures, opt-outs and broken integrations come to the top. Everything healthy stays out of the way.</p>
+            <span className="plain-label">Review Anchor dashboard</span>
+            <h2 id="control-title">Monitor reputation outcomes and exceptions.</h2>
+            <p>This is the reporting and oversight layer after the request workflow: delivery failures, opt-outs, new reviews and broken integrations come to the top.</p>
             <ul className="check-list">
               <li><Check size={17} /> Completed-job trigger health</li>
               <li><Check size={17} /> Delivery, click and opt-out events</li>
               <li><Check size={17} /> New Google reviews and rating movement</li>
               <li><Check size={17} /> Monthly client report, ready to print</li>
             </ul>
-          <Button variant="secondary" onClick={onOpenDemo}>{IS_DEMO_MODE ? "Open the demo workspace" : "Open your workspace"} <ArrowRight size={17} /></Button>
+          <Button variant="secondary" onClick={onOpenDemo}>Open Growth Suite <ArrowRight size={17} /></Button>
           </div>
           <OutcomePreview />
         </section>
@@ -992,96 +995,6 @@ function WorkspaceAuthScreen({
   );
 }
 
-function MetricCard({ label, value, detail, tone, wide }: { label: string; value: string; detail: string; tone?: string; wide?: boolean }) {
-  return (
-    <article className={cx("metric-card", wide && "metric-card--wide", tone && `metric-card--${tone}`)}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <small>{detail}</small>
-    </article>
-  );
-}
-
-function OverviewView({ business, requests, reviews, onAddJob, onView, canConfigure, paused }: { business: BusinessAccount; requests: RequestRecord[]; reviews: ReviewRecord[]; onAddJob: () => void; onView: (view: AppView) => void; canConfigure: boolean; paused: boolean }) {
-  const addedCount = IS_DEMO_MODE ? requests.length - business.seedRequestCount : 0;
-  const metrics = business.metrics;
-  const latestReview = reviews[0];
-  const chartPoints = "8,86 40,74 72,77 104,58 136,63 168,42 200,47 232,29 264,34 296,18";
-  const completedJobs = metrics.completedJobs + addedCount;
-  const funnelRows = [
-    { label: "Completed jobs", value: completedJobs, demoWidth: 100 },
-    { label: "Eligible customers", value: metrics.eligibleCustomers + addedCount, demoWidth: 94 },
-    { label: "Delivered", value: metrics.delivered, demoWidth: 85 },
-    { label: "Unique clicks", value: metrics.uniqueClicks, demoWidth: 36 },
-    { label: "Reviews detected", value: metrics.reviewsDetected, demoWidth: 24 },
-  ].map((row) => ({
-    ...row,
-    width: IS_DEMO_MODE
-      ? row.demoWidth
-      : completedJobs > 0
-        ? Math.min(100, Math.max(0, Math.round((row.value / completedJobs) * 100)))
-        : 0,
-  }));
-  return (
-    <div className="view-stack">
-      <DemoNotice />
-      <section className="metric-grid" aria-label={IS_DEMO_MODE ? "Sample performance metrics" : "Current tenant performance metrics"}>
-        <MetricCard label="Automation" value={paused ? "Paused" : business.automationState} detail={`Last successful trigger · ${business.lastSuccess}`} tone={paused ? "warning" : business.healthTone} wide />
-        <MetricCard label="Completed jobs" value={String(completedJobs)} detail={IS_DEMO_MODE ? `${addedCount > 0 ? `+${addedCount} this session · ` : ""}July sample` : "Current tenant total"} />
-        <MetricCard label="Reviews detected" value={String(metrics.reviewsDetected)} detail={IS_DEMO_MODE ? "Google sync · this month" : "Current Google review cache"} />
-        <MetricCard label="Current rating" value={metrics.rating.toFixed(1)} detail={`${metrics.totalReviews} total Google reviews`} />
-      </section>
-      <section className="dashboard-grid">
-        <article className="panel performance-panel">
-          <header className="panel__head"><div><h2>Review activity</h2><p>{IS_DEMO_MODE ? "New Google reviews detected · sample trend" : "Current Google review snapshot"}</p></div><span className="period-button" aria-label={IS_DEMO_MODE ? "Fixed sample period: 1 to 31 July" : "Current durable review snapshot"}><CalendarDays size={16} /> {IS_DEMO_MODE ? "1–31 Jul" : "Current"}</span></header>
-          <div className="chart-summary"><span><strong>{metrics.reviewsDetected}</strong> {IS_DEMO_MODE ? "new reviews" : "cached reviews"}</span><span><strong>{metrics.rating.toFixed(1)}</strong> current rating</span></div>
-          {IS_DEMO_MODE ? (
-            <svg className="line-chart" viewBox="0 0 304 104" role="img" aria-label="Sample review activity trend">
-              <line x1="8" y1="96" x2="296" y2="96" />
-              <line x1="8" y1="56" x2="296" y2="56" />
-              <polyline points={chartPoints} />
-              {chartPoints.split(" ").map((point) => {
-                const [cxValue, cyValue] = point.split(",");
-                return <circle key={point} cx={cxValue} cy={cyValue} r="3.5" />;
-              })}
-            </svg>
-          ) : (
-            <div className="empty-state"><BarChart3 size={22} /><h2>Time-series reporting is not available yet.</h2><p>The totals above come from the current durable Google review records.</p></div>
-          )}
-          <p className="chart-note"><AlertTriangle size={15} /> Reviews detected are not matched to a specific customer job. Conversion is shown as an estimate.</p>
-        </article>
-        <article className="panel funnel-panel">
-          <header className="panel__head"><div><h2>Request funnel</h2><p>{IS_DEMO_MODE ? "July sample" : "Current tenant"}</p></div><button className="text-action" type="button" onClick={() => onView("requests")}>View requests <ArrowRight size={15} /></button></header>
-          <div className="funnel-list">
-            {funnelRows.map((row) => (
-              <div className="funnel-row" key={row.label}>
-                <div><span>{row.label}</span><strong>{row.value}</strong></div>
-                <span className="funnel-track"><span style={{ "--value": `${row.width}%` } as CSSProperties} /></span>
-              </div>
-            ))}
-          </div>
-        </article>
-        <article className="panel recent-requests-panel">
-          <header className="panel__head"><div><h2>Recent requests</h2><p>Latest completed jobs</p></div><Button variant="secondary" onClick={onAddJob} disabled={!canConfigure}><Plus size={16} /> Add job</Button></header>
-          <div className="compact-list">
-            {requests.slice(0, 4).map((request) => (
-              <div key={request.id} className="compact-row">
-                <span className="compact-row__avatar">{request.customer.split(" ").map((part) => part[0]).join("")}</span>
-                <span><strong>{request.customer}</strong><small>{request.job} · {request.createdAt}</small></span>
-                <StatusPill tone={STATUS_TONES[request.status]}>{request.status}</StatusPill>
-              </div>
-            ))}
-          </div>
-        </article>
-        <article className="panel reviews-panel">
-          <header className="panel__head"><div><h2>Latest Google review</h2><p>{IS_DEMO_MODE ? "Detected today · sample" : "Latest cached Google record"}</p></div><button className="text-action" type="button" onClick={() => onView("reviews")}>View all <ArrowRight size={15} /></button></header>
-          {latestReview ? <div className="featured-review"><Stars rating={latestReview.rating} size={17} /><blockquote>“{latestReview.body}”</blockquote><span>{latestReview.name} · {latestReview.date}</span></div> : <div className="empty-state"><Star size={22} /><h2>No reviews detected yet.</h2><p>New Google reviews will appear after the next successful sync.</p></div>}
-        </article>
-      </section>
-    </div>
-  );
-}
-
 function RequestsView({ requests, onAddJob, canConfigure }: { requests: RequestRecord[]; onAddJob: () => void; canConfigure: boolean }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<"All" | RequestStatus>("All");
@@ -1097,9 +1010,11 @@ function RequestsView({ requests, onAddJob, canConfigure }: { requests: RequestR
         <header className="table-toolbar">
           <div className="search-field"><Search size={17} aria-hidden="true" /><label className="sr-only" htmlFor="request-search">Search requests</label><input id="request-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search customer or job" /></div>
           <label className="select-field"><ListFilter size={16} aria-hidden="true" /><span className="sr-only">Filter by status</span><select value={status} onChange={(event) => setStatus(event.target.value as "All" | RequestStatus)}><option>All</option><option>Queued</option><option>Delivered</option><option>Clicked</option><option>Reviewed</option><option>Opted out</option><option>Blocked</option></select><ChevronDown size={15} aria-hidden="true" /></label>
-          <Button onClick={onAddJob} disabled={!canConfigure}><Plus size={16} /> Add completed job</Button>
+          {canConfigure && <Button onClick={onAddJob}><Plus size={16} /> Add completed job</Button>}
         </header>
-        {filtered.length > 0 ? (
+        {requests.length === 0 ? (
+          <div className="empty-state"><ClipboardCheck size={24} /><h2>No completed jobs yet.</h2><p>{canConfigure ? "Add a genuine completed job with consent evidence to start its review-request workflow." : "Your role can view request history but cannot add completed jobs."}</p>{canConfigure && <Button onClick={onAddJob}><Plus size={16} /> Add completed job</Button>}</div>
+        ) : filtered.length > 0 ? (
           <>
             <div className="request-table" role="table" aria-label="Review requests">
               <div className="request-table__head" role="row"><span role="columnheader">Customer</span><span role="columnheader">Job</span><span role="columnheader">Channel</span><span role="columnheader">Created</span><span role="columnheader">Status</span></div>
@@ -1130,90 +1045,157 @@ function RequestsView({ requests, onAddJob, canConfigure }: { requests: RequestR
   );
 }
 
-const AUTOMATION_NODES = [
-  { id: "trigger", label: "Job completed", description: "Webhook or manual entry", icon: Webhook },
-  { id: "request", label: "Send review request", description: "SMS · neutral template", icon: MessageSquareText },
-  { id: "wait", label: "Wait 48 hours", description: "Cancel on reply, review or opt-out", icon: Clock3 },
-  { id: "followup", label: "Polite follow-up", description: "SMS · final touch", icon: Send },
-  { id: "end", label: "End sequence", description: "Maximum 2 messages", icon: CheckCircle2 },
-];
+function workflowGapLabel(seconds: number) {
+  if (seconds <= 0) return "No extra delay";
+  if (seconds % 86_400 === 0) return `${seconds / 86_400} ${seconds === 86_400 ? "day" : "days"}`;
+  if (seconds % 3_600 === 0) return `${seconds / 3_600} ${seconds === 3_600 ? "hour" : "hours"}`;
+  return `${Math.ceil(seconds / 60)} minutes`;
+}
 
-function AutomationView({ business, requests, canConfigure, paused, onStateChange, onSave }: { business: BusinessAccount; requests: RequestRecord[]; canConfigure: boolean; paused: boolean; onStateChange: (live: boolean) => void; onSave: () => void }) {
+const BLOCKED_GOOGLE_CONNECTION_HEALTH = new Set(["authentication_required", "permission_revoked", "disabled"]);
+
+function seededDemoWorkflow(business: BusinessAccount, qrCode?: QrCodeRecord): LocationWorkflowSummary | undefined {
+  if (!business.locationId) return undefined;
+  const destination = qrCode?.locationId === business.locationId && qrCode.destinationVerified
+    ? qrCode.destinationUrl
+    : undefined;
+  return {
+    businessId: business.id,
+    locationId: business.locationId,
+    channels: [{
+      channel: "sms",
+      enabled: true,
+      timezone: business.timezone,
+      allowedWeekdays: [1, 2, 3, 4, 5, 6],
+      sendWindowStart: "09:00",
+      sendWindowEnd: "18:00",
+      maxMessages: 2,
+      minimumGapSeconds: 172_800,
+      ruleVersion: "seeded-demo-v1",
+      template: {
+        id: `demo-template-${business.locationId}`,
+        key: "review-request",
+        version: 1,
+        body: "Hi {{first_name}}, thanks for choosing {{business_name}}. If you have 30 seconds, we’d appreciate an honest Google review: {{review_link}}. Reply STOP to opt out.",
+        includesBusinessIdentity: true,
+        includesUnsubscribe: true,
+        approvedAt: "Seeded demo configuration",
+      },
+    }],
+    reviewDestination: destination ? {
+      runtimeUrl: destination,
+      qrUrl: destination,
+      verifiedAt: qrCode?.generatedAt,
+      connectionHealth: "seeded_demo",
+      matchesRuntime: true,
+    } : null,
+  };
+}
+
+function AutomationView({
+  business,
+  requests,
+  workflow,
+  onOpenIntegrations,
+}: {
+  business: BusinessAccount;
+  requests: RequestRecord[];
+  workflow?: LocationWorkflowSummary;
+  onOpenIntegrations: () => void;
+}) {
+  const channels = useMemo(() => workflow?.channels ?? [], [workflow?.channels]);
+  const defaultChannel = channels.find((candidate) => candidate.enabled)?.channel ?? channels[0]?.channel ?? "sms";
+  const [selectedChannel, setSelectedChannel] = useState<"sms" | "email">(defaultChannel);
+  useEffect(() => {
+    if (!channels.some((candidate) => candidate.channel === selectedChannel)) setSelectedChannel(defaultChannel);
+  }, [channels, defaultChannel, selectedChannel]);
+  const channel = channels.find((candidate) => candidate.channel === selectedChannel)
+    ?? channels.find((candidate) => candidate.enabled)
+    ?? channels[0];
+  const touchCount = Math.min(Math.max(channel?.maxMessages ?? 1, 1), 3);
+  const gap = workflowGapLabel(channel?.minimumGapSeconds ?? 0);
+  const nodes = useMemo(() => {
+    const result: Array<{ id: string; label: string; description: string; icon: LucideIcon; message: boolean }> = [
+      { id: "trigger", label: "Job completed", description: "Authenticated completed-job record", icon: Webhook, message: false },
+      { id: "request", label: "Send review request", description: `${channel?.channel.toUpperCase() ?? "Message"} · approved template`, icon: MessageSquareText, message: true },
+    ];
+    for (let touch = 2; touch <= touchCount; touch += 1) {
+      result.push({ id: `wait-${touch}`, label: `Wait ${gap}`, description: "Cancel on reply, review or opt-out", icon: Clock3, message: false });
+      result.push({ id: `followup-${touch}`, label: `Polite follow-up ${touch - 1}`, description: `${channel?.channel.toUpperCase() ?? "Message"} · touch ${touch} of ${touchCount}`, icon: Send, message: true });
+    }
+    result.push({ id: "end", label: "End sequence", description: `Maximum ${touchCount} ${touchCount === 1 ? "message" : "messages"}`, icon: CheckCircle2, message: false });
+    return result;
+  }, [channel?.channel, gap, touchCount]);
   const [selected, setSelected] = useState("request");
-  const [message, setMessage] = useState(DEFAULT_TEMPLATE);
-  const [waitHours, setWaitHours] = useState(48);
-  const [live, setLive] = useState(!paused);
-  const [saveState, setSaveState] = useState<"idle" | "loading" | "success">("idle");
-  const selectedNode = AUTOMATION_NODES.find((node) => node.id === selected)!;
+  const selectedNode = nodes.find((node) => node.id === selected) ?? nodes[1] ?? nodes[0];
   const SelectedIcon = selectedNode.icon;
   const previewName = requests[0]?.customer.split(" ")[0] ?? "Customer";
-  const reviewSlug = business.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
-  const systemProtected = business.automationState !== "Live";
-  const canToggle = canConfigure && !systemProtected;
-  const templateIssues = useMemo(() => validateNeutralReviewTemplate(message), [message]);
+  const template = channel?.template;
+  const runtimeUrl = workflow?.reviewDestination?.runtimeUrl;
+  const connectionHealth = workflow?.reviewDestination?.connectionHealth;
+  const destinationReady = Boolean(
+    runtimeUrl
+    && connectionHealth
+    && !BLOCKED_GOOGLE_CONNECTION_HEALTH.has(connectionHealth),
+  );
+  const configured = Boolean(
+    channel?.enabled
+    && template
+    && template.includesBusinessIdentity
+    && template.includesUnsubscribe
+    && destinationReady,
+  );
+  const preview = template?.body
+    .replaceAll("{{first_name}}", previewName)
+    .replaceAll("{{business_name}}", business.name)
+    .replaceAll("{{review_link}}", destinationReady && runtimeUrl ? runtimeUrl : "[review destination unavailable]");
 
-  useEffect(() => setLive(!paused), [business.id, paused]);
-
-  const save = () => {
-    if (!canConfigure || templateIssues.length > 0) return;
-    setSaveState("loading");
-    window.setTimeout(() => {
-      setSaveState("success");
-      onSave();
-      window.setTimeout(() => setSaveState("idle"), 1600);
-    }, 450);
-  };
+  if (!workflow || !channel) {
+    return <div className="view-stack"><DemoNotice /><section className="panel empty-state"><Clock3 size={24} /><h2>No messaging policy for this location.</h2><p>The shared backend has not returned an SMS or email workflow for {business.locationName}. Connect the required services before sending review requests.</p><Button onClick={onOpenIntegrations}>Open integrations</Button></section></div>;
+  }
 
   return (
     <div className="automation-layout">
       <section className="automation-canvas panel">
         <header className="automation-canvas__head">
-          <div><h2>Google review request</h2><p>Linear sequence · every eligible customer follows the same route</p></div>
-          <label className="switch-control"><span>{live ? "Live" : systemProtected ? "Protected" : "Paused"}</span><input type="checkbox" checked={live} disabled={!canToggle} onChange={(event) => { setLive(event.target.checked); onStateChange(event.target.checked); }} /><span className="switch-control__track"><span /></span></label>
+          <div><h2>Google review request policy</h2><p>{business.locationName} · rule {channel.ruleVersion} · {channel.timezone}</p></div>
+          <div className="automation-canvas__controls">
+            {channels.length > 1 && <label className="select-field"><span className="sr-only">Messaging channel</span><select value={channel.channel} onChange={(event) => setSelectedChannel(event.target.value as "sms" | "email")}>{channels.map((candidate) => <option key={candidate.channel} value={candidate.channel}>{candidate.channel.toUpperCase()} · {candidate.enabled ? "enabled" : "disabled"}</option>)}</select><ChevronDown size={15} aria-hidden="true" /></label>}
+            <StatusPill tone={configured ? "success" : channel.enabled ? "warning" : "muted"}>{configured ? "Configured" : channel.enabled ? "Incomplete" : "Disabled"}</StatusPill>
+          </div>
         </header>
-        {!canConfigure && <div className="automation-access-note"><ShieldCheck size={16} /><span>View-only support session. Start a configuration session with recent step-up verification to change this workflow.</span></div>}
-        {canConfigure && systemProtected && <div className="automation-access-note automation-access-note--warning"><AlertTriangle size={16} /><span>{business.health}. Resolve the protecting exception before sending can resume; template changes remain available.</span></div>}
-        <div className={cx("automation-guardrail", templateIssues.length > 0 && "automation-guardrail--blocked")}>
-          {templateIssues.length > 0 ? <AlertTriangle size={17} /> : <ShieldCheck size={17} />}
-          <span><strong>{templateIssues.length > 0 ? "Template blocked" : "Review gating blocked"}</strong> · {templateIssues.length > 0 ? "Resolve the copy checks before saving" : "neutral request · hard cap of three total messages"}</span>
+        <div className="automation-access-note"><ShieldCheck size={16} /><span>{IS_DEMO_MODE ? "This is a seeded demo policy." : "This read-only view comes from the selected location’s messaging policy, approved template and Google destination."} Changes remain protected by backend permissions.</span></div>
+        <div className="automation-guardrail">
+          <ShieldCheck size={17} />
+          <span><strong>Review gating blocked</strong> · {channel.sendWindowStart}–{channel.sendWindowEnd} sending window · maximum {touchCount} {touchCount === 1 ? "message" : "messages"}</span>
         </div>
         <div className="automation-flow">
-          {AUTOMATION_NODES.map((node, index) => {
+          {nodes.map((node, index) => {
             const Icon = node.icon;
             return (
               <div className="automation-flow__item" key={node.id}>
-                <button type="button" className={cx("automation-node", selected === node.id && "is-selected")} onClick={() => setSelected(node.id)}>
+                <button type="button" className={cx("automation-node", selectedNode.id === node.id && "is-selected")} onClick={() => setSelected(node.id)}>
                   <span><Icon size={18} /></span>
-                  <span><strong>{node.label}</strong><small>{node.id === "wait" ? `Wait ${waitHours} hours · ` : ""}{node.description}</small></span>
+                  <span><strong>{node.label}</strong><small>{node.description}</small></span>
                   <ArrowRight size={16} aria-hidden="true" />
                 </button>
-                {index < AUTOMATION_NODES.length - 1 && <span className="automation-connector" aria-hidden="true"><Circle size={7} /></span>}
+                {index < nodes.length - 1 && <span className="automation-connector" aria-hidden="true"><Circle size={7} /></span>}
               </div>
             );
           })}
         </div>
       </section>
       <aside className="automation-editor panel">
-        <header className="automation-editor__head"><span><SelectedIcon size={18} /></span><div><small>Edit action</small><h2>{selectedNode.label}</h2></div></header>
-        {selected === "wait" ? (
-          <div className="field-group"><label htmlFor="wait-hours">Wait time in hours</label><input id="wait-hours" type="number" min="1" max="168" value={waitHours} disabled={!canConfigure} onChange={(event) => setWaitHours(Number(event.target.value))} /><small>Pending messages cancel immediately after a reply, review detection or opt-out.</small></div>
-        ) : selected === "request" || selected === "followup" ? (
+        <header className="automation-editor__head"><span><SelectedIcon size={18} /></span><div><small>Workflow step</small><h2>{selectedNode.label}</h2></div></header>
+        {selectedNode.message ? template ? (
           <>
-            <div className="field-group"><label htmlFor="channel">Channel</label><select id="channel" defaultValue="SMS" disabled={!canConfigure}><option>SMS</option><option>Email</option></select><small>SMS uses the plan’s segment allowance. Email requests do not reduce it.</small></div>
-            <div className="field-group"><label htmlFor="message-template">Message</label><textarea id="message-template" value={message} disabled={!canConfigure} onChange={(event) => setMessage(event.target.value)} rows={7} /><small>{message.length} characters · merge fields preview below</small></div>
-            <div className={cx("template-validation", templateIssues.length > 0 && "template-validation--blocked")} role="status">
-              {templateIssues.length > 0 ? <AlertTriangle size={17} /> : <ShieldCheck size={17} />}
-              <span>
-                <strong>{templateIssues.length > 0 ? "Copy needs attention" : "Neutral-copy checks passed"}</strong>
-                {templateIssues.length > 0 ? <ul>{templateIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul> : <small>Business identification, review link and opt-out language are present; no gating, rating prompt or incentive was detected.</small>}
-              </span>
-            </div>
-        <figure className="message-preview"><figcaption>Customer preview</figcaption><div><p>{message.replace("{{first_name}}", previewName).replace("{{business_name}}", business.name).replace("{{review_link}}", `g.page/r/${reviewSlug}/review`)}</p><span>{IS_DEMO_MODE ? "SMS · Demo only" : "SMS preview · Not sent"}</span></div></figure>
+            <div className={cx("template-validation", (!template.includesBusinessIdentity || !template.includesUnsubscribe || !destinationReady) && "template-validation--warning")} role="status"><ShieldCheck size={17} /><span><strong>{template.includesBusinessIdentity && template.includesUnsubscribe && destinationReady ? "Required template evidence present" : "Workflow configuration incomplete"}</strong><small>Business identity: {template.includesBusinessIdentity ? "present" : "missing"} · opt-out: {template.includesUnsubscribe ? "present" : "missing"} · Google destination: {destinationReady ? "ready" : "unavailable"}{connectionHealth ? ` (${connectionHealth.replaceAll("_", " ")})` : ""}.</small></span></div>
+            {workflow.reviewDestination?.qrUrl && !workflow.reviewDestination.matchesRuntime && <div className="workspace-inline-error" role="alert"><AlertTriangle size={17} /><span>The runtime Google destination and QR destination do not match. Sending remains a backend-controlled operation.</span></div>}
+            <figure className="message-preview"><figcaption>Approved template v{template.version}</figcaption><div><p>{preview}</p><span>{channel.channel.toUpperCase()} preview · approved {template.approvedAt}</span></div></figure>
           </>
-        ) : (
-          <div className="editor-summary"><SelectedIcon size={22} /><h3>{selectedNode.label}</h3><p>{selectedNode.description}. This system action has no customer-facing message to edit.</p></div>
+        ) : <div className="empty-state"><AlertTriangle size={22} /><h3>No approved template.</h3><p>This policy cannot send until an active template version is available.</p><Button onClick={onOpenIntegrations}>Check integrations</Button></div> : (
+          <div className="editor-summary"><SelectedIcon size={22} /><h3>{selectedNode.label}</h3><p>{selectedNode.description}. This backend policy step has no customer-facing copy.</p></div>
         )}
-        <div className="automation-editor__actions"><span aria-live="polite">{saveState === "success" ? "Changes saved" : templateIssues.length > 0 ? "Template blocked by copy checks" : ""}</span><Button state={saveState === "idle" ? undefined : saveState} onClick={save} disabled={!canConfigure || templateIssues.length > 0}>{saveState === "loading" ? "Saving…" : saveState === "success" ? <><Check size={16} /> Saved</> : "Save changes"}</Button></div>
       </aside>
     </div>
   );
@@ -1237,7 +1219,7 @@ function ReviewsView({ business, reviews }: { business: BusinessAccount; reviews
               <article key={review.id}>
                 <div className="review-feed__top"><span className="review-avatar">{review.name[0]}</span><span><strong>{review.name}</strong><small>{review.date}</small></span><Stars rating={review.rating} /></div>
                 <p>{review.body}</p>
-                <div><StatusPill tone={review.replied ? "neutral" : "warning"}>{review.replied ? <><Check size={13} /> Replied</> : "Reply pending"}</StatusPill><button className="text-action" type="button" disabled aria-label="Google review link unavailable">{IS_DEMO_MODE ? "Google link · Demo" : "Google link unavailable"} <ExternalLink size={14} /></button></div>
+                <div><StatusPill tone={review.replied ? "neutral" : "warning"}>{review.replied ? <><Check size={13} /> Replied</> : "Reply pending"}</StatusPill><small className="review-feed__provider-status">{IS_DEMO_MODE ? "Sample review" : "Open the original review in Google Business Profile"}</small></div>
               </article>
             ))}
           </div>
@@ -1249,30 +1231,48 @@ function ReviewsView({ business, reviews }: { business: BusinessAccount; reviews
   );
 }
 
-function ReportsView({ business }: { business: BusinessAccount }) {
-  const metrics = business.metrics;
+function ReportsView({ business, selectedBusiness }: { business: BusinessAccount; selectedBusiness: BusinessAccount }) {
+  const [combined, setCombined] = useState(false);
   const locationReports = business.locationReports ?? [];
-  const isCombinedReport = locationReports.length > 1;
-  const operationalTone = business.healthTone === "success" ? "success" : "warning";
+  useEffect(() => setCombined(false), [selectedBusiness.locationId]);
+  const combinedMetrics = useMemo(() => {
+    const totalReviews = locationReports.reduce((sum, location) => sum + location.totalReviews, 0);
+    const weightedRating = totalReviews > 0
+      ? locationReports.reduce((sum, location) => sum + (location.rating * location.totalReviews), 0) / totalReviews
+      : 0;
+    return {
+      ...business.metrics,
+      completedJobs: locationReports.reduce((sum, location) => sum + location.completedJobs, 0),
+      delivered: locationReports.reduce((sum, location) => sum + location.delivered, 0),
+      uniqueClicks: locationReports.reduce((sum, location) => sum + location.uniqueClicks, 0),
+      reviewsDetected: locationReports.reduce((sum, location) => sum + location.reviewsDetected, 0),
+      rating: weightedRating,
+      totalReviews,
+    };
+  }, [business.metrics, locationReports]);
+  const isCombinedReport = combined && locationReports.length > 1;
+  const reportBusiness = isCombinedReport ? { ...business, metrics: combinedMetrics } : selectedBusiness;
+  const metrics = reportBusiness.metrics;
+  const operationalTone = reportBusiness.healthTone === "success" ? "success" : "warning";
   const generatedOn = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "long", year: "numeric" }).format(new Date());
   const integrationChecks = [
-    { label: "Completed-job intake", state: business.integrations.jobIntake },
-    { label: "Google review sync", state: business.integrations.google },
-    { label: "Messaging delivery", state: business.integrations.messaging },
+    { label: "Completed-job intake", state: reportBusiness.integrations.jobIntake },
+    { label: "Google review sync", state: reportBusiness.integrations.google },
+    { label: "Messaging delivery", state: reportBusiness.integrations.messaging },
   ];
   return (
     <div className="view-stack">
       <DemoNotice />
       <section className="report-shell">
-        <header className="report-toolbar"><div><span>{IS_DEMO_MODE ? "Monthly report" : "Operational snapshot"}</span><strong>{IS_DEMO_MODE ? "July 2026" : generatedOn}</strong></div><Button variant="secondary" onClick={() => window.print()}><Printer size={16} /> Print report</Button></header>
+        <header className="report-toolbar"><div><span>{IS_DEMO_MODE ? "Monthly report" : "Operational snapshot"}</span><strong>{IS_DEMO_MODE ? "July 2026" : generatedOn}</strong></div><div className="report-toolbar__actions">{locationReports.length > 1 && <div className="report-scope-toggle" aria-label="Report scope"><button type="button" className={!combined ? "is-active" : undefined} onClick={() => setCombined(false)}>Selected location</button><button type="button" className={combined ? "is-active" : undefined} onClick={() => setCombined(true)}>All locations</button></div>}<Button variant="secondary" onClick={() => window.print()}><Printer size={16} /> Print report</Button></div></header>
         <article className="report-paper">
-          <header><Brand /><span>{business.name} · {isCombinedReport ? `Combined ${locationReports.length}-location report` : business.locationName}</span><small>{IS_DEMO_MODE ? "1–31 July 2026 · Sample report" : `Generated ${generatedOn} · Authenticated current totals`}</small></header>
-          <section className="report-intro"><p>{IS_DEMO_MODE ? business.healthTone === "success" ? "Your review-request system ran without an integration failure this month." : `The system protected customer messaging while ${business.health.toLowerCase()} needs attention.` : business.healthTone === "success" ? "Current durable records show the configured review-request system operating without a reported integration failure." : `Customer messaging remains protected while ${business.health.toLowerCase()} needs attention.`}</p><span className={`status-pill status-pill--${operationalTone}`}>{business.healthTone === "success" ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />} {business.health}</span></section>
+          <header><Brand /><span>{reportBusiness.name} · {isCombinedReport ? `Combined ${locationReports.length}-location report` : reportBusiness.locationName}</span><small>{IS_DEMO_MODE ? "1–31 July 2026 · Sample report" : `Generated ${generatedOn} · Authenticated current totals`}</small></header>
+          <section className="report-intro"><p>{IS_DEMO_MODE ? reportBusiness.healthTone === "success" ? "Your review-request system ran without an integration failure this month." : `The system protected customer messaging while ${reportBusiness.health.toLowerCase()} needs attention.` : reportBusiness.healthTone === "success" ? "Current durable records show the configured review-request system operating without a reported integration failure." : `Customer messaging remains protected while ${reportBusiness.health.toLowerCase()} needs attention.`}</p><span className={`status-pill status-pill--${operationalTone}`}>{reportBusiness.healthTone === "success" ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />} {reportBusiness.health}</span></section>
           <section className="report-metrics"><div><span>Completed jobs</span><strong>{metrics.completedJobs}</strong></div><div><span>Requests delivered</span><strong>{metrics.delivered}</strong></div><div><span>Unique link clicks</span><strong>{metrics.uniqueClicks}</strong></div><div><span>{IS_DEMO_MODE ? "New reviews detected" : "Reviews cached"}</span><strong>{metrics.reviewsDetected}</strong></div></section>
           <section className="report-rating"><div><span>Google rating</span><strong>{metrics.rating.toFixed(1)}</strong><Stars rating={Math.round(metrics.rating)} size={17} /></div><p>{IS_DEMO_MODE ? `${metrics.totalReviews} total reviews at month end.` : `${metrics.totalReviews} total Google reviews in the current snapshot.`} Review detection is not exact job-level attribution; estimated conversion is reported separately.</p></section>
           {isCombinedReport && <section className="report-locations"><h2>Location performance</h2><div className="report-locations__table" role="table" aria-label="Location-level report"><div className="report-locations__head" role="row"><span role="columnheader">Location</span><span role="columnheader">Jobs</span><span role="columnheader">Delivered</span><span role="columnheader">Clicks</span><span role="columnheader">Reviews</span><span role="columnheader">Rating</span><span role="columnheader">SMS</span></div>{locationReports.map((location) => <div role="row" key={location.id}><strong role="cell">{location.name}</strong><span role="cell">{location.completedJobs}</span><span role="cell">{location.delivered}</span><span role="cell">{location.uniqueClicks}</span><span role="cell">{location.reviewsDetected}</span><span role="cell">{location.rating.toFixed(1)}</span><span role="cell">{location.smsSegments}</span></div>)}</div><p>Combined totals appear above. Each row is calculated from records scoped to that location.</p></section>}
           {IS_DEMO_MODE ? (
-            <section className="report-events"><h2>Operational checks</h2><div><span><CheckCircle2 size={16} /> Completed-job trigger</span><strong>Healthy</strong></div><div><span>{business.healthTone === "success" ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />} Google review sync</span><strong>{business.healthTone === "success" ? "Healthy" : "Attention"}</strong></div><div><span><CheckCircle2 size={16} /> Suppression list</span><strong>4 contacts</strong></div><div><span><AlertTriangle size={16} /> Failed delivery rate</span><strong>2.4%</strong></div></section>
+            <section className="report-events"><h2>Operational checks</h2><div><span><CheckCircle2 size={16} /> Completed-job trigger</span><strong>Healthy</strong></div><div><span>{reportBusiness.healthTone === "success" ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />} Google review sync</span><strong>{reportBusiness.healthTone === "success" ? "Healthy" : "Attention"}</strong></div><div><span><CheckCircle2 size={16} /> Suppression list</span><strong>4 contacts</strong></div><div><span><AlertTriangle size={16} /> Failed delivery rate</span><strong>2.4%</strong></div></section>
           ) : (
             <section className="report-events"><h2>Operational checks</h2>{integrationChecks.map((check) => <div key={check.label}><span>{check.state.tone === "success" ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />} {check.label}</span><strong>{check.state.status}</strong></div>)}<div><span><AlertTriangle size={16} /> Review attribution</span><strong>Estimated</strong></div></section>
           )}
@@ -1299,19 +1299,19 @@ function IntegrationsView({ business, onConnect, canConfigure, services, service
         {integrations.map((integration) => {
           const Icon = integration.icon;
           const isGoogle = integration.key === "google";
-          const blocked = isGoogle && !IS_DEMO_MODE && !servicesLoading && !googleAvailable;
+          const blocked = isGoogle && !IS_DEMO_MODE && (servicesLoading || !googleAvailable);
           return (
             <article className="integration-card" key={integration.name}>
               <span className="integration-card__icon"><Icon size={22} /></span>
               <div><h2>{integration.name}</h2><p>{integration.detail}</p></div>
               <StatusPill tone={blocked ? "warning" : integration.state.tone}>{blocked ? "Not configured" : integration.state.status}</StatusPill>
-              <Button
-                variant="secondary"
-                disabled={!canConfigure || !isGoogle || blocked}
-                onClick={isGoogle && !blocked ? onConnect : undefined}
-              >
-                {isGoogle ? (blocked ? "Unavailable" : "Review setup") : IS_DEMO_MODE ? "Details · Demo" : "Details unavailable"}
-              </Button>
+              {isGoogle && IS_DEMO_MODE ? (
+                <small className="integration-card__status-note">Connection setup requires an authenticated deployment and is unavailable in the seeded demo.</small>
+              ) : isGoogle ? (
+                <Button variant="secondary" disabled={!canConfigure || blocked} onClick={!blocked ? onConnect : undefined}>
+                  {servicesLoading && !IS_DEMO_MODE ? "Checking availability…" : blocked ? "Unavailable" : "Review setup"}
+                </Button>
+              ) : <small className="integration-card__status-note">Status is read from the shared workspace backend.</small>}
             </article>
           );
         })}
@@ -1434,51 +1434,13 @@ function AddJobDialog({ open, onClose, onAdd, locationId, demoMode }: { open: bo
   );
 }
 
-function OnboardingDialog({ open, onClose, business, canConfigure, onActivate }: { open: boolean; onClose: () => void; business: BusinessAccount; canConfigure: boolean; onActivate: () => void }) {
-  const [step, setStep] = useState(0);
-  const [source, setSource] = useState("Webhook");
-  const [template, setTemplate] = useState(DEFAULT_TEMPLATE);
-  const [activated, setActivated] = useState(false);
-  const steps = ["Google profile", "Job source", "Message", "Activate"];
-  const templateIssues = useMemo(() => validateNeutralReviewTemplate(template), [template]);
-
-  const finish = () => {
-    if (!canConfigure || templateIssues.length > 0) return;
-    onActivate();
-    setActivated(true);
-    window.setTimeout(() => {
-      setActivated(false);
-      setStep(0);
-      onClose();
-    }, 850);
-  };
-
-  return (
-    <Modal open={open} onClose={onClose} label="Connect Google Business Profile" className="dialog--wide">
-      <div className="dialog-card onboarding-card">
-        <header className="dialog-card__head"><div><span className="dialog-icon"><MapPin size={20} /></span><div><small>Simulated onboarding</small><h2>Connect Google Business Profile</h2></div></div><IconButton label="Close onboarding" onClick={onClose}><X size={19} /></IconButton></header>
-        <div className="onboarding-progress" aria-label={`Step ${step + 1} of ${steps.length}`}>
-          {steps.map((label, index) => <span key={label} className={cx(index < step && "is-complete", index === step && "is-active")}><i>{index < step ? <Check size={13} /> : index + 1}</i><b>{label}</b></span>)}
-        </div>
-        <div className="onboarding-body">
-          {step === 0 && <><div className="dialog-note"><AlertTriangle size={16} /><span>{canConfigure ? "Demo only. No OAuth window opens and no external account is changed." : "View-only support cannot change integrations. Start a configuration support session to continue."}</span></div><h3>Select a verified location</h3><label className="choice-card is-selected"><input type="radio" name="profile" defaultChecked /><span className="choice-card__icon"><Building2 size={20} /></span><span><strong>{business.name}</strong><small>{business.locationName} · Verified demo profile</small></span><CheckCircle2 size={18} /></label><p className="onboarding-help">A production connection uses Google OAuth with explicit owner permission and revocable access.</p></>}
-          {step === 1 && <><h3>How do completed jobs arrive?</h3><p className="onboarding-help">Pick the first source. More can be added after activation.</p><div className="choice-grid">{[{ label: "Webhook", detail: "Booking or CRM event", icon: Webhook }, { label: "CSV import", detail: "Upload a completed-job file", icon: FileText }, { label: "Manual entry", detail: "Add from the dashboard", icon: Plus }].map((choice) => { const Icon = choice.icon; return <label key={choice.label} className={cx("choice-card", source === choice.label && "is-selected")}><input type="radio" name="source" value={choice.label} checked={source === choice.label} onChange={() => setSource(choice.label)} /><span className="choice-card__icon"><Icon size={20} /></span><span><strong>{choice.label}</strong><small>{choice.detail}</small></span>{source === choice.label && <CheckCircle2 size={18} />}</label>; })}</div></>}
-          {step === 2 && <><h3>Approve the neutral request</h3><div className="field-group"><label htmlFor="onboarding-template">SMS template</label><textarea id="onboarding-template" rows={6} value={template} onChange={(event) => setTemplate(event.target.value)} /><small>{template.length} characters · live checks enforce identification, review-link and opt-out requirements.</small></div><div className={cx("template-guard", templateIssues.length > 0 && "template-guard--blocked")} role="status">{templateIssues.length > 0 ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}<span><strong>{templateIssues.length > 0 ? "Template blocked" : "Guardrail active"}</strong>{templateIssues.length > 0 ? <ul>{templateIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul> : <small>No sentiment screen, incentive or suggested rating detected.</small>}</span></div></>}
-          {step === 3 && <><h3>Pre-flight checks</h3><div className="preflight-list"><span><CheckCircle2 size={17} /><strong>Demo Google profile selected</strong><small>{business.name} · {business.locationName}</small></span><span><CheckCircle2 size={17} /><strong>Completed-job source ready</strong><small>{source}</small></span><span><CheckCircle2 size={17} /><strong>Neutral template approved</strong><small>Maximum two messages in this sequence</small></span><span><CheckCircle2 size={17} /><strong>Suppression and quiet hours active</strong><small>STOP cancels pending messages immediately</small></span></div>{activated && <div className="activation-success" aria-live="polite"><CheckCircle2 size={20} /> Demo automation activated</div>}</>}
-        </div>
-        <footer className="dialog-card__actions"><Button variant="quiet" disabled={step === 0 || activated} onClick={() => setStep((value) => Math.max(0, value - 1))}>Back</Button><span>Step {step + 1} of {steps.length}</span>{step < steps.length - 1 ? <Button disabled={!canConfigure || (step === 2 && templateIssues.length > 0)} onClick={() => setStep((value) => value + 1)}>Continue <ArrowRight size={16} /></Button> : <Button disabled={!canConfigure || templateIssues.length > 0} state={activated ? "success" : undefined} onClick={finish}>{activated ? <><Check size={16} /> Activated</> : "Activate demo"}</Button>}</footer>
-      </div>
-    </Modal>
-  );
-}
-
-function SupportSessionBanner({ supportSession, business, actor, onEnd }: { supportSession: SupportSession; business: BusinessAccount; actor: string; onEnd: () => void }) {
+function SupportSessionBanner({ supportSession, business, actor, onEnd, ending }: { supportSession: SupportSession; business: BusinessAccount; actor: string; onEnd: () => void; ending: boolean }) {
   const expiresAt = new Date(supportSession.expiresAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   return (
     <div className="support-session-banner" role="status">
       <span className="support-session-banner__icon"><ShieldCheck size={18} /></span>
       <span><strong>Audited support session · {supportSession.scope === "configuration" ? "Configuration" : "View only"}</strong><small>{actor} is accessing {business.name} · reason recorded · expires {expiresAt}</small></span>
-      <Button variant="secondary" onClick={onEnd}>End session</Button>
+      <Button variant="secondary" onClick={onEnd} disabled={ending} state={ending ? "loading" : undefined}>{ending ? "Ending…" : "End session"}</Button>
     </div>
   );
 }
@@ -1535,41 +1497,6 @@ function SupportSessionDialog({ business, session, onClose, onStart }: { busines
         {scope === "configuration" && <div className={cx("step-up-confirmation", !stepUpFresh && "step-up-confirmation--warning")}>{stepUpFresh ? <CheckCircle2 size={17} /> : <AlertTriangle size={17} />}<span><strong>{stepUpFresh ? "Recent step-up verified" : "Step-up verification required"}</strong><small>{stepUpFresh ? "Verified within the last 10 minutes." : "Configuration access remains blocked until MFA is verified again."}</small></span></div>}
         {submitError && <div className="dialog-error" role="alert"><AlertTriangle size={16} /> {submitError}</div>}
         <footer className="dialog-card__actions"><Button variant="quiet" onClick={onClose}>Cancel</Button><Button type="submit" disabled={invalid || submitting}><ShieldCheck size={16} /> {submitting ? "Starting…" : "Start session"}</Button></footer>
-      </form>
-    </Modal>
-  );
-}
-
-function PauseScopeDialog({ business, paused, onClose, onConfirm }: { business: BusinessAccount | null; paused: boolean; onClose: () => void; onConfirm: (input: { reason: string; notifyClient: boolean }) => void }) {
-  const [reason, setReason] = useState("");
-  const [notifyClient, setNotifyClient] = useState(true);
-  const [touched, setTouched] = useState(false);
-  const invalid = reason.trim().length < 8;
-
-  useEffect(() => {
-    if (!business) return;
-    setReason(paused ? "Issue resolved; resume approved" : "Protect sending while issue is investigated");
-    setNotifyClient(true);
-    setTouched(false);
-  }, [business, paused]);
-
-  if (!business) return null;
-
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    setTouched(true);
-    if (invalid) return;
-    onConfirm({ reason: reason.trim(), notifyClient });
-  };
-
-  return (
-    <Modal open onClose={onClose} label={`${paused ? "Review pause" : "Pause automation"} for ${business.name}`}>
-      <form className="dialog-card pause-dialog" onSubmit={submit} noValidate>
-        <header className="dialog-card__head"><div><span className="dialog-icon dialog-icon--warning"><PauseCircle size={20} /></span><div><small>Scoped safety control</small><h2>{paused ? "Resume this client scope?" : "Pause this client scope?"}</h2></div></div><IconButton label="Close pause dialog" onClick={onClose}><X size={19} /></IconButton></header>
-        <p className="dialog-explainer">{paused ? `Queued work for ${business.name} can continue after the scope is resumed.` : `New sends for ${business.name} will be held safely. Queued work is retained and no other client is affected.`}</p>
-        <div className="field-group"><label htmlFor="pause-reason">Reason</label><textarea id="pause-reason" rows={4} value={reason} onBlur={() => setTouched(true)} onChange={(event) => setReason(event.target.value)} aria-invalid={touched && invalid ? "true" : undefined} /><small className={cx(touched && invalid && "is-error")}>{touched && invalid ? "Record a specific reason of at least 8 characters." : "Required for the append-only audit record."}</small></div>
-        <label className="checkbox-row"><input type="checkbox" checked={notifyClient} onChange={(event) => setNotifyClient(event.target.checked)} /><span><strong>Notify the client owner</strong><small>Demo notification only; no message is sent.</small></span></label>
-        <footer className="dialog-card__actions"><Button variant="quiet" onClick={onClose}>Cancel</Button><Button type="submit" variant={paused ? "primary" : "danger"}>{paused ? "Resume scope" : "Pause scope"}</Button></footer>
       </form>
     </Modal>
   );
@@ -1635,18 +1562,26 @@ function GoogleProfileSelectionDialog({
   );
 }
 
-function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { initialView: AppView; onBack: () => void; onboardingOpen: boolean; setOnboardingOpen: (open: boolean) => void }) {
+function AppShell() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const routeContext = useMemo(() => workspaceContextFromSearch(location.search), [location.search]);
+  const requestedView = appViewFromPath(location.pathname) ?? "growth";
   const compactViewport = useMediaQuery("(max-width: 59.999rem)");
-  const [view, setView] = useState<AppView>(initialView);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [addJobOpen, setAddJobOpen] = useState(false);
   const [session, setSession] = useState<SessionContext | null>(IS_DEMO_MODE ? OWNER_SESSION : null);
   const [workspaceState, setWorkspaceState] = useState<WorkspaceLoadState>(IS_DEMO_MODE ? "authenticated" : "loading");
   const [workspaceError, setWorkspaceError] = useState("");
+  const [workspaceNotice, setWorkspaceNotice] = useState<WorkspaceNotice | null>(null);
+  const [workspaceAccess, setWorkspaceAccess] = useState<WorkspaceAccess | undefined>();
   const [supportSession, setSupportSession] = useState<SupportSession | null>(null);
-  const [selectedBusinessId, setSelectedBusinessId] = useState(IS_DEMO_MODE ? OWNER_SESSION.businessId ?? BUSINESSES[0].id : "");
+  const [endingSupportSession, setEndingSupportSession] = useState(false);
+  const [, refreshPermissionClock] = useState(0);
+  const [selectedBusinessId, setSelectedBusinessId] = useState(
+    routeContext.businessId ?? (IS_DEMO_MODE ? OWNER_SESSION.businessId ?? BUSINESSES[0].id : ""),
+  );
   const [supportDialogBusiness, setSupportDialogBusiness] = useState<BusinessAccount | null>(null);
-  const [pauseDialogBusiness, setPauseDialogBusiness] = useState<BusinessAccount | null>(null);
   const [businesses, setBusinesses] = useState<BusinessAccount[]>(IS_DEMO_MODE ? BUSINESSES : []);
   const [requestsByBusiness, setRequestsByBusiness] = useState<Record<string, RequestRecord[]>>(() => Object.fromEntries(
     IS_DEMO_MODE ? Object.entries(INITIAL_REQUESTS_BY_BUSINESS).map(([businessId, requests]) => [businessId, [...requests]]) : [],
@@ -1657,29 +1592,115 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
   const [qrCodesByBusiness, setQrCodesByBusiness] = useState<Record<string, QrCodeRecord>>(() => Object.fromEntries(
     IS_DEMO_MODE ? Object.entries(INITIAL_QR_CODES_BY_BUSINESS).map(([businessId, record]) => [businessId, { ...record, placements: record.placements.map((placement) => ({ ...placement })) }]) : [],
   ));
-  const [pausedBusinessIds, setPausedBusinessIds] = useState<Set<string>>(() => new Set());
-  const selectionToken = !IS_DEMO_MODE ? new URLSearchParams(window.location.search).get("selection") : null;
+  const [workflowsByLocation, setWorkflowsByLocation] = useState<Record<string, LocationWorkflowSummary>>({});
+  const selectionToken = useMemo(
+    () => !IS_DEMO_MODE ? new URLSearchParams(location.search).get("selection") : null,
+    [location.search],
+  );
   const [googleProfileSelection, setGoogleProfileSelection] = useState<GoogleProfileSelectionPayload | null>(null);
   const [googleSelectionLoading, setGoogleSelectionLoading] = useState(Boolean(selectionToken));
   const [googleSelectionSaving, setGoogleSelectionSaving] = useState(false);
   const [googleSelectionError, setGoogleSelectionError] = useState("");
+  const [billingRefreshPending, setBillingRefreshPending] = useState(false);
+  const [supportAccessObservedAt, setSupportAccessObservedAt] = useState<number | null>(null);
   const stripeCheckoutAttempts = useRef(new Map<string, string>());
   const [services, setServices] = useState<ServiceStatus[]>([]);
   const [servicesLoading, setServicesLoading] = useState(!IS_DEMO_MODE);
+  const [servicesError, setServicesError] = useState("");
+  const [servicesVersion, setServicesVersion] = useState(0);
+  const sessionRef = useRef<SessionContext | null>(session);
+  const previousDemoRoleRef = useRef<ActorRole | null>(session?.role ?? null);
+
+  const navigateToView = (
+    nextView: AppView,
+    context: { businessId?: string; locationId?: string; replace?: boolean } = {},
+  ) => {
+    if (session?.role === "agency_admin" && !supportSession) {
+      navigate(workspaceRoute(nextView), { replace: context.replace });
+      return;
+    }
+    const currentBusinessId = supportSession?.businessId ?? session?.businessId ?? routeContext.businessId ?? selectedBusinessId;
+    const businessId = context.businessId ?? currentBusinessId;
+    const selectedBusiness = businesses.find((item) => item.id === businessId);
+    const locationId = workspaceLocationForBusiness(
+      routeContext,
+      businessId,
+      context.locationId,
+      selectedBusiness?.locationId ?? selectedBusiness?.locationReports?.[0]?.id,
+    );
+    navigate(workspaceRoute(nextView, { businessId, locationId }), { replace: context.replace });
+  };
+
+  useEffect(() => {
+    if (!IS_DEMO_MODE || !session) return;
+    const previousRole = previousDemoRoleRef.current;
+    previousDemoRoleRef.current = session.role;
+    if (!previousRole || previousRole === session.role) return;
+    const ownerBusinessId = OWNER_SESSION.businessId ?? BUSINESSES[0]?.id;
+    const ownerBusiness = BUSINESSES.find((candidate) => candidate.id === ownerBusinessId);
+    const targetRoute = session.role === "agency_admin"
+      ? workspaceRoute("agency-overview")
+      : workspaceRoute("growth", {
+        businessId: ownerBusinessId,
+        locationId: ownerBusiness?.locationId,
+      });
+    const frame = window.requestAnimationFrame(() => navigate(targetRoute, { replace: true }));
+    return () => window.cancelAnimationFrame(frame);
+  }, [navigate, session?.role]);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "auto" }));
     return () => window.cancelAnimationFrame(frame);
-  }, [view]);
+  }, [requestedView]);
+
+  useEffect(() => {
+    if (IS_DEMO_MODE) return;
+    const params = new URLSearchParams(location.search);
+    const googleResult = params.get("google");
+    const checkoutResult = params.get("checkout");
+    const billingResult = params.get("billing");
+    if (googleResult === "selection_required") return;
+
+    let notice: WorkspaceNotice | null = null;
+    if (googleResult === "connected") {
+      notice = { tone: "success", message: "Google Business Profile was connected to this location." };
+    } else if (googleResult === "error") {
+      const reason = params.get("reason");
+      notice = {
+        tone: "error",
+        message: reason === "access_denied" || reason === "authorization_cancelled"
+          ? "Google connection was cancelled. No account changes were made."
+          : "Google Business Profile could not be connected. Check the integration and try again.",
+      };
+    } else if (checkoutResult === "success") {
+      notice = { tone: "warning", message: "Returned from Stripe Checkout. Verified billing status is refreshing." };
+      setBillingRefreshPending(true);
+    } else if (checkoutResult === "cancelled") {
+      notice = { tone: "warning", message: "Stripe Checkout was cancelled. No subscription changes were made." };
+    } else if (billingResult === "return") {
+      notice = { tone: "warning", message: "Returned from the Stripe billing portal. Verified billing status is refreshing." };
+      setBillingRefreshPending(true);
+    }
+    if (!notice) return;
+
+    setWorkspaceNotice(notice);
+    for (const key of ["google", "reason", "checkout", "billing", "session_id"]) params.delete(key);
+    const search = params.toString();
+    navigate({ pathname: location.pathname, search: search ? `?${search}` : "" }, { replace: true });
+  }, [location.pathname, location.search, navigate]);
 
   const applyWorkspace = (workspace: WorkspacePayload) => {
+    sessionRef.current = workspace.session;
     setSession(workspace.session);
     setBusinesses(workspace.businesses);
     setRequestsByBusiness(workspace.requestsByBusiness);
     setReviewsByBusiness(workspace.reviewsByBusiness);
     setQrCodesByBusiness(workspace.qrCodesByBusiness);
+    setWorkflowsByLocation(workspace.workflowsByLocation);
+    setWorkspaceAccess(workspace.access);
     setPlatformExceptions(workspace.exceptions);
     setAuditEvents(workspace.auditEvents);
+    if (!IS_DEMO_MODE && workspace.session.role === "agency_admin") setSupportAccessObservedAt(Date.now());
     setSelectedBusinessId((current) => {
       if (current && workspace.businesses.some((item) => item.id === current)) return current;
       return workspace.session.businessId ?? workspace.businesses[0]?.id ?? "";
@@ -1687,22 +1708,100 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
   };
 
   useEffect(() => {
-    if (IS_DEMO_MODE) return;
+    if (IS_DEMO_MODE || !billingRefreshPending || workspaceState !== "authenticated" || !session) return;
+    const businessId = routeContext.businessId ?? session.businessId;
+    if (!businessId) {
+      setBillingRefreshPending(false);
+      setWorkspaceNotice({ tone: "error", message: "Billing status could not be refreshed because no business context is selected." });
+      return;
+    }
+
+    let cancelled = false;
+    let timer: number | undefined;
+    const refresh = async (attempt: number) => {
+      try {
+        const workspace = await platformApi.getWorkspace(businessId, routeContext.locationId);
+        if (cancelled) return;
+        applyWorkspace(workspace);
+        if (attempt >= 2) {
+          setBillingRefreshPending(false);
+          setWorkspaceNotice({ tone: "success", message: "Latest verified billing status loaded." });
+          return;
+        }
+      } catch (caught) {
+        if (cancelled) return;
+        if (attempt >= 2) {
+          setBillingRefreshPending(false);
+          setWorkspaceNotice({ tone: "error", message: caught instanceof Error ? `Billing status could not be refreshed: ${caught.message}` : "Billing status could not be refreshed." });
+          return;
+        }
+      }
+      timer = window.setTimeout(() => void refresh(attempt + 1), 1_500);
+    };
+    void refresh(0);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [billingRefreshPending, routeContext.businessId, routeContext.locationId, session?.businessId, workspaceState]);
+
+  useEffect(() => {
+    if (IS_DEMO_MODE) {
+      if (routeContext.businessId && BUSINESSES.some((business) => business.id === routeContext.businessId)) {
+        setSelectedBusinessId(routeContext.businessId);
+      }
+      return;
+    }
     let active = true;
     const load = async () => {
       setWorkspaceState("loading");
       setWorkspaceError("");
       try {
-        const authenticated = await platformApi.getSession();
-        const workspace = await platformApi.getWorkspace(authenticated.businessId);
+        const authenticated = sessionRef.current ?? await platformApi.getSession();
+        sessionRef.current = authenticated;
+        setSession(authenticated);
+        let restoredSupportSession: SupportSession | null = null;
+        if (authenticated.role === "agency_admin") {
+          const active = await platformApi.getActiveSupportSession();
+          if (active) {
+            restoredSupportSession = {
+              id: active.id,
+              actorUserId: authenticated.userId,
+              actorName: authenticated.userName,
+              businessId: active.businessId,
+              reason: "Restored active support session",
+              scope: active.scope,
+              startedAt: active.startedAt,
+              expiresAt: active.expiresAt,
+            };
+          }
+          if (active) setSupportSession(restoredSupportSession);
+          else setSupportSession(null);
+        }
+        const requestedBusinessId = workspaceBusinessForSession(
+          routeContext,
+          authenticated.role,
+          authenticated.businessId,
+          restoredSupportSession?.businessId,
+        );
+        const requestedLocationId = !routeContext.businessId || routeContext.businessId === requestedBusinessId
+          ? routeContext.locationId
+          : undefined;
+        const workspace = await platformApi.getWorkspace(requestedBusinessId, requestedLocationId);
         if (!active) return;
         applyWorkspace(workspace);
         setWorkspaceState("authenticated");
       } catch (caught) {
         if (!active) return;
-        setSession(null);
         if (caught instanceof ApiError && caught.status === 401) {
+          platformApi.clearSupportSession();
+          sessionRef.current = null;
+          setSession(null);
           setWorkspaceState("anonymous");
+          return;
+        }
+        if (caught instanceof ApiError && caught.code === "LOCATION_NOT_FOUND" && routeContext.locationId) {
+          navigate(workspaceRoute(requestedView, { businessId: routeContext.businessId }), { replace: true });
           return;
         }
         setWorkspaceError(caught instanceof Error ? caught.message : "The workspace could not be loaded.");
@@ -1711,18 +1810,54 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
     };
     void load();
     return () => { active = false; };
-  }, []);
+  }, [routeContext.businessId, routeContext.locationId]);
 
   useEffect(() => {
     if (IS_DEMO_MODE || workspaceState !== "authenticated") return;
     let active = true;
     setServicesLoading(true);
+    setServicesError("");
     void platformApi.getServiceStatus()
       .then((loaded) => { if (active) setServices(loaded); })
-      .catch(() => { if (active) setServices([]); })
+      .catch((caught: unknown) => {
+        if (active) {
+          setServices([]);
+          setServicesError(caught instanceof Error ? caught.message : "Service availability could not be loaded.");
+        }
+      })
       .finally(() => { if (active) setServicesLoading(false); });
     return () => { active = false; };
-  }, [workspaceState]);
+  }, [servicesVersion, workspaceState]);
+
+  useEffect(() => {
+    if (workspaceState !== "authenticated" || !session) return;
+    if (selectionToken) return;
+    const agencyPortfolioOnly = session.role === "agency_admin" && !supportSession;
+    const resolvedView = isAppViewAllowed(requestedView, session.role, Boolean(supportSession), session.businessRole)
+      ? requestedView
+      : defaultAppView(session.role, Boolean(supportSession), session.businessRole);
+    if (agencyPortfolioOnly) {
+      const canonicalRoute = workspaceRoute(resolvedView);
+      if (`${location.pathname}${location.search}` !== canonicalRoute) {
+        navigate(canonicalRoute, { replace: true });
+      }
+      return;
+    }
+    const businessId = supportSession?.businessId ?? session.businessId ?? selectedBusinessId;
+    const selectedBusiness = businesses.find((candidate) => candidate.id === businessId);
+    if (!businessId || !selectedBusiness) return;
+    const routeLocationBelongsToBusiness = (!routeContext.businessId || routeContext.businessId === businessId)
+      && Boolean(routeContext.locationId)
+      && (selectedBusiness.locationId === routeContext.locationId
+        || selectedBusiness.locationReports?.some((candidate) => candidate.id === routeContext.locationId));
+    const locationId = routeLocationBelongsToBusiness
+      ? routeContext.locationId
+      : selectedBusiness.locationId ?? selectedBusiness.locationReports?.[0]?.id;
+    const canonicalRoute = workspaceRoute(resolvedView, { businessId, locationId });
+    if (`${location.pathname}${location.search}` !== canonicalRoute) {
+      navigate(canonicalRoute, { replace: true });
+    }
+  }, [businesses, location.pathname, location.search, navigate, requestedView, routeContext.businessId, routeContext.locationId, selectedBusinessId, selectionToken, session, supportSession, workspaceState]);
 
   useEffect(() => {
     if (IS_DEMO_MODE || workspaceState !== "authenticated" || !selectionToken) return;
@@ -1756,9 +1891,11 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
         reason: "Session expired automatically",
       }), ...current]);
       setSupportSession((current) => current?.id === expiredSession.id ? null : current);
+      setSupportAccessObservedAt(null);
+      if (IS_DEMO_MODE) platformApi.clearSupportSession();
+      else void platformApi.endSupportSession(expiredSession.id, "Support session expired automatically").catch(() => platformApi.clearSupportSession());
       setAddJobOpen(false);
-      setOnboardingOpen(false);
-      setView("agency-overview");
+      navigate(workspaceRoute("agency-overview"));
     };
     if (remaining <= 0) {
       expire();
@@ -1766,45 +1903,135 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
     }
     const timer = window.setTimeout(expire, remaining);
     return () => window.clearTimeout(timer);
-  }, [setOnboardingOpen, supportSession]);
+  }, [supportSession]);
+
+  useEffect(() => {
+    if (supportSession?.scope !== "configuration" || !session?.stepUpVerifiedAt) return;
+    const remaining = new Date(session.stepUpVerifiedAt).getTime() + 15 * 60 * 1_000 - Date.now();
+    const invalidate = () => {
+      if (IS_DEMO_MODE) {
+        refreshPermissionClock((value) => value + 1);
+        return;
+      }
+      setWorkspaceAccess((current) => current?.businessId === supportSession.businessId ? {
+        ...current,
+        canManageBusiness: false,
+        canManageBilling: false,
+        canManageStripeBilling: false,
+      } : current);
+      setAddJobOpen(false);
+    };
+    if (remaining <= 0) {
+      invalidate();
+      return;
+    }
+    const timer = window.setTimeout(invalidate, remaining);
+    return () => window.clearTimeout(timer);
+  }, [session?.stepUpVerifiedAt, supportSession?.id, supportSession?.scope]);
+
+  useEffect(() => {
+    if (IS_DEMO_MODE || !supportSession || supportAccessObservedAt === null) return;
+    const remaining = supportAccessObservedAt + 15 * 60 * 1_000 - Date.now();
+    const invalidate = () => {
+      setWorkspaceAccess((current) => current?.businessId === supportSession.businessId ? {
+        ...current,
+        canReadTenant: false,
+        canManageBusiness: false,
+        canReadBilling: false,
+        canManageBilling: false,
+        canManageStripeBilling: false,
+      } : current);
+      setAddJobOpen(false);
+    };
+    if (remaining <= 0) {
+      invalidate();
+      return;
+    }
+    const timer = window.setTimeout(invalidate, remaining);
+    return () => window.clearTimeout(timer);
+  }, [supportAccessObservedAt, supportSession?.businessId, supportSession?.id]);
 
   const signIn = async (email: string, password: string) => {
     setWorkspaceError("");
     await platformApi.login(email, password);
     const authenticated = await platformApi.getSession();
-    const workspace = await platformApi.getWorkspace(authenticated.businessId);
-    applyWorkspace(workspace);
-    setView(authenticated.role === "agency_admin" ? "agency-overview" : "overview");
-    setWorkspaceState("authenticated");
+    sessionRef.current = authenticated;
+    setSession(authenticated);
+    setWorkspaceState("loading");
+    const requestedBusinessId = workspaceBusinessForSession(
+      routeContext,
+      authenticated.role,
+      authenticated.businessId,
+    );
+    const requestedLocationId = workspaceLocationForBusiness(
+      routeContext,
+      requestedBusinessId,
+      undefined,
+      undefined,
+    );
+    try {
+      const workspace = await platformApi.getWorkspace(requestedBusinessId, requestedLocationId);
+      applyWorkspace(workspace);
+      const signedInBusinessId = workspace.session.businessId ?? requestedBusinessId;
+      const signedInBusiness = workspace.businesses.find((candidate) => candidate.id === signedInBusinessId);
+      const locationId = requestedLocationId
+        ?? signedInBusiness?.locationId
+        ?? signedInBusiness?.locationReports?.[0]?.id;
+      const signedInView = isAppViewAllowed(requestedView, workspace.session.role, false, workspace.session.businessRole)
+        ? requestedView
+        : defaultAppView(workspace.session.role, false, workspace.session.businessRole);
+      navigate(workspaceRoute(signedInView, {
+        businessId: signedInBusinessId,
+        locationId,
+      }), { replace: true });
+      setWorkspaceState("authenticated");
+    } catch (caught) {
+      setWorkspaceError(caught instanceof Error ? caught.message : "The workspace could not be loaded.");
+      setWorkspaceState("error");
+    }
   };
 
   const signOut = async () => {
     setWorkspaceError("");
     try {
+      if (supportSession && !IS_DEMO_MODE) {
+        try {
+          await platformApi.endSupportSession(supportSession.id, "Session ended because the agency user signed out");
+        } catch {
+          // Logout still revokes the authenticated session; the bounded support lease then expires server-side.
+        }
+      }
       await platformApi.logout();
     } finally {
+      platformApi.clearSupportSession();
+      sessionRef.current = null;
       setSession(null);
+      setSupportSession(null);
+      setSupportAccessObservedAt(null);
+      setEndingSupportSession(false);
       setBusinesses([]);
       setRequestsByBusiness({});
       setReviewsByBusiness({});
       setQrCodesByBusiness({});
+      setWorkflowsByLocation({});
+      setWorkspaceAccess(undefined);
       setPlatformExceptions([]);
       setAuditEvents([]);
       setWorkspaceState("anonymous");
       setSidebarOpen(false);
       setAddJobOpen(false);
-      setOnboardingOpen(false);
     }
   };
 
   const clearGoogleSelection = () => {
-    const url = new URL(window.location.href);
-    url.searchParams.delete("selection");
-    url.searchParams.delete("google");
-    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    const params = new URLSearchParams(location.search);
+    const businessId = params.get("business") ?? undefined;
+    const locationId = params.get("location") ?? undefined;
+    navigate(workspaceRoute("integrations", { businessId, locationId }), { replace: true });
     setGoogleProfileSelection(null);
     setGoogleSelectionError("");
     setGoogleSelectionLoading(false);
+    setWorkspaceNotice({ tone: "warning", message: "Google profile selection was cancelled. No connection changes were made." });
   };
 
   const completeGoogleSelection = async (profileIndex: number) => {
@@ -1813,10 +2040,12 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
     setGoogleSelectionError("");
     try {
       await platformApi.completeGoogleProfileSelection(selectionToken, profileIndex);
-      const refreshed = await platformApi.getWorkspace(googleProfileSelection.businessId);
+      const refreshed = await platformApi.getWorkspace(googleProfileSelection.businessId, googleProfileSelection.locationId);
       applyWorkspace(refreshed);
-      setView("integrations");
-      clearGoogleSelection();
+      setGoogleProfileSelection(null);
+      setGoogleSelectionLoading(false);
+      setWorkspaceNotice({ tone: "success", message: "Google Business Profile was connected to this location." });
+      navigate(workspaceRoute("integrations", { businessId: googleProfileSelection.businessId, locationId: googleProfileSelection.locationId }), { replace: true });
     } catch (caught) {
       setGoogleSelectionError(caught instanceof Error ? caught.message : "The Google location could not be connected.");
     } finally {
@@ -1824,32 +2053,122 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
     }
   };
 
+  const fallbackView = defaultAppView(session?.role, Boolean(supportSession), session?.businessRole);
+  const view = session && isAppViewAllowed(requestedView, session.role, Boolean(supportSession), session.businessRole)
+    ? requestedView
+    : fallbackView;
+
+  useEffect(() => {
+    if (workspaceState !== "authenticated" || !session) return;
+    if (isAppViewAllowed(requestedView, session.role, Boolean(supportSession), session.businessRole)) return;
+    const fallback = defaultAppView(session.role, Boolean(supportSession), session.businessRole);
+    if (fallback === "agency-overview") {
+      navigate(workspaceRoute(fallback), { replace: true });
+    } else {
+      navigateToView(fallback, { replace: true });
+    }
+  }, [requestedView, session?.role, supportSession?.id, workspaceState]);
+
+  if (workspaceState === "error" && session) {
+    return (
+      <main className="workspace-auth-shell">
+        <button className="workspace-auth-shell__brand" type="button" onClick={() => navigate("/")} aria-label="Return to the Review Anchor website"><Brand /></button>
+        <section className="workspace-auth-card">
+          <span className="eyebrow">Workspace unavailable</span>
+          <h1>Your session is still active.</h1>
+          <p>{workspaceError || "The selected tenant context could not be loaded."}</p>
+          <div className="dialog-card__actions">
+            <Button variant="secondary" onClick={() => window.location.reload()}>Retry</Button>
+            <Button onClick={() => navigate(workspaceRoute(defaultAppView(session.role, Boolean(supportSession), session.businessRole)), { replace: true })}>Open default workspace</Button>
+          </div>
+          <small>No account or business context was changed.</small>
+        </section>
+      </main>
+    );
+  }
+
   if (workspaceState !== "authenticated" || !session) {
     return (
       <WorkspaceAuthScreen
         state={workspaceState === "authenticated" ? "error" : workspaceState}
         error={workspaceError}
         onLogin={signIn}
-        onBack={onBack}
+        onBack={() => navigate("/")}
       />
     );
   }
 
+  const agencyMode = session.role === "agency_admin" && !supportSession;
   const business = businesses.find((item) => item.id === (supportSession?.businessId ?? session.businessId ?? selectedBusinessId)) ?? businesses[0];
   if (!business) {
-    return <WorkspaceAuthScreen state="error" error="No business workspace is assigned to this account." onLogin={signIn} onBack={onBack} />;
+    return (
+      <main className="workspace-auth-shell">
+        <button className="workspace-auth-shell__brand" type="button" onClick={() => navigate("/")} aria-label="Return to the Review Anchor website"><Brand /></button>
+        <section className="workspace-auth-card">
+          <span className="eyebrow">Signed-in account</span>
+          <h1>{agencyMode ? "No client accounts are assigned yet." : "No business workspace is assigned yet."}</h1>
+          <p>{agencyMode ? "Your agency session is active, but no authorised client summaries are available." : "Your session is active. Ask an administrator to assign this account to a business before continuing."}</p>
+          <div className="workspace-auth-card__actions"><Button variant="secondary" onClick={() => navigate("/")}>View website</Button><Button onClick={() => void signOut()}>Sign out</Button></div>
+        </section>
+      </main>
+    );
   }
 
-  const agencyMode = session.role === "agency_admin" && !supportSession;
-  const requests = requestsByBusiness[business.id] ?? [];
-  const reviews = reviewsByBusiness[business.id] ?? [];
-  const canReadTenant = canReadTenantData(session, business.id, supportSession);
-  const canConfigure = canConfigureTenant(session, business.id, supportSession);
-  const paused = pausedBusinessIds.has(business.id) || business.automationState !== "Live";
-  const navItems = agencyMode ? AGENCY_NAV : CLIENT_NAV;
+  const routeLocationBelongsToBusiness = (!routeContext.businessId || routeContext.businessId === business.id)
+    && Boolean(routeContext.locationId)
+    && (business.locationId === routeContext.locationId
+      || business.locationReports?.some((candidate) => candidate.id === routeContext.locationId));
+  const selectedLocationId = routeLocationBelongsToBusiness
+    ? routeContext.locationId
+    : business.locationId ?? business.locationReports?.[0]?.id;
+  const selectedLocation = business.locationReports?.find((location) => location.id === selectedLocationId);
+  const contextBusiness = selectedLocation ? {
+    ...business,
+    locationId: selectedLocation.id,
+    locationName: selectedLocation.name,
+    locationReports: [selectedLocation],
+    metrics: {
+      ...business.metrics,
+      completedJobs: selectedLocation.completedJobs,
+      delivered: selectedLocation.delivered,
+      uniqueClicks: selectedLocation.uniqueClicks,
+      reviewsDetected: selectedLocation.reviewsDetected,
+      rating: selectedLocation.rating,
+      totalReviews: selectedLocation.totalReviews,
+    },
+  } : business;
+  const requests = (requestsByBusiness[business.id] ?? []).filter(
+    (request) => !selectedLocationId || request.locationId === selectedLocationId,
+  );
+  const reviews = (reviewsByBusiness[business.id] ?? []).filter(
+    (review) => !selectedLocationId || review.locationId === selectedLocationId,
+  );
+  const selectedWorkflow = selectedLocationId
+    ? workflowsByLocation[selectedLocationId]
+      ?? (IS_DEMO_MODE ? seededDemoWorkflow(contextBusiness, qrCodesByBusiness[business.id]) : undefined)
+    : undefined;
+  const accessMatchesContext = workspaceAccess?.businessId === business.id
+    && (!workspaceAccess.locationId || workspaceAccess.locationId === selectedLocationId);
+  const canReadTenant = IS_DEMO_MODE
+    ? canReadTenantData(session, business.id, supportSession)
+    : Boolean(accessMatchesContext && workspaceAccess?.canReadTenant);
+  const canConfigure = IS_DEMO_MODE
+    ? canConfigureTenant(session, business.id, supportSession)
+    : Boolean(accessMatchesContext && workspaceAccess?.canManageBusiness);
+  const canReadTenantBilling = IS_DEMO_MODE
+    ? canManageBilling(session, business.id)
+    : Boolean(workspaceAccess?.businessId === business.id && workspaceAccess.canReadBilling);
+  const canManageTenantBilling = IS_DEMO_MODE
+    ? canManageBilling(session, business.id)
+    : Boolean(workspaceAccess?.businessId === business.id && workspaceAccess.canManageBilling);
+  const canManageStripeBilling = IS_DEMO_MODE
+    ? canManageBilling(session, business.id)
+    : Boolean(workspaceAccess?.businessId === business.id && workspaceAccess.canManageStripeBilling);
+  const navItems = (agencyMode ? AGENCY_NAV : CLIENT_NAV).filter((item) => (
+    isAppViewAllowed(item.id, session.role, Boolean(supportSession), session.businessRole)
+  ));
   const page = [...CLIENT_NAV, ...AGENCY_NAV].find((item) => item.id === view) ?? navItems[0];
   const descriptions: Record<AppView, string> = {
-    overview: "Reputation performance and automation health at a glance.",
     requests: "Every completed job, message event and suppression state.",
     automation: "A neutral review journey with fewer moving parts.",
     reviews: "New Google reviews and owner-reply status.",
@@ -1861,7 +2180,7 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
     clients: "Managed businesses, integrations and scoped controls.",
     exceptions: "Operational failures with impact and safe resolution paths.",
     audit: "Append-only evidence for administrative and support actions.",
-    growth: "Local marketing tools running on sample data while their live services are connected.",
+    growth: "Your connected reputation-growth dashboard, using the same account and tenant data as Review Anchor.",
   };
 
   const recordAudit = (event: Omit<AuditEvent, "id" | "correlationId">) => {
@@ -1869,62 +2188,78 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
   };
 
   const endSupportSession = async () => {
-    if (!supportSession) return;
-    if (IS_DEMO_MODE) {
-      recordAudit({
-        occurredAt: "Just now",
-        actor: session.userName,
-        actorType: "user",
-        businessId: supportSession.businessId,
-        action: "support.session.end",
-        resource: supportSession.id,
-        outcome: "Completed",
-        supportSessionId: supportSession.id,
-        reason: "Session ended explicitly",
-      });
-    } else {
-      await platformApi.endSupportSession(supportSession.id, "Session ended explicitly by agency user");
+    if (!supportSession || endingSupportSession) return;
+    setEndingSupportSession(true);
+    setWorkspaceError("");
+    try {
+      if (IS_DEMO_MODE) {
+        recordAudit({
+          occurredAt: "Just now",
+          actor: session.userName,
+          actorType: "user",
+          businessId: supportSession.businessId,
+          action: "support.session.end",
+          resource: supportSession.id,
+          outcome: "Completed",
+          supportSessionId: supportSession.id,
+          reason: "Session ended explicitly",
+        });
+      } else {
+        await platformApi.endSupportSession(supportSession.id, "Session ended explicitly by agency user");
+      }
+      setSupportSession(null);
+      setSupportAccessObservedAt(null);
+      setAddJobOpen(false);
+      navigate(workspaceRoute("agency-overview"));
+    } catch (caught) {
+      setWorkspaceError(caught instanceof Error ? caught.message : "The support session could not be ended.");
+    } finally {
+      setEndingSupportSession(false);
     }
-    setSupportSession(null);
-    setAddJobOpen(false);
-    setOnboardingOpen(false);
-    setView("agency-overview");
   };
 
-  const exitWorkspace = () => {
+  const exitWorkspace = async () => {
     if (supportSession) {
-      recordAudit({
-        occurredAt: "Just now",
-        actor: session.userName,
-        actorType: "user",
-        businessId: supportSession.businessId,
-        action: "support.session.end",
-        resource: supportSession.id,
-        outcome: "Completed",
-        supportSessionId: supportSession.id,
-        reason: "Workspace exited",
-      });
+      if (IS_DEMO_MODE) {
+        recordAudit({
+          occurredAt: "Just now",
+          actor: session.userName,
+          actorType: "user",
+          businessId: supportSession.businessId,
+          action: "support.session.end",
+          resource: supportSession.id,
+          outcome: "Completed",
+          supportSessionId: supportSession.id,
+          reason: "Workspace exited",
+        });
+        platformApi.clearSupportSession();
+      } else {
+        try {
+          await platformApi.endSupportSession(supportSession.id, "Workspace exited by agency user");
+        } catch {
+          platformApi.clearSupportSession();
+        }
+      }
       setSupportSession(null);
+      setSupportAccessObservedAt(null);
     }
     setAddJobOpen(false);
-    setOnboardingOpen(false);
-    onBack();
+    navigate("/");
   };
 
   const changeRole = (role: ActorRole) => {
     if (role === session.role && !supportSession) return;
     if (supportSession) endSupportSession();
     setSupportDialogBusiness(null);
-    setPauseDialogBusiness(null);
     setAddJobOpen(false);
-    setOnboardingOpen(false);
     if (role === "agency_admin") {
-      setSession({ ...ADMIN_SESSION, stepUpVerifiedAt: new Date().toISOString() });
-      setView("agency-overview");
+      const nextSession = { ...ADMIN_SESSION, stepUpVerifiedAt: new Date().toISOString() };
+      sessionRef.current = nextSession;
+      setSession(nextSession);
     } else {
+      sessionRef.current = OWNER_SESSION;
       setSession(OWNER_SESSION);
       setSelectedBusinessId(OWNER_SESSION.businessId ?? BUSINESSES[0].id);
-      setView("overview");
     }
   };
 
@@ -1944,12 +2279,24 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
         startedAt: startedAt.toISOString(),
         expiresAt: remote.expiresAt,
       };
-      const refreshed = await platformApi.getWorkspace(target.id);
-      applyWorkspace(refreshed);
       setSupportSession(created);
-      setSelectedBusinessId(target.id);
-      setSupportDialogBusiness(null);
-      setView("overview");
+      try {
+        const refreshed = await platformApi.getWorkspace(target.id, target.locationId);
+        applyWorkspace(refreshed);
+        setSelectedBusinessId(target.id);
+        setSupportDialogBusiness(null);
+        const refreshedBusiness = refreshed.businesses.find((candidate) => candidate.id === target.id);
+        const refreshedLocationId = refreshedBusiness?.locationId ?? refreshedBusiness?.locationReports?.[0]?.id;
+        navigateToView("growth", { businessId: target.id, locationId: refreshedLocationId });
+      } catch (caught) {
+        setSupportSession(null);
+        try {
+          await platformApi.endSupportSession(created.id, "Support workspace failed to load");
+        } catch {
+          platformApi.clearSupportSession();
+        }
+        throw caught;
+      }
       return;
     }
     const startedAt = new Date();
@@ -1973,53 +2320,11 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
     setSupportSession(created);
     setSelectedBusinessId(supportDialogBusiness.id);
     setSupportDialogBusiness(null);
-    setView("overview");
-  };
-
-  const confirmPauseChange = ({ reason, notifyClient }: { reason: string; notifyClient: boolean }) => {
-    if (!pauseDialogBusiness) return;
-    if (!IS_DEMO_MODE) {
-      setWorkspaceError("Automation pause controls are unavailable until their audited server endpoint is enabled.");
-      setPauseDialogBusiness(null);
-      return;
-    }
-    const wasPaused = pausedBusinessIds.has(pauseDialogBusiness.id);
-    if (!wasPaused && pauseDialogBusiness.automationState !== "Live") {
-      recordAudit({
-        occurredAt: "Just now",
-        actor: session.userName,
-        actorType: "user",
-        businessId: pauseDialogBusiness.id,
-        action: "automation.resume",
-        resource: `${pauseDialogBusiness.locationName} automation scope`,
-        outcome: "Blocked",
-        reason: "System protection must be resolved before resuming",
-      });
-      setPauseDialogBusiness(null);
-      return;
-    }
-    setPausedBusinessIds((current) => {
-      const next = new Set(current);
-      if (wasPaused) next.delete(pauseDialogBusiness.id);
-      else next.add(pauseDialogBusiness.id);
-      return next;
-    });
-    recordAudit({
-      occurredAt: "Just now",
-      actor: session.userName,
-      actorType: "user",
-      businessId: pauseDialogBusiness.id,
-      action: wasPaused ? "automation.resume" : "automation.pause",
-      resource: `${pauseDialogBusiness.locationName} automation scope`,
-      outcome: "Completed",
-      supportSessionId: supportSession?.id,
-      reason: `${reason}${notifyClient ? " · client notification queued" : ""}`,
-    });
-    setPauseDialogBusiness(null);
+    navigateToView("growth", { businessId: supportDialogBusiness.id, locationId: supportDialogBusiness.locationId });
   };
 
   const saveSmsOveragePolicy = async (policy: SmsOveragePolicy) => {
-    if (!canConfigure) throw new Error("You do not have permission to change SMS billing controls.");
+    if (!canManageTenantBilling) throw new Error("You do not have permission to change SMS billing controls.");
     if (IS_DEMO_MODE) {
       setBusinesses((current) => current.map((item) => item.id === business.id && item.billing
         ? { ...item, billing: { ...item.billing, smsOveragePolicy: policy } }
@@ -2027,23 +2332,23 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
       return;
     }
     await platformApi.updateSmsOveragePolicy(business.id, policy);
-    const refreshed = await platformApi.getWorkspace(business.id);
+    const refreshed = await platformApi.getWorkspace(business.id, selectedLocationId);
     applyWorkspace(refreshed);
   };
 
   const startStripeCheckout = async () => {
-    if (!canConfigure) throw new Error("You do not have permission to manage billing.");
+    if (!canManageStripeBilling) throw new Error("Stripe billing changes require a direct owner, administrator or billing-role session.");
     if (IS_DEMO_MODE) throw new Error("Stripe Checkout is disabled in the seeded demo.");
     const attemptId = stripeCheckoutAttempts.current.get(business.id) ?? crypto.randomUUID();
     stripeCheckoutAttempts.current.set(business.id, attemptId);
-    const checkoutUrl = await platformApi.startStripeCheckout(business.id, attemptId);
+    const checkoutUrl = await platformApi.startStripeCheckout(business.id, selectedLocationId, attemptId);
     window.location.assign(checkoutUrl);
   };
 
   const openStripeBillingPortal = async () => {
-    if (!canConfigure) throw new Error("You do not have permission to manage billing.");
+    if (!canManageStripeBilling) throw new Error("Stripe billing changes require a direct owner, administrator or billing-role session.");
     if (IS_DEMO_MODE) throw new Error("The Stripe billing portal is disabled in the seeded demo.");
-    const portalUrl = await platformApi.openStripeBillingPortal(business.id);
+    const portalUrl = await platformApi.openStripeBillingPortal(business.id, selectedLocationId);
     window.location.assign(portalUrl);
   };
 
@@ -2051,9 +2356,9 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
     if (!canConfigure) throw new Error("You do not have permission to add a completed job.");
     if (!IS_DEMO_MODE) {
       await platformApi.createCompletedJob(business.id, draft);
-      const refreshed = await platformApi.getWorkspace(business.id);
+      const refreshed = await platformApi.getWorkspace(business.id, draft.locationId);
       applyWorkspace(refreshed);
-      setView("requests");
+      navigateToView("requests", { businessId: business.id, locationId: draft.locationId });
       return;
     }
 
@@ -2061,6 +2366,7 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
     const request: RequestRecord = {
       id: `REQ-${1049 + Math.floor(Math.random() * 200)}`,
       businessId: business.id,
+      locationId: draft.locationId,
       customer: `${draft.firstName} ${draft.lastName ?? ""}`.trim(),
       job: draft.serviceLabel,
       channel: draft.preferredChannel,
@@ -2085,111 +2391,65 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
       supportSessionId: supportSession?.id,
       reason: request.status === "Blocked" ? "Required consent evidence missing" : `${request.consentBasis} · ${request.consentReference}`,
     });
-    setView("requests");
-  };
-
-  const changeAutomationState = (live: boolean) => {
-    if (!canConfigure) return;
-    if (!IS_DEMO_MODE) {
-      setWorkspaceError("Automation changes require the audited server endpoint, which is not enabled yet.");
-      return;
-    }
-    if (live && business.automationState !== "Live") {
-      recordAudit({ occurredAt: "Just now", actor: session.userName, actorType: "user", businessId: business.id, action: "automation.resume", resource: `${business.locationName} automation scope`, outcome: "Blocked", supportSessionId: supportSession?.id, reason: "Protecting exception remains active" });
-      return;
-    }
-    setPausedBusinessIds((current) => {
-      const next = new Set(current);
-      if (live) next.delete(business.id);
-      else next.add(business.id);
-      return next;
-    });
-    recordAudit({ occurredAt: "Just now", actor: session.userName, actorType: "user", businessId: business.id, action: live ? "automation.resume" : "automation.pause", resource: `${business.locationName} automation scope`, outcome: "Completed", supportSessionId: supportSession?.id, reason: "Changed from the automation workspace" });
-  };
-
-  const recordAutomationSave = () => {
-    if (!canConfigure) return;
-    if (!IS_DEMO_MODE) {
-      setWorkspaceError("Template changes require the audited server endpoint, which is not enabled yet.");
-      return;
-    }
-    recordAudit({ occurredAt: "Just now", actor: session.userName, actorType: "user", businessId: business.id, action: "automation.update", resource: "Google review request sequence", outcome: "Completed", supportSessionId: supportSession?.id, reason: "Template or timing saved" });
-  };
-
-  const recordIntegrationActivation = () => {
-    if (!canConfigure) return;
-    recordAudit({ occurredAt: "Just now", actor: session.userName, actorType: "user", businessId: business.id, action: "integration.setup", resource: "Google Business Profile", outcome: "Completed", supportSessionId: supportSession?.id, reason: "Simulated onboarding activation" });
-  };
-
-  const updateQrCode = (record: QrCodeRecord) => {
-    if (!canConfigure || record.businessId !== business.id) return;
-    if (!IS_DEMO_MODE) {
-      setWorkspaceError("QR changes require the audited server endpoint, which is not enabled yet.");
-      return;
-    }
-    setQrCodesByBusiness((current) => ({ ...current, [business.id]: record }));
-  };
-
-  const recordQrAudit = (action: string, reason: string) => {
-    if (!IS_DEMO_MODE) return;
-    recordAudit({
-      occurredAt: "Just now",
-      actor: session.userName,
-      actorType: "user",
-      businessId: business.id,
-      action,
-      resource: qrCodesByBusiness[business.id]?.publicToken ?? "QR artwork",
-      outcome: "Completed",
-      supportSessionId: supportSession?.id,
-      reason,
-    });
+    navigateToView("requests", { businessId: business.id, locationId: draft.locationId });
   };
 
   const beginGoogleConnection = async () => {
     setWorkspaceError("");
     if (IS_DEMO_MODE) {
-      setOnboardingOpen(true);
+      setWorkspaceError("Google connection is available after signing in to a configured production workspace.");
       return;
     }
-    if (!business.locationId) {
+    if (!selectedLocationId) {
       setWorkspaceError("This workspace has no active location identifier. Refresh the workspace after the backend migration is applied.");
       return;
     }
+    if (supportSession) {
+      setWorkspaceError("Google Business Profile must be connected by a directly signed-in business owner or administrator.");
+      return;
+    }
     try {
-      const authorizationUrl = await platformApi.startGoogleOAuth(business.id, business.locationId);
+      const authorizationUrl = await platformApi.startGoogleOAuth(business.id, selectedLocationId);
       window.location.assign(authorizationUrl);
     } catch (caught) {
       setWorkspaceError(caught instanceof Error ? caught.message : "Google authorization could not be started.");
     }
   };
 
-  const googleConnectAvailable = IS_DEMO_MODE
-    || servicesLoading
-    || (services.find((service) => service.key === "google")?.configured ?? false);
+  const googleConnectAvailable = !IS_DEMO_MODE
+    && !supportSession
+    && !servicesLoading
+    && (services.find((service) => service.key === "google")?.configured ?? false);
+  const stripeCheckoutEnabled = !IS_DEMO_MODE
+    && !servicesLoading
+    && (services.find((service) => service.key === "stripeCheckout")?.configured ?? false);
+  const stripePortalEnabled = !IS_DEMO_MODE
+    && !servicesLoading
+    && (services.find((service) => service.key === "stripeBillingPortal")?.configured ?? false);
+  const supportAvailable = IS_DEMO_MODE || session.mfaVerified;
 
-  const headerActions = agencyMode ? (
-      <IconButton label={IS_DEMO_MODE ? "Agency alerts are simulated in this demo" : "Agency alerts"} disabled><Bell size={19} /></IconButton>
-  ) : (
-    <>
-      <IconButton label={IS_DEMO_MODE ? "Alerts are simulated in this demo" : "Alerts"} disabled><Bell size={19} /></IconButton>
-      {view === "overview" || view === "requests" ? <Button disabled={!canConfigure} onClick={() => setAddJobOpen(true)}><Plus size={16} /> Add job</Button> : view === "integrations" ? <Button disabled={!canConfigure || !googleConnectAvailable} onClick={() => void beginGoogleConnection()}><Link2 size={16} /> {googleConnectAvailable ? "Connect Google" : "Google unavailable"}</Button> : undefined}
-    </>
-  );
+  const headerActions = agencyMode
+    ? undefined
+    : view === "growth" && canConfigure
+      ? <Button onClick={() => setAddJobOpen(true)}><Plus size={16} /> Add job</Button>
+      : view === "integrations" && !IS_DEMO_MODE
+        ? <Button disabled={!canConfigure || !googleConnectAvailable} onClick={() => void beginGoogleConnection()}><Link2 size={16} /> {supportSession ? "Owner sign-in required" : googleConnectAvailable ? "Connect Google" : "Google unavailable"}</Button>
+        : undefined;
 
   const supportBanner = supportSession ? (
-    <SupportSessionBanner supportSession={supportSession} business={business} actor={session.userName} onEnd={endSupportSession} />
+    <SupportSessionBanner supportSession={supportSession} business={business} actor={session.userName} onEnd={endSupportSession} ending={endingSupportSession} />
   ) : undefined;
 
   return (
     <div className="app-shell">
       <AppSidebar
         view={view}
-        onView={setView}
-        onBack={exitWorkspace}
+        onView={navigateToView}
+        onBack={() => void exitWorkspace()}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         navItems={navItems}
-        business={business}
+        business={contextBusiness}
         session={session}
         supportSession={supportSession}
         onRoleChange={changeRole}
@@ -2203,27 +2463,41 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
       <main className={cx("app-main", supportSession && "app-main--support")}>
         <PageHeader title={page.label} description={descriptions[view]} onMenu={() => setSidebarOpen(true)} navigationOpen={sidebarOpen} actions={headerActions} banner={supportBanner} />
         <div className="app-content">
+          {workspaceNotice && <div className={cx("workspace-inline-notice", `workspace-inline-notice--${workspaceNotice.tone}`)} role={workspaceNotice.tone === "error" ? "alert" : "status"}><span>{workspaceNotice.message}</span><button type="button" onClick={() => setWorkspaceNotice(null)} aria-label="Dismiss notification"><X size={16} /></button></div>}
           {workspaceError && <div className="workspace-inline-error" role="alert"><AlertTriangle size={17} /><span>{workspaceError}</span><button type="button" onClick={() => setWorkspaceError("")} aria-label="Dismiss message"><X size={16} /></button></div>}
-          {agencyMode && view === "agency-overview" && <AgencyOverviewView businesses={businesses} exceptions={platformExceptions} pausedBusinessIds={pausedBusinessIds} onView={setView} onStartSupport={setSupportDialogBusiness} />}
-          {agencyMode && view === "clients" && <ClientsView businesses={businesses} pausedBusinessIds={pausedBusinessIds} onStartSupport={setSupportDialogBusiness} onPause={setPauseDialogBusiness} />}
-          {agencyMode && view === "exceptions" && <ExceptionsView businesses={businesses} exceptions={platformExceptions} pausedBusinessIds={pausedBusinessIds} onStartSupport={setSupportDialogBusiness} onPause={setPauseDialogBusiness} />}
+          {servicesError && (view === "integrations" || view === "team-billing") && <div className="workspace-inline-error" role="alert"><AlertTriangle size={17} /><span>{servicesError}</span><button type="button" onClick={() => setServicesVersion((value) => value + 1)}>Retry status</button></div>}
+          {agencyMode && view === "agency-overview" && <AgencyOverviewView businesses={businesses} exceptions={platformExceptions} onView={(nextView) => navigateToView(nextView === "overview" ? "growth" : nextView)} onStartSupport={setSupportDialogBusiness} supportAvailable={supportAvailable} />}
+          {agencyMode && view === "clients" && <ClientsView businesses={businesses} onStartSupport={setSupportDialogBusiness} supportAvailable={supportAvailable} />}
+          {agencyMode && view === "exceptions" && <ExceptionsView businesses={businesses} exceptions={platformExceptions} onStartSupport={setSupportDialogBusiness} supportAvailable={supportAvailable} />}
           {agencyMode && view === "audit" && <AuditLogView businesses={businesses} events={auditEvents} />}
-          {!agencyMode && !canReadTenant && <section className="panel access-expired"><ShieldCheck size={26} /><h2>Support access expired.</h2><p>Tenant data is no longer available. End this session and start a new, explicitly scoped session if support is still required.</p><Button onClick={endSupportSession}>Return to portfolio</Button></section>}
-          {!agencyMode && canReadTenant && view === "overview" && <OverviewView business={business} requests={requests} reviews={reviews} onAddJob={() => setAddJobOpen(true)} onView={setView} canConfigure={canConfigure} paused={paused} />}
+          {!agencyMode && !canReadTenant && view !== "team-billing" && <section className="panel access-expired"><ShieldCheck size={26} /><h2>Tenant access is unavailable.</h2><p>{supportSession ? "Support access expired or no longer satisfies the required security evidence." : "Your business role does not include customer or location data."}</p>{supportSession && <Button onClick={endSupportSession}>Return to portfolio</Button>}</section>}
+          {!agencyMode && view === "team-billing" && !canReadTenantBilling && <section className="panel access-expired"><ShieldCheck size={26} /><h2>Billing access is unavailable.</h2><p>{supportSession ? "Support sessions cannot open or change tenant billing." : "Your signed-in business role does not include billing access."}</p>{supportSession && <Button onClick={endSupportSession}>Return to portfolio</Button>}</section>}
           {!agencyMode && canReadTenant && view === "requests" && <RequestsView requests={requests} onAddJob={() => setAddJobOpen(true)} canConfigure={canConfigure} />}
-          {!agencyMode && canReadTenant && view === "automation" && <AutomationView business={business} requests={requests} canConfigure={canConfigure && IS_DEMO_MODE} paused={paused} onStateChange={changeAutomationState} onSave={recordAutomationSave} />}
-          {!agencyMode && canReadTenant && view === "reviews" && <ReviewsView business={business} reviews={reviews} />}
-          {!agencyMode && canReadTenant && view === "qr-codes" && qrCodesByBusiness[business.id] && <QrCodesView business={business} record={qrCodesByBusiness[business.id]} canConfigure={canConfigure && IS_DEMO_MODE} onUpdate={updateQrCode} onAudit={recordQrAudit} />}
-          {!agencyMode && canReadTenant && view === "reports" && <ReportsView business={business} />}
-          {!agencyMode && canReadTenant && view === "integrations" && <IntegrationsView business={business} onConnect={() => void beginGoogleConnection()} canConfigure={canConfigure} services={services} servicesLoading={servicesLoading} />}
-          {!agencyMode && canReadTenant && view === "team-billing" && <TeamBillingView business={business} canConfigure={canConfigure} onSaveSmsPolicy={saveSmsOveragePolicy} onStartCheckout={startStripeCheckout} onOpenBillingPortal={openStripeBillingPortal} stripeActionsEnabled={!IS_DEMO_MODE} />}
-          {(agencyMode || canReadTenant) && view === "growth" && <GrowthSuite />}
+          {!agencyMode && canReadTenant && view === "automation" && <AutomationView business={contextBusiness} requests={requests} workflow={selectedWorkflow} onOpenIntegrations={() => navigateToView("integrations")} />}
+          {!agencyMode && canReadTenant && view === "reviews" && <ReviewsView business={contextBusiness} reviews={reviews} />}
+          {!agencyMode && canReadTenant && view === "qr-codes" && qrCodesByBusiness[business.id]?.locationId === selectedLocationId && <QrCodesView business={contextBusiness} record={qrCodesByBusiness[business.id]} />}
+          {!agencyMode && canReadTenant && view === "qr-codes" && qrCodesByBusiness[business.id]?.locationId !== selectedLocationId && <section className="panel empty-state"><QrCode size={24} /><h2>No QR code for this location.</h2><p>Connect a verified Google review destination before generating location-specific artwork.</p><Button onClick={() => navigateToView("integrations")}>Open integrations</Button></section>}
+          {!agencyMode && canReadTenant && view === "reports" && <ReportsView business={business} selectedBusiness={contextBusiness} />}
+          {!agencyMode && canReadTenant && view === "integrations" && <IntegrationsView business={contextBusiness} onConnect={() => void beginGoogleConnection()} canConfigure={canConfigure && !supportSession} services={services} servicesLoading={servicesLoading} />}
+          {!agencyMode && canReadTenantBilling && view === "team-billing" && <TeamBillingView business={business} canConfigure={canManageTenantBilling} canManageStripe={canManageStripeBilling} canViewTeamMembers={canConfigure} onSaveSmsPolicy={saveSmsOveragePolicy} onStartCheckout={startStripeCheckout} onOpenBillingPortal={openStripeBillingPortal} stripeCheckoutEnabled={stripeCheckoutEnabled} stripePortalEnabled={stripePortalEnabled} />}
+          {(agencyMode || canReadTenant) && view === "growth" && <GrowthSuite
+            business={business}
+            businesses={businesses}
+            requests={requests}
+            reviews={reviews}
+            session={session}
+            agencyMode={agencyMode}
+            canConfigure={canConfigure}
+            canManageBilling={canManageTenantBilling}
+            selectedLocationId={selectedLocationId}
+            onSelectLocation={(locationId) => navigateToView("growth", { businessId: business.id, locationId })}
+            onNavigate={navigateToView}
+            onAddJob={() => setAddJobOpen(true)}
+          />}
         </div>
       </main>
-      <AddJobDialog open={addJobOpen && canConfigure} onClose={() => setAddJobOpen(false)} onAdd={addRequest} locationId={business.locationId} demoMode={IS_DEMO_MODE} />
-      <OnboardingDialog open={onboardingOpen && IS_DEMO_MODE} onClose={() => setOnboardingOpen(false)} business={business} canConfigure={canConfigure} onActivate={recordIntegrationActivation} />
+      <AddJobDialog open={addJobOpen && canConfigure} onClose={() => setAddJobOpen(false)} onAdd={addRequest} locationId={selectedLocationId} demoMode={IS_DEMO_MODE} />
       <SupportSessionDialog business={supportDialogBusiness} session={session} onClose={() => setSupportDialogBusiness(null)} onStart={beginSupportSession} />
-      <PauseScopeDialog business={pauseDialogBusiness} paused={Boolean(pauseDialogBusiness && pausedBusinessIds.has(pauseDialogBusiness.id))} onClose={() => setPauseDialogBusiness(null)} onConfirm={confirmPauseChange} />
       {selectionToken && <GoogleProfileSelectionDialog
         selection={googleProfileSelection}
         loading={googleSelectionLoading}
@@ -2237,35 +2511,53 @@ function AppShell({ initialView, onBack, onboardingOpen, setOnboardingOpen }: { 
 }
 
 export default function App() {
-  const returnParams = new URLSearchParams(window.location.search);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const returnParams = new URLSearchParams(location.search);
   const oauthReturn = !IS_DEMO_MODE && returnParams.has("google");
   const billingReturn = !IS_DEMO_MODE && (returnParams.has("checkout") || returnParams.has("billing"));
-  const [surface, setSurface] = useState<Surface>(oauthReturn || billingReturn ? "app" : "site");
-  const [initialView, setInitialView] = useState<AppView>(oauthReturn ? "integrations" : billingReturn ? "team-billing" : "overview");
-  const [onboardingOpen, setOnboardingOpen] = useState(false);
-  const publicToken = window.location.pathname.match(/^\/r\/([a-z0-9-]+)\/?$/i)?.[1];
+  const publicToken = location.pathname.match(/^\/r\/([a-z0-9-]+)\/?$/i)?.[1];
   const publicQrCode = IS_DEMO_MODE && publicToken ? getQrCodeByToken(publicToken) : undefined;
 
-  const openApp = (view: AppView = "overview") => {
-    setInitialView(view);
-    setSurface("app");
-    window.scrollTo({ top: 0, behavior: "auto" });
-  };
-
   const startSetup = () => {
-    setInitialView("overview");
-    setSurface("app");
-    setOnboardingOpen(true);
+    navigate(workspaceRoute("growth"));
     window.scrollTo({ top: 0, behavior: "auto" });
   };
 
   if (publicQrCode) return <ThemeProvider><PublicReviewFlow business={getBusiness(publicQrCode.businessId)} record={publicQrCode} /></ThemeProvider>;
   if (!IS_DEMO_MODE && publicToken) return <ThemeProvider><LivePublicReviewFlow publicToken={publicToken} /></ThemeProvider>;
-  if (surface === "site") return <ThemeProvider><MarketingSite onOpenDemo={() => openApp()} onStartSetup={startSetup} /></ThemeProvider>;
+  if (location.pathname === "/" && (oauthReturn || billingReturn)) {
+    const target = oauthReturn ? "/app/integrations" : "/app/team-billing";
+    return <Navigate to={`${target}${location.search}`} replace />;
+  }
+  if (location.pathname === "/") {
+    return <ThemeProvider><MarketingSite onOpenDemo={() => navigate(workspaceRoute("growth"))} onStartSetup={startSetup} /></ThemeProvider>;
+  }
+  const matchedAppView = appViewFromPath(location.pathname);
+  const lowerPathname = location.pathname.toLowerCase();
+  if (matchedAppView && location.pathname !== workspaceRoute(matchedAppView)) {
+    return <Navigate to={`${workspaceRoute(matchedAppView)}${location.search}`} replace />;
+  }
+  if (lowerPathname.startsWith("/app") && !matchedAppView) {
+    return (
+      <ThemeProvider>
+        <main className="workspace-auth-shell">
+          <button className="workspace-auth-shell__brand" type="button" onClick={() => navigate("/")}><Brand /></button>
+          <section className="workspace-auth-card">
+            <span className="eyebrow">Page not found</span>
+            <h1>This Growth Suite route does not exist.</h1>
+            <p>The disconnected preview route has been removed. Open the connected dashboard to continue in the same account.</p>
+            <Button onClick={() => navigate(workspaceRoute("growth"))}>Open Growth dashboard</Button>
+          </section>
+        </main>
+      </ThemeProvider>
+    );
+  }
+  if (!lowerPathname.startsWith("/app")) return <Navigate to="/" replace />;
 
   return (
     <ThemeProvider>
-      <AppShell initialView={initialView} onBack={() => { setSurface("site"); setOnboardingOpen(false); }} onboardingOpen={onboardingOpen} setOnboardingOpen={setOnboardingOpen} />
+      <AppShell />
     </ThemeProvider>
   );
 }
