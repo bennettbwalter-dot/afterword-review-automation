@@ -702,6 +702,7 @@ function preparationLockPaths(paths: PreparationPaths) {
     recoveryOwnerFile,
     recoveryQuarantineFile: `${recoveryOwnerFile}.90000000-0000-4000-8000-000000000021.quarantine`,
     recoveryQuarantineOwnerFile: `${recoveryOwnerFile}.90000000-0000-4000-8000-000000000021.quarantine.owner.json`,
+    recoveryCleanupOwnerFile: `${recoveryOwnerFile}.90000000-0000-4000-8000-000000000021.quarantine.cleanup-owner.json`,
   };
 }
 
@@ -1087,6 +1088,92 @@ test("stale quarantine unlink failure remains recoverable on the next prepare", 
     ...prepareOptions(paths),
     preparationLock: { isProcessAlive: async (pid) => pid === process.pid },
   });
+  assert.equal(await pathExists(lock.lockDirectory), false);
+});
+
+test("concurrent stale-quarantine cleanup elects one winner and a delayed loser cannot remove replacements", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-quarantine-cleanup-race-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+  await writeFile(
+    lock.recoveryQuarantineOwnerFile,
+    JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+  );
+
+  let validatedCount = 0;
+  let releaseValidated!: () => void;
+  const bothValidated = new Promise<void>((resolve) => { releaseValidated = resolve; });
+  const afterValidation = async () => {
+    validatedCount += 1;
+    if (validatedCount === 2) releaseValidated();
+    await bothValidated;
+  };
+  let releaseWinner!: () => void;
+  const holdWinner = new Promise<void>((resolve) => { releaseWinner = resolve; });
+  let signalReplacementReady!: () => void;
+  const replacementReady = new Promise<void>((resolve) => { signalReplacementReady = resolve; });
+  let releaseDelayedLoser!: () => void;
+  const holdDelayedLoser = new Promise<void>((resolve) => { releaseDelayedLoser = resolve; });
+  const settle = (promise: Promise<void>) => promise.then(
+    () => ({ status: "fulfilled" as const, message: "" }),
+    (error: unknown) => ({ status: "rejected" as const, message: error instanceof Error ? error.message : String(error) }),
+  );
+  const isProcessAlive = async (pid: number) => pid === process.pid;
+
+  const winner = settle(prepareStagingFiles({
+    ...prepareOptions(paths, 1),
+    preparationLock: {
+      isProcessAlive,
+      beforeExistingRecoveryQuarantineCleanup: afterValidation,
+      afterRecoveryClaimQuarantined: async () => {
+        signalReplacementReady();
+        await holdWinner;
+      },
+    },
+  }));
+  const delayedLoser = settle(prepareStagingFiles({
+    ...prepareOptions(paths, 9),
+    preparationLock: {
+      isProcessAlive,
+      beforeExistingRecoveryQuarantineCleanup: async () => {
+        await afterValidation();
+        await holdDelayedLoser;
+      },
+    },
+  }));
+
+  await replacementReady;
+  const [quarantineBefore, transitionBefore, cleanupBefore, transitionMetadataBefore, cleanupMetadataBefore] = await Promise.all([
+    stat(lock.recoveryQuarantineFile),
+    stat(lock.recoveryQuarantineOwnerFile),
+    stat(lock.recoveryCleanupOwnerFile),
+    readFile(lock.recoveryQuarantineOwnerFile, "utf8"),
+    readFile(lock.recoveryCleanupOwnerFile, "utf8"),
+  ]);
+  releaseDelayedLoser();
+  const loserResult = await delayedLoser;
+  assert.equal(loserResult.status, "rejected");
+  const [quarantineAfter, transitionAfter, cleanupAfter, transitionMetadataAfter, cleanupMetadataAfter] = await Promise.all([
+    stat(lock.recoveryQuarantineFile),
+    stat(lock.recoveryQuarantineOwnerFile),
+    stat(lock.recoveryCleanupOwnerFile),
+    readFile(lock.recoveryQuarantineOwnerFile, "utf8"),
+    readFile(lock.recoveryCleanupOwnerFile, "utf8"),
+  ]);
+  assert.equal(quarantineAfter.dev, quarantineBefore.dev);
+  assert.equal(quarantineAfter.ino, quarantineBefore.ino);
+  assert.equal(transitionAfter.dev, transitionBefore.dev);
+  assert.equal(transitionAfter.ino, transitionBefore.ino);
+  assert.equal(cleanupAfter.dev, cleanupBefore.dev);
+  assert.equal(cleanupAfter.ino, cleanupBefore.ino);
+  assert.equal(transitionMetadataAfter, transitionMetadataBefore);
+  assert.equal(cleanupMetadataAfter, cleanupMetadataBefore);
+
+  releaseWinner();
+  const winnerResult = await winner;
+  assert.equal(winnerResult.status, "fulfilled", winnerResult.message);
   assert.equal(await pathExists(lock.lockDirectory), false);
 });
 
