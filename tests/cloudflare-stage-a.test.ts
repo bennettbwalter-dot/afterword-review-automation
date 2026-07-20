@@ -703,6 +703,7 @@ function preparationLockPaths(paths: PreparationPaths) {
     recoveryQuarantineFile: `${recoveryOwnerFile}.90000000-0000-4000-8000-000000000021.quarantine`,
     recoveryQuarantineOwnerFile: `${recoveryOwnerFile}.90000000-0000-4000-8000-000000000021.quarantine.owner.json`,
     recoveryCleanupOwnerFile: `${recoveryOwnerFile}.90000000-0000-4000-8000-000000000021.quarantine.cleanup-owner.json`,
+    recoveryCleanupJournalFile: `${recoveryOwnerFile}.90000000-0000-4000-8000-000000000021.quarantine.cleanup-journal.json`,
   };
 }
 
@@ -990,6 +991,63 @@ async function waitForSubprocessSignal(signalPath: string, child: ReturnType<typ
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error("Timed out waiting for synthetic crash child quarantine signal.");
+}
+
+async function terminatePrepareAtRecoveryHook(
+  paths: PreparationPaths,
+  hookName: string,
+  signalPath: string,
+) {
+  const provisionUrl = new URL("../scripts/cloudflare/provision.ts", import.meta.url).href;
+  const childSource = `
+    import { writeFile } from "node:fs/promises";
+    import { prepareStagingFiles } from ${JSON.stringify(provisionUrl)};
+    const paths = ${JSON.stringify(paths)};
+    let byte = 1;
+    await prepareStagingFiles({
+      paths,
+      confirmations: {
+        application: "https://review-anchor-staging.review-anchor-staging-test.workers.dev",
+        ingress: "https://review-anchor-staging-ingress.review-anchor-staging-test.workers.dev",
+      },
+      randomBytes: (size) => Buffer.alloc(size, byte++),
+      rotate: false,
+      confirmedEmptyStagingData: false,
+      preparationLock: {
+        isProcessAlive: async (pid) => pid === process.pid,
+        [${JSON.stringify(hookName)}]: async (...args) => {
+          await writeFile(
+            ${JSON.stringify(signalPath)},
+            JSON.stringify({ pid: process.pid, args }),
+            { flag: "wx" },
+          );
+          await new Promise(() => setInterval(() => undefined, 1_000));
+        },
+      },
+    });
+  `;
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", childSource], {
+    cwd: path.resolve("."),
+    env: {
+      NODE_NO_WARNINGS: "1",
+      PATH: process.env.PATH,
+      SystemRoot: process.env.SystemRoot,
+      TEMP: process.env.TEMP,
+      TMP: process.env.TMP,
+    },
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  try {
+    await waitForSubprocessSignal(signalPath, child);
+    assert.equal(child.kill("SIGKILL"), true);
+    await once(child, "exit");
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+      await once(child, "exit");
+    }
+  }
 }
 
 test("prepare recovers after a real subprocess is terminated immediately after quarantine hard-link creation", async () => {
@@ -1610,6 +1668,237 @@ test("artifact disappearance after its cleanup journal update resumes safely", a
     preparationLock: { isProcessAlive: async () => false },
   });
   assert.equal(await pathExists(lock.lockDirectory), false);
+});
+
+test("a journal replaced after one update blocks the next artifact or claim unlink", async () => {
+  for (const replacedAfter of ["artifact", "claim"] as const) {
+    const root = await mkdtemp(path.join(os.tmpdir(), `review-anchor-stage-a-journal-${replacedAfter}-loop-cas-`));
+    const paths = await writePreparationFixture(root);
+    const lock = await writePreparationLock(paths);
+    await writeRecoveryClaim(paths);
+    await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+    await writeFile(
+      lock.recoveryQuarantineOwnerFile,
+      JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+    );
+    let replacementBytes = "";
+    let replacementBefore!: Awaited<ReturnType<typeof stat>>;
+
+    await assert.rejects(
+      prepareStagingFiles({
+        ...prepareOptions(paths),
+        preparationLock: {
+          isProcessAlive: async () => false,
+          afterRecoveryCleanupJournalUpdate: async (kind: "artifact" | "claim") => {
+            if (kind !== replacedAfter || replacementBytes) return;
+            replacementBytes = await readFile(lock.recoveryCleanupJournalFile, "utf8");
+            await unlink(lock.recoveryCleanupJournalFile);
+            await writeFile(lock.recoveryCleanupJournalFile, replacementBytes, { flag: "wx" });
+            replacementBefore = await stat(lock.recoveryCleanupJournalFile);
+          },
+        },
+      }),
+      /journal|ownership|replaced|ambiguous/i,
+    );
+    assert.notEqual(replacementBytes, "", replacedAfter);
+    assert.ok((await readdir(lock.lockDirectory)).some((name) => name.endsWith(".claimed")), replacedAfter);
+    const replacementAfter = await stat(lock.recoveryCleanupJournalFile);
+    assert.equal(replacementAfter.dev, replacementBefore.dev, replacedAfter);
+    assert.equal(replacementAfter.ino, replacementBefore.ino, replacedAfter);
+    assert.equal(await readFile(lock.recoveryCleanupJournalFile, "utf8"), replacementBytes, replacedAfter);
+  }
+});
+
+test("journal CAS refuses a delayed destination replacement without overwriting it", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-journal-delayed-replacement-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+  await writeFile(
+    lock.recoveryQuarantineOwnerFile,
+    JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+  );
+  const replacementBytes = "foreign journal replacement\n";
+  let replacementBefore!: Awaited<ReturnType<typeof stat>>;
+
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(paths),
+      preparationLock: {
+        isProcessAlive: async () => false,
+        afterRecoveryCleanupJournalCasReady: async (journalPath: string) => {
+          await unlink(journalPath);
+          await writeFile(journalPath, replacementBytes, { flag: "wx" });
+          replacementBefore = await stat(journalPath);
+        },
+      },
+    }),
+    /journal|ownership|replaced|ambiguous/i,
+  );
+  const replacementAfter = await stat(lock.recoveryCleanupJournalFile);
+  assert.equal(replacementAfter.dev, replacementBefore.dev);
+  assert.equal(replacementAfter.ino, replacementBefore.ino);
+  assert.equal(await readFile(lock.recoveryCleanupJournalFile, "utf8"), replacementBytes);
+});
+
+test("journal CAS refuses to remove a same-content next-path replacement after installation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-journal-next-replacement-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+  await writeFile(
+    lock.recoveryQuarantineOwnerFile,
+    JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+  );
+  let replacementBytes = "";
+  let replacementBefore!: Awaited<ReturnType<typeof stat>>;
+
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(paths),
+      preparationLock: {
+        isProcessAlive: async () => false,
+        afterRecoveryCleanupJournalCasInstalled: async (_journalPath: string, nextPath: string) => {
+          replacementBytes = await readFile(nextPath, "utf8");
+          await unlink(nextPath);
+          await writeFile(nextPath, replacementBytes, { flag: "wx" });
+          replacementBefore = await stat(nextPath);
+        },
+      },
+    }),
+    /journal|ownership|replaced|ambiguous|changed/i,
+  );
+  const replacementPath = (await readdir(lock.lockDirectory))
+    .map((name) => path.join(lock.lockDirectory, name))
+    .find((filePath) => filePath.endsWith(".next"));
+  assert.ok(replacementPath);
+  const replacementAfter = await stat(replacementPath);
+  assert.equal(replacementAfter.dev, replacementBefore.dev);
+  assert.equal(replacementAfter.ino, replacementBefore.ino);
+  assert.equal(await readFile(replacementPath, "utf8"), replacementBytes);
+});
+
+test("a real crash with a complete handle and successor quarantine is recoverable", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-successor-quarantine-crash-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+  await writeFile(
+    lock.recoveryQuarantineOwnerFile,
+    JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+  );
+  const signalPath = path.join(root, "successor-quarantine.signal");
+
+  await terminatePrepareAtRecoveryHook(paths, "afterRecoveryClaimQuarantined", signalPath);
+  assert.equal(await pathExists(lock.recoveryQuarantineFile), true);
+  assert.equal(await pathExists(lock.recoveryCleanupJournalFile), true);
+  const retained = JSON.parse(await readFile(lock.recoveryCleanupJournalFile, "utf8")) as {
+    phase: string;
+    successorQuarantine?: { ino?: string };
+  };
+  assert.equal(retained.phase, "successor_quarantined");
+  assert.match(retained.successorQuarantine?.ino ?? "", /^[1-9][0-9]*$/);
+
+  await prepareStagingFiles({
+    ...prepareOptions(paths, 9),
+    preparationLock: { isProcessAlive: async (pid) => pid === process.pid },
+  });
+  assert.equal(await pathExists(lock.lockDirectory), false);
+});
+
+test("real crashes after recovery candidates and journal pending creation are discovered and retried", async () => {
+  for (const hookName of [
+    "afterRecoveryCleanupElectionCandidateLinked",
+    "afterRecoveryCleanupJournalCandidateLinked",
+    "afterRecoveryTransitionCandidateLinked",
+    "afterRecoveryCleanupJournalCasPriorLinked",
+    "afterRecoveryCleanupJournalCasNextCreated",
+    "afterRecoveryCleanupJournalCasInstalled",
+  ]) {
+    const root = await mkdtemp(path.join(os.tmpdir(), `review-anchor-stage-a-${hookName}-`));
+    const paths = await writePreparationFixture(root);
+    const lock = await writePreparationLock(paths);
+    await writeRecoveryClaim(paths);
+    await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+    await writeFile(
+      lock.recoveryQuarantineOwnerFile,
+      JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+    );
+    const signalPath = path.join(root, `${hookName}.signal`);
+
+    await terminatePrepareAtRecoveryHook(paths, hookName, signalPath);
+    assert.ok((await readdir(lock.lockDirectory)).some((name) => name.endsWith(".candidate") || name.includes(".cas-")));
+    await prepareStagingFiles({
+      ...prepareOptions(paths, 9),
+      preparationLock: { isProcessAlive: async (pid) => pid === process.pid },
+    });
+    assert.equal(await pathExists(lock.lockDirectory), false, hookName);
+  }
+});
+
+test("live, foreign-host, and unknown recovery intermediates remain untouched and fail closed", async () => {
+  const cases = [
+    {
+      label: "live",
+      error: /live recovery transition candidate owner/i,
+      owner: syntheticLockOwner(7781, "90000000-0000-4000-8000-000000000031"),
+      alive: (pid: number) => pid === 7781,
+      unknown: false,
+    },
+    {
+      label: "foreign",
+      error: /belongs to another host/i,
+      owner: syntheticLockOwner(
+        7782,
+        "90000000-0000-4000-8000-000000000032",
+        "synthetic-foreign-host",
+      ),
+      alive: () => false,
+      unknown: false,
+    },
+    {
+      label: "unknown",
+      error: /candidate type is unknown/i,
+      owner: syntheticLockOwner(7783, "90000000-0000-4000-8000-000000000033"),
+      alive: () => false,
+      unknown: true,
+    },
+  ];
+  for (const fixture of cases) {
+    const root = await mkdtemp(path.join(os.tmpdir(), `review-anchor-stage-a-${fixture.label}-intermediate-`));
+    const paths = await writePreparationFixture(root);
+    const lock = await writePreparationLock(paths);
+    await writeRecoveryClaim(paths);
+    await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+    await writeFile(
+      lock.recoveryQuarantineOwnerFile,
+      JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+    );
+    const targetPath = fixture.unknown
+      ? `${lock.recoveryQuarantineFile}.unknown`
+      : lock.recoveryQuarantineOwnerFile;
+    const candidatePath = `${targetPath}.${fixture.owner.ownerId}.candidate`;
+    const bytes = `${JSON.stringify(fixture.owner, null, 2)}\n`;
+    await writeFile(candidatePath, bytes, { flag: "wx" });
+    const before = await stat(candidatePath);
+
+    await assert.rejects(
+      prepareStagingFiles({
+        ...prepareOptions(paths),
+        preparationLock: {
+          isProcessAlive: async (pid) => pid === 4242 ? false : fixture.alive(pid),
+        },
+      }),
+      fixture.error,
+    );
+    const after = await stat(candidatePath);
+    assert.equal(after.dev, before.dev, fixture.label);
+    assert.equal(after.ino, before.ino, fixture.label);
+    assert.equal(await readFile(candidatePath, "utf8"), bytes, fixture.label);
+  }
 });
 
 test("foreign artifact claim survives EEXIST and replacement cleanup is refused", async () => {
