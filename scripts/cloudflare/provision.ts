@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomBytes as nodeRandomBytes, randomUUID } from "node:crypto";
-import { access, mkdir, readFile, rename, rmdir, unlink, writeFile } from "node:fs/promises";
+import { access, link, mkdir, readFile, rename, rmdir, unlink, writeFile } from "node:fs/promises";
 import { hostname as nodeHostname } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -132,6 +132,8 @@ export interface PrepareStagingOptions {
   randomBytes?: (size: number) => Uint8Array;
   rotate: boolean;
   preparationLock?: {
+    afterRecoveryClaimAcquired?: () => Promise<void> | void;
+    afterRecoveryClaimQuarantined?: (quarantinePath: string) => Promise<void> | void;
     isProcessAlive?: (pid: number) => boolean | Promise<boolean>;
   };
   transactionHooks?: {
@@ -914,6 +916,80 @@ async function cleanupPreparationLockDirectory(directoryPath: string) {
   await rmdirIfPresent(directoryPath);
 }
 
+function samePreparationLockOwner(left: PreparationLockOwner, right: PreparationLockOwner) {
+  return left.version === right.version
+    && left.ownerId === right.ownerId
+    && left.pid === right.pid
+    && left.hostname.toLowerCase() === right.hostname.toLowerCase()
+    && left.acquiredAt === right.acquiredAt;
+}
+
+async function replaceDeadRecoveryClaim(
+  recoveryClaim: string,
+  existingClaim: PreparationLockOwner,
+  claimant: PreparationLockOwner,
+  options: PrepareStagingOptions["preparationLock"],
+) {
+  const quarantinePath = `${recoveryClaim}.${existingClaim.ownerId}.quarantine`;
+  let ownsQuarantine = false;
+  try {
+    try {
+      await link(recoveryClaim, quarantinePath);
+      ownsQuarantine = true;
+    } catch (error) {
+      if (isObject(error) && error.code === "EEXIST") {
+        throw new SafeProvisionError("A staging preparation lock recovery claimant transition is active.");
+      }
+      throw error;
+    }
+    await options?.afterRecoveryClaimQuarantined?.(quarantinePath);
+    const quarantinedClaim = validatePreparationLockOwner(
+      await readJson(quarantinePath, "Staging preparation lock recovery quarantine ownership metadata"),
+      "Staging preparation lock recovery quarantine ownership metadata",
+    );
+    assertSafe(
+      samePreparationLockOwner(quarantinedClaim, existingClaim),
+      "Staging preparation lock recovery quarantine ownership changed; reclaim was refused.",
+    );
+    const currentClaim = validatePreparationLockOwner(
+      await readJson(recoveryClaim, "Staging preparation lock recovery ownership metadata"),
+      "Staging preparation lock recovery ownership metadata",
+    );
+    assertSafe(
+      samePreparationLockOwner(currentClaim, existingClaim),
+      "Staging preparation lock recovery ownership changed; reclaim was refused.",
+    );
+    assertSafe(
+      currentClaim.hostname.toLowerCase() === claimant.hostname.toLowerCase(),
+      "Staging preparation lock recovery belongs to another host and cannot be proven stale.",
+    );
+    assertSafe(
+      !(await processIsAlive(currentClaim.pid, options?.isProcessAlive)),
+      "A live staging preparation lock recovery claimant already exists.",
+    );
+    await unlink(recoveryClaim);
+    try {
+      await writeFile(recoveryClaim, `${JSON.stringify(claimant, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    } catch (error) {
+      if (!(isObject(error) && error.code === "EEXIST")) throw error;
+      const winner = validatePreparationLockOwner(
+        await readJson(recoveryClaim, "Staging preparation lock recovery ownership metadata"),
+        "Staging preparation lock recovery ownership metadata",
+      );
+      assertSafe(
+        winner.hostname.toLowerCase() === claimant.hostname.toLowerCase(),
+        "Staging preparation lock recovery belongs to another host and cannot be proven stale.",
+      );
+      if (await processIsAlive(winner.pid, options?.isProcessAlive)) {
+        throw new SafeProvisionError("A live staging preparation lock recovery claimant already exists.");
+      }
+      throw new SafeProvisionError("Staging preparation lock recovery ownership changed during reclaim.");
+    }
+  } finally {
+    if (ownsQuarantine) await unlinkIfPresent(quarantinePath);
+  }
+}
+
 async function tryInstallPreparationLock(lockDirectory: string, owner: PreparationLockOwner) {
   const candidateDirectory = path.join(
     path.dirname(lockDirectory),
@@ -936,49 +1012,73 @@ async function reclaimDeadPreparationLock(
   lockDirectory: string,
   observedOwner: PreparationLockOwner,
   claimant: PreparationLockOwner,
-  isProcessAlive: ((pid: number) => boolean | Promise<boolean>) | undefined,
+  options: PrepareStagingOptions["preparationLock"],
 ) {
   const recoveryClaim = path.join(lockDirectory, "recovery-owner.json");
+  let ownsRecoveryClaim = false;
+  let lockQuarantined = false;
   try {
-    await writeFile(recoveryClaim, `${JSON.stringify(claimant, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-  } catch (error) {
-    if (!(isObject(error) && error.code === "EEXIST")) throw error;
-    const existingClaim = validatePreparationLockOwner(
-      await readJson(recoveryClaim, "Staging preparation lock recovery ownership metadata"),
-      "Staging preparation lock recovery ownership metadata",
-    );
-    const localHost = claimant.hostname.toLowerCase();
-    assertSafe(
-      existingClaim.hostname.toLowerCase() === localHost,
-      "Staging preparation lock recovery belongs to another host and cannot be proven stale.",
-    );
-    if (await processIsAlive(existingClaim.pid, isProcessAlive)) {
-      throw new SafeProvisionError("A live staging preparation lock recovery claimant already exists.");
+    try {
+      await writeFile(recoveryClaim, `${JSON.stringify(claimant, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+      ownsRecoveryClaim = true;
+    } catch (error) {
+      if (!(isObject(error) && error.code === "EEXIST")) throw error;
+      const existingClaim = validatePreparationLockOwner(
+        await readJson(recoveryClaim, "Staging preparation lock recovery ownership metadata"),
+        "Staging preparation lock recovery ownership metadata",
+      );
+      const localHost = claimant.hostname.toLowerCase();
+      assertSafe(
+        existingClaim.hostname.toLowerCase() === localHost,
+        "Staging preparation lock recovery belongs to another host and cannot be proven stale.",
+      );
+      if (await processIsAlive(existingClaim.pid, options?.isProcessAlive)) {
+        throw new SafeProvisionError("A live staging preparation lock recovery claimant already exists.");
+      }
+      await replaceDeadRecoveryClaim(recoveryClaim, existingClaim, claimant, options);
+      ownsRecoveryClaim = true;
     }
-    throw new SafeProvisionError("A stale staging preparation lock recovery claim requires explicit operator cleanup.");
+    await options?.afterRecoveryClaimAcquired?.();
+    const currentOwner = validatePreparationLockOwner(
+      await readJson(path.join(lockDirectory, "owner.json"), "Staging preparation lock ownership metadata"),
+    );
+    assertSafe(
+      currentOwner.ownerId === observedOwner.ownerId,
+      "Staging preparation lock ownership changed during stale recovery.",
+    );
+    assertSafe(
+      currentOwner.hostname.toLowerCase() === claimant.hostname.toLowerCase(),
+      "Staging preparation lock owner belongs to another host and cannot be proven stale.",
+    );
+    assertSafe(
+      !(await processIsAlive(currentOwner.pid, options?.isProcessAlive)),
+      "A live staging preparation lock owner blocks this prepare operation.",
+    );
+    const quarantineDirectory = path.join(
+      path.dirname(lockDirectory),
+      `staging-prepare-lock-stale-${observedOwner.ownerId}-${claimant.ownerId}`,
+    );
+    await rename(lockDirectory, quarantineDirectory);
+    lockQuarantined = true;
+    await cleanupPreparationLockDirectory(quarantineDirectory);
+  } catch (error) {
+    if (ownsRecoveryClaim && !lockQuarantined) {
+      try {
+        const currentClaim = validatePreparationLockOwner(
+          await readJson(recoveryClaim, "Staging preparation lock recovery ownership metadata"),
+          "Staging preparation lock recovery ownership metadata",
+        );
+        assertSafe(
+          samePreparationLockOwner(currentClaim, claimant),
+          "Staging preparation lock recovery ownership changed; claimant cleanup was refused.",
+        );
+        await unlink(recoveryClaim);
+      } catch {
+        throw new SafeProvisionError("Staging preparation lock recovery failed and claimant-owned cleanup could not be completed safely.");
+      }
+    }
+    throw error;
   }
-
-  const currentOwner = validatePreparationLockOwner(
-    await readJson(path.join(lockDirectory, "owner.json"), "Staging preparation lock ownership metadata"),
-  );
-  assertSafe(
-    currentOwner.ownerId === observedOwner.ownerId,
-    "Staging preparation lock ownership changed during stale recovery.",
-  );
-  assertSafe(
-    currentOwner.hostname.toLowerCase() === claimant.hostname.toLowerCase(),
-    "Staging preparation lock owner belongs to another host and cannot be proven stale.",
-  );
-  assertSafe(
-    !(await processIsAlive(currentOwner.pid, isProcessAlive)),
-    "A live staging preparation lock owner blocks this prepare operation.",
-  );
-  const quarantineDirectory = path.join(
-    path.dirname(lockDirectory),
-    `staging-prepare-lock-stale-${observedOwner.ownerId}-${claimant.ownerId}`,
-  );
-  await rename(lockDirectory, quarantineDirectory);
-  await cleanupPreparationLockDirectory(quarantineDirectory);
 }
 
 async function acquirePreparationLock(
@@ -1006,7 +1106,7 @@ async function acquirePreparationLock(
     if (await processIsAlive(observedOwner.pid, options?.isProcessAlive)) {
       throw new SafeProvisionError("A live staging preparation lock owner blocks this prepare operation.");
     }
-    await reclaimDeadPreparationLock(lockDirectory, observedOwner, owner, options?.isProcessAlive);
+    await reclaimDeadPreparationLock(lockDirectory, observedOwner, owner, options);
   }
   throw new SafeProvisionError("Staging preparation lock acquisition could not be completed safely.");
 }

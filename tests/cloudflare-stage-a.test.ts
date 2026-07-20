@@ -694,7 +694,25 @@ async function pathExists(filePath: string) {
 
 function preparationLockPaths(paths: PreparationPaths) {
   const lockDirectory = path.join(path.dirname(paths.transactionJournal), "staging-prepare.lock");
-  return { lockDirectory, ownerFile: path.join(lockDirectory, "owner.json") };
+  return {
+    lockDirectory,
+    ownerFile: path.join(lockDirectory, "owner.json"),
+    recoveryOwnerFile: path.join(lockDirectory, "recovery-owner.json"),
+  };
+}
+
+function syntheticLockOwner(
+  pid: number,
+  ownerId: string,
+  hostname = os.hostname(),
+) {
+  return {
+    version: 1,
+    acquiredAt: "2026-07-20T09:00:00.000Z",
+    hostname,
+    ownerId,
+    pid,
+  };
 }
 
 async function writePreparationLock(
@@ -703,13 +721,24 @@ async function writePreparationLock(
 ) {
   const lock = preparationLockPaths(paths);
   await mkdir(lock.lockDirectory, { recursive: true });
-  await writeFile(lock.ownerFile, JSON.stringify({
-    version: 1,
-    acquiredAt: "2026-07-20T09:00:00.000Z",
-    hostname: owner.hostname ?? os.hostname(),
-    ownerId: owner.ownerId ?? "90000000-0000-4000-8000-000000000020",
-    pid: owner.pid ?? 4242,
-  }));
+  await writeFile(lock.ownerFile, JSON.stringify(syntheticLockOwner(
+    owner.pid ?? 4242,
+    owner.ownerId ?? "90000000-0000-4000-8000-000000000020",
+    owner.hostname,
+  )));
+  return lock;
+}
+
+async function writeRecoveryClaim(
+  paths: PreparationPaths,
+  owner: { hostname?: string; ownerId?: string; pid?: number } = {},
+) {
+  const lock = preparationLockPaths(paths);
+  await writeFile(lock.recoveryOwnerFile, JSON.stringify(syntheticLockOwner(
+    owner.pid ?? 4343,
+    owner.ownerId ?? "90000000-0000-4000-8000-000000000021",
+    owner.hostname,
+  )));
   return lock;
 }
 
@@ -801,6 +830,150 @@ test("prepare fails closed on invalid lock ownership metadata", async () => {
 
   await assert.rejects(prepareStagingFiles(prepareOptions(paths)), /lock ownership metadata is invalid/i);
   assert.equal(await pathExists(lock.lockDirectory), true);
+});
+
+test("prepare recovers an interrupted dead same-host recovery claimant", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-dead-recovery-claim-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+
+  await prepareStagingFiles({
+    ...prepareOptions(paths),
+    preparationLock: { isProcessAlive: async (pid) => pid === process.pid },
+  });
+
+  assert.equal(await pathExists(lock.lockDirectory), false);
+  assert.equal(await pathExists(lock.recoveryOwnerFile), false);
+});
+
+test("only one concurrent claimant can reclaim an interrupted dead recovery claim", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-recovery-claim-race-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  let staleClaimChecks = 0;
+  let releaseClaimChecks!: () => void;
+  const bothCheckedClaim = new Promise<void>((resolve) => { releaseClaimChecks = resolve; });
+  let releaseWinner!: () => void;
+  const holdWinner = new Promise<void>((resolve) => { releaseWinner = resolve; });
+  let winnerEntered = false;
+  const isProcessAlive = async (pid: number) => {
+    if (pid === 4343) {
+      staleClaimChecks += 1;
+      if (staleClaimChecks === 2) releaseClaimChecks();
+      await bothCheckedClaim;
+      return false;
+    }
+    return pid === process.pid;
+  };
+  const run = (byte: number) => prepareStagingFiles({
+    ...prepareOptions(paths, byte),
+    preparationLock: { isProcessAlive },
+    transactionHooks: {
+      beforeReplace: async (index) => {
+        if (index !== 0) return;
+        winnerEntered = true;
+        await holdWinner;
+      },
+    },
+  }).then(
+    () => ({ status: "fulfilled" as const, message: "" }),
+    (error: unknown) => ({ status: "rejected" as const, message: error instanceof Error ? error.message : String(error) }),
+  );
+
+  const runs = [run(1), run(9)];
+  await Promise.race(runs);
+  releaseWinner();
+  const results = await Promise.all(runs);
+  assert.equal(winnerEntered, true);
+  assert.equal(results.filter(({ status }) => status === "fulfilled").length, 1);
+  const rejected = results.filter(({ status }) => status === "rejected");
+  assert.equal(rejected.length, 1);
+  assert.match(rejected[0]?.message ?? "", /live staging preparation lock|recovery claimant|lock acquisition/i);
+  assert.equal(await pathExists(lock.lockDirectory), false);
+});
+
+test("recovery-claim quarantine and claimant-owned cleanup are exception-safe and retryable", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-recovery-claim-cleanup-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  let quarantinePath = "";
+
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(paths),
+      preparationLock: {
+        isProcessAlive: async (pid) => pid === process.pid,
+        afterRecoveryClaimQuarantined: (candidate) => {
+          quarantinePath = candidate;
+          throw new Error("synthetic recovery-claim quarantine failure");
+        },
+      },
+    }),
+    /recovery-claim quarantine failure/,
+  );
+  assert.notEqual(quarantinePath, "");
+  assert.equal(await pathExists(quarantinePath), false);
+  assert.equal(await pathExists(lock.recoveryOwnerFile), true);
+
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(paths),
+      preparationLock: {
+        isProcessAlive: async (pid) => pid === process.pid,
+        afterRecoveryClaimAcquired: () => {
+          throw new Error("synthetic claimant-owned validation failure");
+        },
+      },
+    }),
+    /claimant-owned validation failure/,
+  );
+  assert.equal(await pathExists(lock.recoveryOwnerFile), false);
+
+  await prepareStagingFiles({
+    ...prepareOptions(paths),
+    preparationLock: { isProcessAlive: async (pid) => pid === process.pid },
+  });
+  assert.equal(await pathExists(lock.lockDirectory), false);
+});
+
+test("recovery claims remain fail-closed when live, foreign-host, invalid, or PID-reused", async () => {
+  const cases = [
+    { label: "live", owner: { pid: 4343 }, alive: (pid: number) => pid === 4343, error: /live staging preparation lock recovery claimant/i },
+    { label: "PID-reused", owner: { pid: 4344 }, alive: (pid: number) => pid === 4344, error: /live staging preparation lock recovery claimant/i },
+    { label: "foreign-host", owner: { pid: 4345, hostname: "synthetic-foreign-host" }, alive: () => false, error: /another host/i },
+  ];
+  for (const fixture of cases) {
+    const root = await mkdtemp(path.join(os.tmpdir(), `review-anchor-stage-a-${fixture.label}-claim-`));
+    const paths = await writePreparationFixture(root);
+    const originalEnvironment = await readFile(paths.environment, "utf8");
+    const lock = await writePreparationLock(paths);
+    await writeRecoveryClaim(paths, fixture.owner);
+    await assert.rejects(
+      prepareStagingFiles({
+        ...prepareOptions(paths),
+        preparationLock: { isProcessAlive: async (pid) => pid === 4242 ? false : fixture.alive(pid) },
+      }),
+      fixture.error,
+    );
+    assert.equal(await readFile(paths.environment, "utf8"), originalEnvironment);
+    assert.equal(await pathExists(lock.recoveryOwnerFile), true);
+  }
+
+  const invalidRoot = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-invalid-recovery-claim-"));
+  const invalidPaths = await writePreparationFixture(invalidRoot);
+  const invalidLock = await writePreparationLock(invalidPaths);
+  await writeFile(invalidLock.recoveryOwnerFile, "{\"pid\":4343}");
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(invalidPaths),
+      preparationLock: { isProcessAlive: async () => false },
+    }),
+    /recovery ownership metadata is invalid/i,
+  );
+  assert.equal(await pathExists(invalidLock.recoveryOwnerFile), true);
 });
 
 test("prepare transaction rolls back every prior replacement at multiple injected failure points", async () => {
