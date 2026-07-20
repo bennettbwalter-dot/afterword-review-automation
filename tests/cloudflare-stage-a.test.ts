@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { access, mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -49,7 +50,23 @@ test("Cloudflare staging secret and evidence files are ignored", async () => {
 
   assert.match(gitignore, /^\.cloudflare\/\*-secrets\.json$/m);
   assert.match(gitignore, /^\.cloudflare\/staging-resource-ids\.json$/m);
+  assert.match(gitignore, /^\.cloudflare\/staging-resource-ids\.json\.\*\.pending$/m);
   assert.match(gitignore, /^\.cloudflare\/evidence\/$/m);
+
+  const pendingEvidence = spawnSync(
+    "git",
+    ["check-ignore", "--no-index", "--quiet", ".cloudflare/staging-resource-ids.json.90000000-0000-4000-8000-000000000001.pending"],
+    { cwd: path.resolve("."), stdio: "ignore" },
+  );
+  assert.equal(pendingEvidence.error, undefined);
+  assert.equal(pendingEvidence.status, 0);
+  const unrelatedPending = spawnSync(
+    "git",
+    ["check-ignore", "--no-index", "--quiet", ".cloudflare/unrelated.pending"],
+    { cwd: path.resolve("."), stdio: "ignore" },
+  );
+  assert.equal(unrelatedPending.error, undefined);
+  assert.notEqual(unrelatedPending.status, 0);
 });
 
 const projectRef = "cwwgvkepocldophqzijf";
@@ -665,6 +682,126 @@ async function fileExists(filePath: string) {
     return false;
   }
 }
+
+async function pathExists(filePath: string) {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function preparationLockPaths(paths: PreparationPaths) {
+  const lockDirectory = path.join(path.dirname(paths.transactionJournal), "staging-prepare.lock");
+  return { lockDirectory, ownerFile: path.join(lockDirectory, "owner.json") };
+}
+
+async function writePreparationLock(
+  paths: PreparationPaths,
+  owner: { hostname?: string; ownerId?: string; pid?: number } = {},
+) {
+  const lock = preparationLockPaths(paths);
+  await mkdir(lock.lockDirectory, { recursive: true });
+  await writeFile(lock.ownerFile, JSON.stringify({
+    version: 1,
+    acquiredAt: "2026-07-20T09:00:00.000Z",
+    hostname: owner.hostname ?? os.hostname(),
+    ownerId: owner.ownerId ?? "90000000-0000-4000-8000-000000000020",
+    pid: owner.pid ?? 4242,
+  }));
+  return lock;
+}
+
+function prepareOptions(paths: PreparationPaths, byte = 1) {
+  let nextByte = byte;
+  return {
+    paths,
+    confirmations: {
+      application: "https://review-anchor-staging.review-anchor-staging-test.workers.dev",
+      ingress: "https://review-anchor-staging-ingress.review-anchor-staging-test.workers.dev",
+    },
+    randomBytes: (size: number) => Buffer.alloc(size, nextByte++),
+    rotate: false,
+    confirmedEmptyStagingData: false,
+  };
+}
+
+test("prepare refuses a concurrent live cross-process lock owner without touching staging", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-live-lock-"));
+  const paths = await writePreparationFixture(root);
+  const originalEnvironment = await readFile(paths.environment, "utf8");
+  const lock = await writePreparationLock(paths);
+
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(paths),
+      preparationLock: { isProcessAlive: async (pid) => pid === 4242 },
+    }),
+    /live staging preparation lock owner/i,
+  );
+  assert.equal(await readFile(paths.environment, "utf8"), originalEnvironment);
+  assert.equal(await pathExists(lock.lockDirectory), true);
+});
+
+test("prepare reclaims a provably dead owner atomically and blocks a concurrent claimant", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-stale-lock-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  let releaseFirst!: () => void;
+  let enteredFirst!: () => void;
+  const held = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const entered = new Promise<void>((resolve) => { enteredFirst = resolve; });
+
+  const first = prepareStagingFiles({
+    ...prepareOptions(paths),
+    preparationLock: { isProcessAlive: async (pid) => pid !== 4242 },
+    transactionHooks: {
+      beforeReplace: async (index) => {
+        if (index !== 0) return;
+        enteredFirst();
+        await held;
+      },
+    },
+  });
+  await entered;
+  await assert.rejects(
+    prepareStagingFiles(prepareOptions(paths, 2)),
+    /live staging preparation lock owner/i,
+  );
+  releaseFirst();
+  await first;
+  assert.equal(await pathExists(lock.lockDirectory), false);
+});
+
+test("prepare releases its cross-process lock after both success and transactional failure", async () => {
+  const successRoot = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-lock-success-"));
+  const successPaths = await writePreparationFixture(successRoot);
+  await prepareStagingFiles(prepareOptions(successPaths));
+  assert.equal(await pathExists(preparationLockPaths(successPaths).lockDirectory), false);
+
+  const failureRoot = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-lock-failure-"));
+  const failurePaths = await writePreparationFixture(failureRoot);
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(failurePaths),
+      transactionHooks: { beforeReplace: () => { throw new Error("synthetic lock cleanup failure path"); } },
+    }),
+    /rolled back/,
+  );
+  assert.equal(await pathExists(preparationLockPaths(failurePaths).lockDirectory), false);
+});
+
+test("prepare fails closed on invalid lock ownership metadata", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-invalid-lock-"));
+  const paths = await writePreparationFixture(root);
+  const lock = preparationLockPaths(paths);
+  await mkdir(lock.lockDirectory, { recursive: true });
+  await writeFile(lock.ownerFile, "{\"pid\":4242}");
+
+  await assert.rejects(prepareStagingFiles(prepareOptions(paths)), /lock ownership metadata is invalid/i);
+  assert.equal(await pathExists(lock.lockDirectory), true);
+});
 
 test("prepare transaction rolls back every prior replacement at multiple injected failure points", async () => {
   for (const failureIndex of [1, 5]) {

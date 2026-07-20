@@ -12,5 +12,6 @@ dist/
 output/playwright/
 .cloudflare/*-secrets.json
 .cloudflare/staging-resource-ids.json
+.cloudflare/staging-resource-ids.json.*.pending
 .cloudflare/pre-rotation-secrets.json
 .cloudflare/evidence/

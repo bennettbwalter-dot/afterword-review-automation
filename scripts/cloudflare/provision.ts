@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomBytes as nodeRandomBytes, randomUUID } from "node:crypto";
 import { access, mkdir, readFile, rename, rmdir, unlink, writeFile } from "node:fs/promises";
+import { hostname as nodeHostname } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -130,6 +131,9 @@ export interface PrepareStagingOptions {
   paths: PreparationPaths;
   randomBytes?: (size: number) => Uint8Array;
   rotate: boolean;
+  preparationLock?: {
+    isProcessAlive?: (pid: number) => boolean | Promise<boolean>;
+  };
   transactionHooks?: {
     beforeAtomicRename?: (temporaryPath: string, destination: string) => Promise<void> | void;
     beforeReplace?: (index: number, destination: string) => Promise<void> | void;
@@ -834,6 +838,210 @@ async function writeAtomic(filePath: string, contents: string) {
   }
 }
 
+interface PreparationLockOwner {
+  acquiredAt: string;
+  hostname: string;
+  ownerId: string;
+  pid: number;
+  version: 1;
+}
+
+interface PreparationLockHandle {
+  lockDirectory: string;
+  owner: PreparationLockOwner;
+}
+
+function preparationLockDirectory(paths: PreparationPaths) {
+  return path.resolve(path.dirname(paths.transactionJournal), "staging-prepare.lock");
+}
+
+function validatePreparationLockOwner(value: unknown, description = "Staging preparation lock ownership metadata") {
+  assertSafe(isObject(value) && value.version === 1, `${description} is invalid.`);
+  assertSafe(
+    typeof value.ownerId === "string"
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.ownerId),
+    `${description} is invalid.`,
+  );
+  assertSafe(
+    Number.isInteger(value.pid) && Number(value.pid) > 0 && Number(value.pid) <= 0x7fffffff,
+    `${description} is invalid.`,
+  );
+  assertSafe(
+    typeof value.hostname === "string" && value.hostname.length > 0 && value.hostname.length <= 255,
+    `${description} is invalid.`,
+  );
+  assertSafe(
+    typeof value.acquiredAt === "string" && Number.isFinite(Date.parse(value.acquiredAt)),
+    `${description} is invalid.`,
+  );
+  return {
+    version: 1,
+    ownerId: value.ownerId,
+    pid: Number(value.pid),
+    hostname: value.hostname,
+    acquiredAt: value.acquiredAt,
+  } as PreparationLockOwner;
+}
+
+function defaultProcessLiveness(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (isObject(error) && error.code === "ESRCH") return false;
+    if (isObject(error) && error.code === "EPERM") return true;
+    throw new SafeProvisionError("Staging preparation lock owner liveness could not be determined safely.");
+  }
+}
+
+async function processIsAlive(
+  pid: number,
+  check: ((pid: number) => boolean | Promise<boolean>) | undefined,
+) {
+  try {
+    const alive = await (check ?? defaultProcessLiveness)(pid);
+    assertSafe(typeof alive === "boolean", "Staging preparation lock owner liveness is invalid.");
+    return alive;
+  } catch (error) {
+    if (error instanceof SafeProvisionError) throw error;
+    throw new SafeProvisionError("Staging preparation lock owner liveness could not be determined safely.");
+  }
+}
+
+async function cleanupPreparationLockDirectory(directoryPath: string) {
+  await unlinkIfPresent(path.join(directoryPath, "recovery-owner.json"));
+  await unlinkIfPresent(path.join(directoryPath, "owner.json"));
+  await rmdirIfPresent(directoryPath);
+}
+
+async function tryInstallPreparationLock(lockDirectory: string, owner: PreparationLockOwner) {
+  const candidateDirectory = path.join(
+    path.dirname(lockDirectory),
+    `staging-prepare-lock-candidate-${owner.ownerId}`,
+  );
+  await cleanupPreparationLockDirectory(candidateDirectory);
+  await mkdir(candidateDirectory);
+  await writeFile(path.join(candidateDirectory, "owner.json"), `${JSON.stringify(owner, null, 2)}\n`, { mode: 0o600 });
+  try {
+    await rename(candidateDirectory, lockDirectory);
+    return true;
+  } catch (error) {
+    await cleanupPreparationLockDirectory(candidateDirectory);
+    if (await exists(lockDirectory)) return false;
+    throw error;
+  }
+}
+
+async function reclaimDeadPreparationLock(
+  lockDirectory: string,
+  observedOwner: PreparationLockOwner,
+  claimant: PreparationLockOwner,
+  isProcessAlive: ((pid: number) => boolean | Promise<boolean>) | undefined,
+) {
+  const recoveryClaim = path.join(lockDirectory, "recovery-owner.json");
+  try {
+    await writeFile(recoveryClaim, `${JSON.stringify(claimant, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+  } catch (error) {
+    if (!(isObject(error) && error.code === "EEXIST")) throw error;
+    const existingClaim = validatePreparationLockOwner(
+      await readJson(recoveryClaim, "Staging preparation lock recovery ownership metadata"),
+      "Staging preparation lock recovery ownership metadata",
+    );
+    const localHost = claimant.hostname.toLowerCase();
+    assertSafe(
+      existingClaim.hostname.toLowerCase() === localHost,
+      "Staging preparation lock recovery belongs to another host and cannot be proven stale.",
+    );
+    if (await processIsAlive(existingClaim.pid, isProcessAlive)) {
+      throw new SafeProvisionError("A live staging preparation lock recovery claimant already exists.");
+    }
+    throw new SafeProvisionError("A stale staging preparation lock recovery claim requires explicit operator cleanup.");
+  }
+
+  const currentOwner = validatePreparationLockOwner(
+    await readJson(path.join(lockDirectory, "owner.json"), "Staging preparation lock ownership metadata"),
+  );
+  assertSafe(
+    currentOwner.ownerId === observedOwner.ownerId,
+    "Staging preparation lock ownership changed during stale recovery.",
+  );
+  assertSafe(
+    currentOwner.hostname.toLowerCase() === claimant.hostname.toLowerCase(),
+    "Staging preparation lock owner belongs to another host and cannot be proven stale.",
+  );
+  assertSafe(
+    !(await processIsAlive(currentOwner.pid, isProcessAlive)),
+    "A live staging preparation lock owner blocks this prepare operation.",
+  );
+  const quarantineDirectory = path.join(
+    path.dirname(lockDirectory),
+    `staging-prepare-lock-stale-${observedOwner.ownerId}-${claimant.ownerId}`,
+  );
+  await rename(lockDirectory, quarantineDirectory);
+  await cleanupPreparationLockDirectory(quarantineDirectory);
+}
+
+async function acquirePreparationLock(
+  paths: PreparationPaths,
+  options: PrepareStagingOptions["preparationLock"],
+) {
+  const lockDirectory = preparationLockDirectory(paths);
+  await mkdir(path.dirname(lockDirectory), { recursive: true });
+  const owner: PreparationLockOwner = {
+    version: 1,
+    ownerId: randomUUID(),
+    pid: process.pid,
+    hostname: nodeHostname(),
+    acquiredAt: new Date().toISOString(),
+  };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (await tryInstallPreparationLock(lockDirectory, owner)) return { lockDirectory, owner };
+    const observedOwner = validatePreparationLockOwner(
+      await readJson(path.join(lockDirectory, "owner.json"), "Staging preparation lock ownership metadata"),
+    );
+    assertSafe(
+      observedOwner.hostname.toLowerCase() === owner.hostname.toLowerCase(),
+      "Staging preparation lock owner belongs to another host and cannot be proven stale.",
+    );
+    if (await processIsAlive(observedOwner.pid, options?.isProcessAlive)) {
+      throw new SafeProvisionError("A live staging preparation lock owner blocks this prepare operation.");
+    }
+    await reclaimDeadPreparationLock(lockDirectory, observedOwner, owner, options?.isProcessAlive);
+  }
+  throw new SafeProvisionError("Staging preparation lock acquisition could not be completed safely.");
+}
+
+async function releasePreparationLock(handle: PreparationLockHandle) {
+  const owner = validatePreparationLockOwner(
+    await readJson(path.join(handle.lockDirectory, "owner.json"), "Staging preparation lock ownership metadata"),
+  );
+  assertSafe(
+    owner.ownerId === handle.owner.ownerId
+      && owner.pid === handle.owner.pid
+      && owner.hostname.toLowerCase() === handle.owner.hostname.toLowerCase(),
+    "Staging preparation lock ownership changed; release was refused.",
+  );
+  const releaseDirectory = path.join(
+    path.dirname(handle.lockDirectory),
+    `staging-prepare-lock-release-${handle.owner.ownerId}`,
+  );
+  await rename(handle.lockDirectory, releaseDirectory);
+  await cleanupPreparationLockDirectory(releaseDirectory);
+}
+
+async function withPreparationLock<T>(
+  paths: PreparationPaths,
+  options: PrepareStagingOptions["preparationLock"],
+  action: () => Promise<T>,
+) {
+  const handle = await acquirePreparationLock(paths, options);
+  try {
+    return await action();
+  } finally {
+    await releasePreparationLock(handle);
+  }
+}
+
 function environmentValue(source: string, name: string) {
   const values = source.split(/\r?\n/).flatMap((line) => line.startsWith(`${name}=`) ? [line.slice(name.length + 1)] : []);
   assertSafe(values.length <= 1, `The staging environment contains a duplicate ${name} entry.`);
@@ -1024,7 +1232,7 @@ async function commitPreparationTransaction(
   }
 }
 
-export async function prepareStagingFiles(options: PrepareStagingOptions) {
+async function prepareStagingFilesLocked(options: PrepareStagingOptions) {
   await recoverPreparationTransaction(options.paths);
   const [accountValue, capacityValue, environment, applicationConfig, ingressConfig] = await Promise.all([
     readJson(options.paths.accountEvidence, "Authenticated account resource evidence"),
@@ -1079,6 +1287,14 @@ export async function prepareStagingFiles(options: PrepareStagingOptions) {
     options.transactionHooks?.beforeAtomicRename,
   );
   return { origins };
+}
+
+export async function prepareStagingFiles(options: PrepareStagingOptions) {
+  return withPreparationLock(
+    options.paths,
+    options.preparationLock,
+    () => prepareStagingFilesLocked(options),
+  );
 }
 
 async function verifySecretFiles(paths: PreparationPaths["secretFiles"]) {
