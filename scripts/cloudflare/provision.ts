@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomBytes as nodeRandomBytes, randomUUID } from "node:crypto";
-import { access, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rename, rmdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -47,9 +47,41 @@ export const HYPERDRIVE_SPECS = [
 
 export type HyperdriveSpec = typeof HYPERDRIVE_SPECS[number];
 
+const EVIDENCE_MAX_AGE_MS = 15 * 60 * 1000;
+const EVIDENCE_FUTURE_SKEW_MS = 60 * 1000;
+
+export interface SanitizedHyperdriveDescriptor {
+  binding: DatabaseBinding;
+  cachingDisabled: true;
+  database: string;
+  host: string;
+  name: string;
+  originConnectionLimit: 5;
+  port: 5432;
+  sslmode: "require";
+  user: string;
+}
+
+export interface HyperdriveOperationEntry {
+  attempted: boolean;
+  descriptor: SanitizedHyperdriveDescriptor;
+  disposition?: "created" | "reused";
+  id?: string;
+  runId: string;
+  state: "pending" | "resolved";
+}
+
+export interface HyperdriveOperation {
+  resources: Record<DatabaseBinding, HyperdriveOperationEntry>;
+  runId: string;
+  startedAt: string;
+  status: "pending" | "complete";
+}
+
 export interface AccountEvidence {
   accountId: string;
   accountVerified: true;
+  checkedAt: string;
   freePlanVerified: true;
   hyperdriveAvailableWithoutUpgrade: true;
   monthlyRecurringCostUsd: 0;
@@ -57,7 +89,7 @@ export interface AccountEvidence {
   queuesAvailableWithoutUpgrade: true;
   version: 1;
   workersDevSubdomain: string;
-  hyperdrives?: Partial<Record<DatabaseBinding, string>>;
+  hyperdriveOperation?: HyperdriveOperation;
 }
 
 export interface WorkersDevOrigins {
@@ -89,6 +121,7 @@ export interface PreparationPaths {
   environment: string;
   preRotationSecrets: string;
   secretFiles: Record<RuntimeName, string>;
+  transactionJournal: string;
 }
 
 export interface PrepareStagingOptions {
@@ -97,6 +130,9 @@ export interface PrepareStagingOptions {
   paths: PreparationPaths;
   randomBytes?: (size: number) => Uint8Array;
   rotate: boolean;
+  transactionHooks?: {
+    beforeReplace?: (index: number, destination: string) => Promise<void> | void;
+  };
 }
 
 export interface HyperdriveProvisionPaths {
@@ -112,8 +148,11 @@ export interface HyperdriveProvisionPaths {
 
 export interface ProvisionHyperdrivesOptions {
   cwd: string;
+  now?: () => number;
   paths: HyperdriveProvisionPaths;
+  runIdFactory?: () => string;
   runner?: WranglerRunner;
+  wranglerVersion?: string;
 }
 
 export interface WranglerInvocation {
@@ -138,6 +177,19 @@ export interface HyperdriveResource {
   sslmode: string;
 }
 
+export interface HyperdriveListEntry {
+  caching: string;
+  database: string;
+  host: string;
+  id: string;
+  mtls: string;
+  name: string;
+  originConnectionLimit?: number;
+  port?: number;
+  scheme: string;
+  user: string;
+}
+
 class SafeProvisionError extends Error {}
 
 function assertSafe(condition: unknown, message: string): asserts condition {
@@ -148,7 +200,84 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-export function validateAccountEvidence(value: unknown): AccountEvidence {
+function assertRunId(value: unknown): asserts value is string {
+  assertSafe(
+    typeof value === "string"
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value),
+    "The provisioning operation run ID is invalid.",
+  );
+}
+
+function validateCheckedAt(value: unknown, now: number, description: "account" | "capacity") {
+  assertSafe(typeof value === "string", `${description} evidence checkedAt is missing or invalid.`);
+  const checkedAt = Date.parse(value);
+  assertSafe(Number.isFinite(checkedAt), `${description} evidence checkedAt is missing or invalid.`);
+  assertSafe(checkedAt <= now + EVIDENCE_FUTURE_SKEW_MS, `${description} evidence checkedAt is unreasonably in the future.`);
+  assertSafe(now - checkedAt <= EVIDENCE_MAX_AGE_MS, `${description} evidence is stale.`);
+}
+
+function expectedDescriptor(spec: HyperdriveSpec, origin?: HyperdriveOrigin): SanitizedHyperdriveDescriptor {
+  const role = EXPECTED_DATABASE_ROLES.get(spec.binding);
+  assertSafe(role, "An unexpected Hyperdrive binding was selected.");
+  return {
+    binding: spec.binding,
+    name: spec.name,
+    host: origin?.host ?? DIRECT_DATABASE_HOST,
+    database: origin?.database ?? "postgres",
+    user: origin?.user ?? role,
+    port: 5432,
+    sslmode: "require",
+    cachingDisabled: true,
+    originConnectionLimit: 5,
+  };
+}
+
+function validateDescriptor(value: unknown, spec: HyperdriveSpec) {
+  assertSafe(isObject(value), `The ${spec.binding} Hyperdrive descriptor is invalid.`);
+  const expected = expectedDescriptor(spec);
+  assertSafe(
+    exactKeys(value, Object.keys(expected))
+      && Object.entries(expected).every(([name, expectedValue]) => value[name] === expectedValue),
+    `The ${spec.binding} Hyperdrive descriptor does not match the exact sanitized staging resource.`,
+  );
+}
+
+function validateHyperdriveOperation(value: unknown): HyperdriveOperation {
+  assertSafe(isObject(value), "Recorded Hyperdrive operation provenance is invalid.");
+  assertRunId(value.runId);
+  assertSafe(typeof value.startedAt === "string" && Number.isFinite(Date.parse(value.startedAt)), "Recorded Hyperdrive operation start time is invalid.");
+  assertSafe(value.status === "pending" || value.status === "complete", "Recorded Hyperdrive operation status is invalid.");
+  assertSafe(isObject(value.resources), "Recorded Hyperdrive operation resources are invalid.");
+  assertSafe(
+    JSON.stringify(Object.keys(value.resources).sort())
+      === JSON.stringify(HYPERDRIVE_SPECS.map(({ binding }) => binding).sort()),
+    "Recorded Hyperdrive operation must contain the four exact staging bindings.",
+  );
+  let resolved = 0;
+  for (const spec of HYPERDRIVE_SPECS) {
+    const entry = value.resources[spec.binding];
+    assertSafe(isObject(entry), `Recorded ${spec.binding} Hyperdrive provenance is invalid.`);
+    assertSafe(entry.runId === value.runId, `Recorded ${spec.binding} Hyperdrive provenance belongs to a foreign run.`);
+    assertSafe(typeof entry.attempted === "boolean", `Recorded ${spec.binding} Hyperdrive attempt state is invalid.`);
+    validateDescriptor(entry.descriptor, spec);
+    if (entry.state === "pending") {
+      assertSafe(entry.id === undefined && entry.disposition === undefined, `Pending ${spec.binding} provenance cannot contain a resource result.`);
+    } else {
+      assertSafe(entry.state === "resolved", `Recorded ${spec.binding} Hyperdrive state is invalid.`);
+      assertResourceId(entry.id);
+      assertSafe(entry.disposition === "created" || entry.disposition === "reused", `Recorded ${spec.binding} disposition is invalid.`);
+      assertSafe(entry.disposition !== "created" || entry.attempted === true, `Created ${spec.binding} provenance must record a mutation attempt.`);
+      resolved += 1;
+    }
+  }
+  assertSafe(
+    (value.status === "complete") === (resolved === HYPERDRIVE_SPECS.length),
+    "Recorded Hyperdrive operation completion state is inconsistent.",
+  );
+  return value as unknown as HyperdriveOperation;
+}
+
+export function validateAccountEvidence(value: unknown, now = Date.now()): AccountEvidence {
   assertSafe(isObject(value), "Authenticated Cloudflare account evidence is invalid.");
   assertSafe(value.version === 1, "Authenticated Cloudflare account evidence has an unsupported version.");
   assertSafe(value.projectRef === STAGING_PROJECT_REF, "Cloudflare evidence is not bound to the staging project.");
@@ -172,19 +301,26 @@ export function validateAccountEvidence(value: unknown): AccountEvidence {
     "Queues availability without an upgrade has not been verified.",
   );
   assertSafe(value.monthlyRecurringCostUsd === 0, "The staging resource evidence does not prove zero monthly cost.");
-  if (value.hyperdrives !== undefined) {
-    assertSafe(isObject(value.hyperdrives), "Recorded Hyperdrive identifiers are invalid.");
-    for (const [binding, id] of Object.entries(value.hyperdrives)) {
-      assertSafe(EXPECTED_DATABASE_ROLES.has(binding as DatabaseBinding), "An unexpected Hyperdrive binding was recorded.");
-      assertResourceId(id);
-    }
-  }
+  validateCheckedAt(value.checkedAt, now, "account");
+  assertSafe(value.hyperdrives === undefined, "Legacy Hyperdrive ID evidence without provenance was refused.");
+  if (value.hyperdriveOperation !== undefined) validateHyperdriveOperation(value.hyperdriveOperation);
   return value as unknown as AccountEvidence;
 }
 
-export function validateCapacityEvidence(value: unknown): CapacityEvidence {
+export function validateCapacityEvidence(value: unknown, now = Date.now()): CapacityEvidence {
   assertSafe(isObject(value) && value.version === 1 && value.passed === true, "Capacity evidence is missing or invalid.");
   assertSafe(value.projectRef === STAGING_PROJECT_REF, "Capacity evidence is not bound to the staging project.");
+  validateCheckedAt(value.checkedAt, now, "capacity");
+  assertSafe(
+    Number.isSafeInteger(value.maxConnections) && (value.maxConnections as number) >= 0
+      && Number.isSafeInteger(value.activeConnections) && (value.activeConnections as number) >= 0
+      && Number.isSafeInteger(value.availableConnections) && (value.availableConnections as number) >= 0,
+    "Capacity evidence connection arithmetic contains invalid values.",
+  );
+  assertSafe(
+    (value.maxConnections as number) - (value.activeConnections as number) === value.availableConnections,
+    "Capacity evidence connection arithmetic is inconsistent.",
+  );
   assertSafe(
     value.threshold === CAPACITY_THRESHOLD
       && typeof value.availableConnections === "number"
@@ -205,6 +341,13 @@ export function validateCapacityEvidence(value: unknown): CapacityEvidence {
   }
   assertSafe(nonEmpty.length === 0, `Rotation-sensitive staging tables are not empty: ${nonEmpty.join(", ")}.`);
   return value as unknown as CapacityEvidence;
+}
+
+export function validateMutationPreflight(accountValue: unknown, capacityValue: unknown, now = Date.now()) {
+  return {
+    account: validateAccountEvidence(accountValue, now),
+    capacity: validateCapacityEvidence(capacityValue, now),
+  };
 }
 
 export function deriveWorkersDevOrigins(
@@ -447,7 +590,17 @@ export function buildWranglerWhoamiInvocation(cwd: string) {
 }
 
 export function buildHyperdriveListInvocation(cwd: string) {
-  return wranglerInvocation(cwd, ["hyperdrive", "list", "--json"]);
+  return wranglerInvocation(cwd, ["hyperdrive", "list"]);
+}
+
+export function buildHyperdriveGetInvocation(id: string, cwd: string) {
+  assertResourceId(id);
+  return wranglerInvocation(cwd, ["hyperdrive", "get", id]);
+}
+
+export function validateWranglerVersion(version: string) {
+  assertSafe(version === "4.112.0", `The unsupported Wrangler version ${version} was refused; expected 4.112.0.`);
+  return version;
 }
 
 export function buildHyperdriveCreateInvocation(
@@ -480,7 +633,6 @@ export function buildHyperdriveCreateInvocation(
     "--caching-disabled",
     "--origin-connection-limit",
     String(origin.originConnectionLimit),
-    "--json",
   ]);
 }
 
@@ -503,37 +655,108 @@ function validateHyperdriveResource(value: unknown): HyperdriveResource {
     "Wrangler returned an invalid Hyperdrive name.",
   );
   assertSafe(isObject(value.origin), "Wrangler returned invalid Hyperdrive origin metadata.");
+  assertSafe(
+    typeof value.origin.host === "string"
+      && typeof value.origin.database === "string"
+      && typeof value.origin.user === "string"
+      && Number.isSafeInteger(value.origin.port)
+      && typeof value.origin.scheme === "string",
+    "Wrangler returned invalid Hyperdrive origin metadata.",
+  );
   assertSafe(isObject(value.caching) && typeof value.caching.disabled === "boolean", "Wrangler returned invalid Hyperdrive caching metadata.");
   assertSafe(typeof value.origin_connection_limit === "number", "Wrangler returned an invalid Hyperdrive connection limit.");
   assertSafe(typeof value.sslmode === "string", "Wrangler returned invalid Hyperdrive TLS metadata.");
   return value as unknown as HyperdriveResource;
 }
 
-export function parseHyperdriveListOutput(stdout: string) {
-  let parsed: unknown;
+export function parseHyperdriveGetOutput(stdout: string) {
+  let value: unknown;
   try {
-    parsed = JSON.parse(stdout);
+    value = JSON.parse(stdout);
   } catch {
-    throw new SafeProvisionError("Hyperdrive listing did not return valid Wrangler JSON.");
+    throw new SafeProvisionError("Hyperdrive get did not return valid Wrangler 4.112.0 JSON metadata.");
   }
-  const values = Array.isArray(parsed)
-    ? parsed
-    : isObject(parsed) && parsed.success === true && Array.isArray(parsed.result)
-      ? parsed.result
-      : undefined;
-  assertSafe(values, "Hyperdrive listing did not return a successful Wrangler JSON result.");
-  return values.map(validateHyperdriveResource);
+  return validateHyperdriveResource(value);
 }
 
-function parseHyperdriveCreateOutput(stdout: string) {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdout);
-  } catch {
-    throw new SafeProvisionError("Hyperdrive create did not return valid Wrangler JSON.");
-  }
-  const value = isObject(parsed) && parsed.success === true ? parsed.result : parsed;
-  return validateHyperdriveResource(value);
+export function parseHyperdriveListOutput(stdout: string) {
+  const lines = stdout.replace(/\r\n/g, "\n").split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  assertSafe(lines[0] === "📋 Listing Hyperdrive configs", "Hyperdrive listing was not a captured Wrangler 4.112.0 table.");
+  if (lines.length === 1) return [];
+  const borders = lines.filter((line) => /^[┌├└┬┼┴┐┤┘─]+$/.test(line));
+  const rows = lines.filter((line) => line.startsWith("│") && line.endsWith("│"));
+  assertSafe(
+    borders.length === 3 && rows.length >= 2 && borders.length + rows.length + 1 === lines.length,
+    "Hyperdrive listing was not a captured Wrangler 4.112.0 table.",
+  );
+  const cells = rows.map((line) => line.slice(1, -1).split("│").map((cell) => cell.trim()));
+  const expectedHeader = [
+    "id",
+    "name",
+    "user",
+    "host",
+    "port",
+    "scheme",
+    "database",
+    "caching",
+    "mtls",
+    "origin_connection_limit",
+  ];
+  assertSafe(
+    JSON.stringify(cells[0]) === JSON.stringify(expectedHeader),
+    "Hyperdrive listing was not a captured Wrangler 4.112.0 table.",
+  );
+  return cells.slice(1).map((row): HyperdriveListEntry => {
+    assertSafe(row.length === expectedHeader.length, "Hyperdrive listing was not a captured Wrangler 4.112.0 table.");
+    const [id, name, user, host, portText, scheme, database, caching, mtls, limitText] = row;
+    assertResourceId(id);
+    assertSafe(Boolean(name) && /^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$/.test(name), "Wrangler returned an invalid Hyperdrive name.");
+    assertSafe([user, host, scheme, database, caching, mtls].every((value) => value !== undefined && !/[\r\n│]/.test(value)), "Wrangler returned invalid Hyperdrive table metadata.");
+    const port = portText ? Number(portText) : undefined;
+    const originConnectionLimit = limitText ? Number(limitText) : undefined;
+    assertSafe(port === undefined || Number.isSafeInteger(port), "Wrangler returned an invalid Hyperdrive table port.");
+    assertSafe(originConnectionLimit === undefined || Number.isSafeInteger(originConnectionLimit), "Wrangler returned an invalid Hyperdrive table connection limit.");
+    return {
+      id,
+      name,
+      user,
+      host,
+      port,
+      scheme,
+      database,
+      caching,
+      mtls,
+      originConnectionLimit,
+    };
+  });
+}
+
+export function parseHyperdriveCreateOutput(stdout: string) {
+  const match = /^✅ Created new Hyperdrive (PostgreSQL) config: ([0-9a-f]{32})\r?\n?$/.exec(stdout);
+  assertSafe(match, "Hyperdrive create did not return the exact Wrangler 4.112.0 success contract.");
+  return { scheme: match[1] as string, id: match[2] as string };
+}
+
+function selectExactListEntry(
+  entries: readonly HyperdriveListEntry[],
+  spec: HyperdriveSpec,
+  origin: HyperdriveOrigin,
+) {
+  const matchingName = entries.filter((entry) => entry.name === spec.name);
+  assertSafe(matchingName.length <= 1, `Multiple same-name Hyperdrives exist for ${spec.name}.`);
+  if (matchingName.length === 0) return undefined;
+  const entry = matchingName[0] as HyperdriveListEntry;
+  const exact = entry.host === origin.host
+    && entry.database === origin.database
+    && entry.user === origin.user
+    && entry.port === origin.port
+    && entry.scheme.toLowerCase() === "postgresql"
+    && entry.caching === "disabled"
+    && entry.mtls === ""
+    && entry.originConnectionLimit === origin.originConnectionLimit;
+  assertSafe(exact, `The same-name Hyperdrive does not match the sanitized staging origin: ${spec.name}.`);
+  return entry;
 }
 
 export function selectReusableHyperdrive(
@@ -566,6 +789,24 @@ async function exists(filePath: string) {
   }
 }
 
+async function unlinkIfPresent(filePath: string) {
+  try {
+    await unlink(filePath);
+  } catch (error) {
+    if (isObject(error) && error.code === "ENOENT") return;
+    throw error;
+  }
+}
+
+async function rmdirIfPresent(directoryPath: string) {
+  try {
+    await rmdir(directoryPath);
+  } catch (error) {
+    if (isObject(error) && error.code === "ENOENT") return;
+    throw error;
+  }
+}
+
 async function readJson(filePath: string, description: string) {
   try {
     return JSON.parse(await readFile(filePath, "utf8")) as unknown;
@@ -592,7 +833,158 @@ function environmentValue(source: string, name: string) {
   return values[0];
 }
 
+interface PreparationTransactionEntry {
+  backupPath: string;
+  destination: string;
+  existed: boolean;
+  stagedPath: string;
+}
+
+interface PreparationTransactionJournal {
+  entries: PreparationTransactionEntry[];
+  runId: string;
+  status: "prepared" | "committed";
+  transactionDirectory: string;
+  version: 1;
+}
+
+function preparationDestinations(paths: PreparationPaths) {
+  return [
+    paths.preRotationSecrets,
+    paths.environment,
+    paths.configs.application,
+    paths.configs.ingress,
+    paths.secretFiles.compatibility,
+    paths.secretFiles.application,
+    paths.secretFiles.ingress,
+    paths.secretFiles.jobs,
+  ].map((candidate) => path.resolve(candidate));
+}
+
+function validatePreparationJournal(value: unknown, paths: PreparationPaths) {
+  assertSafe(isObject(value) && value.version === 1, "The staging preparation transaction journal is invalid.");
+  assertRunId(value.runId);
+  assertSafe(value.status === "prepared" || value.status === "committed", "The staging preparation transaction status is invalid.");
+  const expectedDirectory = path.resolve(path.dirname(paths.transactionJournal), `staging-prepare-${value.runId}`);
+  assertSafe(value.transactionDirectory === expectedDirectory, "The staging preparation transaction directory is invalid.");
+  assertSafe(Array.isArray(value.entries) && value.entries.length > 0, "The staging preparation transaction entries are invalid.");
+  const allowed = new Set(preparationDestinations(paths));
+  const destinations = new Set<string>();
+  const entries = value.entries.map((candidate, index): PreparationTransactionEntry => {
+    assertSafe(isObject(candidate), "A staging preparation transaction entry is invalid.");
+    const destination = typeof candidate.destination === "string" ? path.resolve(candidate.destination) : "";
+    const stagedPath = typeof candidate.stagedPath === "string" ? path.resolve(candidate.stagedPath) : "";
+    const backupPath = typeof candidate.backupPath === "string" ? path.resolve(candidate.backupPath) : "";
+    assertSafe(allowed.has(destination) && !destinations.has(destination), "A transaction destination is outside the exact staging preparation set.");
+    assertSafe(stagedPath === path.join(expectedDirectory, `${index}.staged`), "A transaction staged path is invalid.");
+    assertSafe(backupPath === path.join(expectedDirectory, `${index}.backup`), "A transaction backup path is invalid.");
+    assertSafe(typeof candidate.existed === "boolean", "A transaction backup state is invalid.");
+    destinations.add(destination);
+    return { destination, stagedPath, backupPath, existed: candidate.existed };
+  });
+  return {
+    version: 1,
+    runId: value.runId,
+    status: value.status,
+    transactionDirectory: expectedDirectory,
+    entries,
+  } as PreparationTransactionJournal;
+}
+
+async function cleanupPreparationTransaction(
+  journal: PreparationTransactionJournal,
+  journalPath: string,
+) {
+  for (const entry of journal.entries) {
+    await unlinkIfPresent(entry.stagedPath);
+    await unlinkIfPresent(entry.backupPath);
+  }
+  await rmdirIfPresent(journal.transactionDirectory);
+  await unlinkIfPresent(journalPath);
+}
+
+async function rollbackPreparationTransaction(
+  journal: PreparationTransactionJournal,
+  journalPath: string,
+) {
+  for (const entry of journal.entries) {
+    if (entry.existed) {
+      assertSafe(await exists(entry.backupPath), "A staging preparation transaction backup is missing; rollback was refused.");
+      await writeAtomic(entry.destination, await readFile(entry.backupPath, "utf8"));
+    } else {
+      await unlinkIfPresent(entry.destination);
+    }
+  }
+  await cleanupPreparationTransaction(journal, journalPath);
+}
+
+async function recoverPreparationTransaction(paths: PreparationPaths) {
+  if (!(await exists(paths.transactionJournal))) return;
+  const journal = validatePreparationJournal(
+    await readJson(paths.transactionJournal, "Staging preparation transaction journal"),
+    paths,
+  );
+  if (journal.status === "prepared") await rollbackPreparationTransaction(journal, paths.transactionJournal);
+  else await cleanupPreparationTransaction(journal, paths.transactionJournal);
+}
+
+async function commitPreparationTransaction(
+  paths: PreparationPaths,
+  outputs: Array<{ contents: string; destination: string }>,
+  hook?: (index: number, destination: string) => Promise<void> | void,
+) {
+  const runId = randomUUID();
+  const transactionDirectory = path.resolve(path.dirname(paths.transactionJournal), `staging-prepare-${runId}`);
+  await mkdir(transactionDirectory, { recursive: true });
+  const entries: PreparationTransactionEntry[] = [];
+  let journal: PreparationTransactionJournal | undefined;
+  let journalWritten = false;
+  try {
+    for (const [index, output] of outputs.entries()) {
+      const destination = path.resolve(output.destination);
+      const stagedPath = path.join(transactionDirectory, `${index}.staged`);
+      const backupPath = path.join(transactionDirectory, `${index}.backup`);
+      const existed = await exists(destination);
+      await writeFile(stagedPath, output.contents, { mode: 0o600 });
+      if (existed) await writeFile(backupPath, await readFile(destination), { mode: 0o600 });
+      entries.push({ destination, stagedPath, backupPath, existed });
+    }
+    assertSafe(
+      new Set(entries.map(({ destination }) => destination)).size === entries.length,
+      "Staging preparation contains duplicate transaction destinations.",
+    );
+    journal = { version: 1, runId, status: "prepared", transactionDirectory, entries };
+    validatePreparationJournal(journal, paths);
+    await writeAtomic(paths.transactionJournal, `${JSON.stringify(journal, null, 2)}\n`);
+    journalWritten = true;
+    for (const [index, entry] of entries.entries()) {
+      await hook?.(index, entry.destination);
+      await writeAtomic(entry.destination, await readFile(entry.stagedPath, "utf8"));
+    }
+    journal.status = "committed";
+    await writeAtomic(paths.transactionJournal, `${JSON.stringify(journal, null, 2)}\n`);
+    await cleanupPreparationTransaction(journal, paths.transactionJournal);
+  } catch (error) {
+    try {
+      if (journalWritten && journal) await rollbackPreparationTransaction(journal, paths.transactionJournal);
+      else if (journal) await cleanupPreparationTransaction(journal, paths.transactionJournal);
+      else {
+        for (const entry of entries) {
+          await unlinkIfPresent(entry.stagedPath);
+          await unlinkIfPresent(entry.backupPath);
+        }
+        await rmdirIfPresent(transactionDirectory);
+      }
+    } catch {
+      throw new SafeProvisionError("Staging preparation failed and rollback could not be completed; the transaction journal was retained.");
+    }
+    if (error instanceof SafeProvisionError) throw error;
+    throw new SafeProvisionError("Staging preparation transaction failed and all prior replacements were rolled back.");
+  }
+}
+
 export async function prepareStagingFiles(options: PrepareStagingOptions) {
+  await recoverPreparationTransaction(options.paths);
   const [accountValue, capacityValue, environment, applicationConfig, ingressConfig] = await Promise.all([
     readJson(options.paths.accountEvidence, "Authenticated account resource evidence"),
     readJson(options.paths.capacityEvidence, "Staging capacity evidence"),
@@ -623,17 +1015,23 @@ export async function prepareStagingFiles(options: PrepareStagingOptions) {
     FIELD_ENCRYPTION_KEY: environmentValue(environment, "FIELD_ENCRYPTION_KEY"),
   };
   const hasPriorSecrets = Boolean(priorSecrets.SESSION_PEPPER || priorSecrets.FIELD_ENCRYPTION_KEY);
+  const outputs: Array<{ contents: string; destination: string }> = [];
   if (hasPriorSecrets) {
     assertSafe(!(await exists(options.paths.preRotationSecrets)), "A pre-rotation staging secret backup already exists; rotation was refused.");
-    await writeAtomic(options.paths.preRotationSecrets, `${JSON.stringify(priorSecrets, null, 2)}\n`);
+    outputs.push({ destination: options.paths.preRotationSecrets, contents: `${JSON.stringify(priorSecrets, null, 2)}\n` });
   }
-
-  await writeAtomic(options.paths.environment, patchedEnvironment);
-  await writeAtomic(options.paths.configs.application, patchedConfigs.application);
-  await writeAtomic(options.paths.configs.ingress, patchedConfigs.ingress);
+  outputs.push(
+    { destination: options.paths.environment, contents: patchedEnvironment },
+    { destination: options.paths.configs.application, contents: patchedConfigs.application },
+    { destination: options.paths.configs.ingress, contents: patchedConfigs.ingress },
+  );
   for (const runtime of ["compatibility", "application", "ingress", "jobs"] as const) {
-    await writeAtomic(options.paths.secretFiles[runtime], `${JSON.stringify(secretMaterial.payloads[runtime], null, 2)}\n`);
+    outputs.push({
+      destination: options.paths.secretFiles[runtime],
+      contents: `${JSON.stringify(secretMaterial.payloads[runtime], null, 2)}\n`,
+    });
   }
+  await commitPreparationTransaction(options.paths, outputs, options.transactionHooks?.beforeReplace);
   return { origins };
 }
 
@@ -723,8 +1121,189 @@ async function runWranglerSafely(
   return result.stdout;
 }
 
+async function resolveWranglerVersion(explicitVersion?: string) {
+  if (explicitVersion !== undefined) return validateWranglerVersion(explicitVersion);
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(await readFile(new URL("../../node_modules/wrangler/package.json", import.meta.url), "utf8"));
+  } catch {
+    throw new SafeProvisionError("The installed Wrangler version could not be verified.");
+  }
+  assertSafe(isObject(manifest) && typeof manifest.version === "string", "The installed Wrangler version could not be verified.");
+  return validateWranglerVersion(manifest.version);
+}
+
+function operationEntries(
+  runId: string,
+  existing: Partial<Record<DatabaseBinding, HyperdriveResource>>,
+) {
+  return Object.fromEntries(HYPERDRIVE_SPECS.map((spec) => {
+    const resource = existing[spec.binding];
+    const entry: HyperdriveOperationEntry = resource
+      ? {
+          descriptor: expectedDescriptor(spec),
+          state: "resolved",
+          attempted: false,
+          id: resource.id,
+          disposition: "reused",
+          runId,
+        }
+      : {
+          descriptor: expectedDescriptor(spec),
+          state: "pending",
+          attempted: false,
+          runId,
+        };
+    return [spec.binding, entry];
+  })) as Record<DatabaseBinding, HyperdriveOperationEntry>;
+}
+
+function accountWithOperation(account: AccountEvidence, operation: HyperdriveOperation): AccountEvidence {
+  return { ...account, hyperdriveOperation: operation };
+}
+
+async function persistOperation(
+  filePath: string,
+  account: AccountEvidence,
+  operation: HyperdriveOperation,
+) {
+  validateHyperdriveOperation(operation);
+  await writeAtomic(filePath, `${JSON.stringify(accountWithOperation(account, operation), null, 2)}\n`);
+}
+
+async function fetchExactHyperdrive(
+  runner: WranglerRunner,
+  cwd: string,
+  accountId: string,
+  entry: HyperdriveListEntry,
+  spec: HyperdriveSpec,
+  origin: HyperdriveOrigin,
+) {
+  const stdout = await runWranglerSafely(
+    runner,
+    bindVerifiedAccount(buildHyperdriveGetInvocation(entry.id, cwd), accountId),
+    "Hyperdrive get command",
+  );
+  const resource = parseHyperdriveGetOutput(stdout);
+  assertSafe(resource.id === entry.id, `The same-name Hyperdrive does not match the recorded list ID: ${spec.name}.`);
+  selectReusableHyperdrive([resource], spec, origin);
+  return resource;
+}
+
+async function exactResourcesFromList(
+  runner: WranglerRunner,
+  cwd: string,
+  accountId: string,
+  entries: readonly HyperdriveListEntry[],
+  origins: Readonly<Record<DatabaseBinding, HyperdriveOrigin>>,
+) {
+  const resources: Partial<Record<DatabaseBinding, HyperdriveResource>> = {};
+  for (const spec of HYPERDRIVE_SPECS) {
+    const entry = selectExactListEntry(entries, spec, origins[spec.binding]);
+    if (entry) resources[spec.binding] = await fetchExactHyperdrive(
+      runner,
+      cwd,
+      accountId,
+      entry,
+      spec,
+      origins[spec.binding],
+    );
+  }
+  return resources;
+}
+
+async function reconcileAmbiguousCreate(
+  runner: WranglerRunner,
+  options: ProvisionHyperdrivesOptions,
+  account: AccountEvidence,
+  spec: HyperdriveSpec,
+  origin: HyperdriveOrigin,
+  parsedCreateId?: string,
+) {
+  try {
+    const listOutput = await runWranglerSafely(
+      runner,
+      bindVerifiedAccount(buildHyperdriveListInvocation(options.cwd), account.accountId),
+      "Hyperdrive reconciliation list command",
+    );
+    const entry = selectExactListEntry(parseHyperdriveListOutput(listOutput), spec, origin);
+    assertSafe(entry, "The ambiguous create was not present in the reconciled list.");
+    assertSafe(parsedCreateId === undefined || entry.id === parsedCreateId, "The reconciled Hyperdrive ID differs from create output.");
+    return await fetchExactHyperdrive(runner, options.cwd, account.accountId, entry, spec, origin);
+  } catch {
+    throw new SafeProvisionError("Hyperdrive create command failed safely; ambiguous create could not be reconciled.");
+  }
+}
+
+async function createAndVerifyHyperdrive(
+  runner: WranglerRunner,
+  options: ProvisionHyperdrivesOptions,
+  account: AccountEvidence,
+  spec: HyperdriveSpec,
+  origin: HyperdriveOrigin,
+) {
+  let parsedCreateId: string | undefined;
+  try {
+    const result = await runner(bindVerifiedAccount(
+      buildHyperdriveCreateInvocation(spec, origin, options.cwd),
+      account.accountId,
+    ));
+    if (result.exitCode === 0) {
+      parsedCreateId = parseHyperdriveCreateOutput(result.stdout).id;
+      const stdout = await runWranglerSafely(
+        runner,
+        bindVerifiedAccount(buildHyperdriveGetInvocation(parsedCreateId, options.cwd), account.accountId),
+        "Hyperdrive get command",
+      );
+      const resource = parseHyperdriveGetOutput(stdout);
+      assertSafe(resource.id === parsedCreateId, "The created Hyperdrive ID does not match get metadata.");
+      selectReusableHyperdrive([resource], spec, origin);
+      return resource;
+    }
+  } catch {
+    // A thrown command, malformed output, or invalid get result is ambiguous and must be reconciled.
+  }
+  return reconcileAmbiguousCreate(runner, options, account, spec, origin, parsedCreateId);
+}
+
+function operationForCleanup(evidence: unknown) {
+  assertSafe(isObject(evidence) && evidence.projectRef === STAGING_PROJECT_REF, "Cleanup evidence is not bound to the staging project.");
+  return validateHyperdriveOperation(evidence.hyperdriveOperation);
+}
+
+export function createdHyperdriveCleanupTargets(evidence: unknown, runId: string) {
+  assertRunId(runId);
+  const operation = operationForCleanup(evidence);
+  assertSafe(operation.runId === runId, "Cleanup refused resources from a foreign run.");
+  return HYPERDRIVE_SPECS.flatMap(({ binding }) => {
+    const entry = operation.resources[binding];
+    return entry.state === "resolved" && entry.disposition === "created"
+      ? [{ binding, id: entry.id as string }]
+      : [];
+  });
+}
+
+export function assertHyperdriveCleanupTarget(
+  evidence: unknown,
+  runId: string,
+  binding: string,
+  id: string,
+) {
+  assertRunId(runId);
+  assertResourceId(id);
+  assertSafe(EXPECTED_DATABASE_ROLES.has(binding as DatabaseBinding), "Cleanup refused an unexpected binding.");
+  const operation = operationForCleanup(evidence);
+  assertSafe(operation.runId === runId, "Cleanup refused a resource from a foreign run.");
+  const entry = operation.resources[binding as DatabaseBinding];
+  assertSafe(entry.state === "resolved" && entry.id === id, "Cleanup refused an unrecorded resource target.");
+  assertSafe(entry.disposition === "created", "Cleanup refused a reused resource.");
+  return { binding: binding as DatabaseBinding, id };
+}
+
 export async function provisionHyperdrives(options: ProvisionHyperdrivesOptions) {
   const runner = options.runner ?? defaultWranglerRunner;
+  const now = options.now ?? Date.now;
+  const initialNow = now();
   const [accountValue, capacityValue, environmentText, applicationSource, ingressSource, jobsSource] = await Promise.all([
     readJson(options.paths.accountEvidence, "Authenticated account resource evidence"),
     readJson(options.paths.capacityEvidence, "Staging capacity evidence"),
@@ -733,8 +1312,8 @@ export async function provisionHyperdrives(options: ProvisionHyperdrivesOptions)
     readFile(options.paths.configs.ingress, "utf8"),
     readFile(options.paths.configs.jobs, "utf8"),
   ]);
-  const account = validateAccountEvidence(accountValue);
-  validateCapacityEvidence(capacityValue);
+  const { account } = validateMutationPreflight(accountValue, capacityValue, initialNow);
+  await resolveWranglerVersion(options.wranglerVersion);
   const settings = validateCapacityEnvironment(parseEnvironmentFile(environmentText));
 
   const whoami = await runWranglerSafely(
@@ -748,44 +1327,80 @@ export async function provisionHyperdrives(options: ProvisionHyperdrivesOptions)
     bindVerifiedAccount(buildHyperdriveListInvocation(options.cwd), account.accountId),
     "Hyperdrive list command",
   );
-  const resources = parseHyperdriveListOutput(listOutput);
+  const listedResources = await exactResourcesFromList(
+    runner,
+    options.cwd,
+    account.accountId,
+    parseHyperdriveListOutput(listOutput),
+    settings.hyperdriveOrigins,
+  );
 
-  const ids: Partial<Record<DatabaseBinding, string>> = {};
-  const missing: HyperdriveSpec[] = [];
-  for (const spec of HYPERDRIVE_SPECS) {
-    const reusable = selectReusableHyperdrive(resources, spec, settings.hyperdriveOrigins[spec.binding]);
-    const recorded = account.hyperdrives?.[spec.binding];
-    if (recorded !== undefined) {
-      assertSafe(
-        reusable === recorded,
-        `The recorded ${spec.binding} Hyperdrive ID does not match the exact account resource.`,
-      );
+  let operation = account.hyperdriveOperation;
+  if (!operation) {
+    const runId = (options.runIdFactory ?? randomUUID)();
+    assertRunId(runId);
+    operation = {
+      runId,
+      startedAt: new Date(initialNow).toISOString(),
+      status: "pending",
+      resources: operationEntries(runId, listedResources),
+    };
+    if (Object.values(operation.resources).every(({ state }) => state === "resolved")) operation.status = "complete";
+    await persistOperation(options.paths.accountEvidence, account, operation);
+  } else {
+    for (const spec of HYPERDRIVE_SPECS) {
+      const entry = operation.resources[spec.binding];
+      const listed = listedResources[spec.binding];
+      if (entry.state === "resolved") {
+        assertSafe(
+          listed?.id === entry.id,
+          `The recorded ${spec.binding} Hyperdrive ID does not match the exact account resource.`,
+        );
+      } else if (listed) {
+        operation.resources[spec.binding] = {
+          ...entry,
+          state: "resolved",
+          id: listed.id,
+          disposition: entry.attempted ? "created" : "reused",
+        };
+      } else {
+        assertSafe(
+          !entry.attempted,
+          `The pending mutation for ${spec.binding} requires manual reconciliation before any retry.`,
+        );
+      }
     }
-    if (reusable) ids[spec.binding] = reusable;
-    else missing.push(spec);
+    if (Object.values(operation.resources).every(({ state }) => state === "resolved")) operation.status = "complete";
+    await persistOperation(options.paths.accountEvidence, account, operation);
   }
 
-  for (const spec of missing) {
-    const stdout = await runWranglerSafely(
+  for (const spec of HYPERDRIVE_SPECS) {
+    const entry = operation.resources[spec.binding];
+    if (entry.state === "resolved") continue;
+    validateMutationPreflight(accountWithOperation(account, operation), capacityValue, now());
+    operation.resources[spec.binding] = { ...entry, attempted: true };
+    await persistOperation(options.paths.accountEvidence, account, operation);
+    const created = await createAndVerifyHyperdrive(
       runner,
-      bindVerifiedAccount(
-        buildHyperdriveCreateInvocation(spec, settings.hyperdriveOrigins[spec.binding], options.cwd),
-        account.accountId,
-      ),
-      "Hyperdrive create command",
+      options,
+      account,
+      spec,
+      settings.hyperdriveOrigins[spec.binding],
     );
-    const created = parseHyperdriveCreateOutput(stdout);
-    const id = selectReusableHyperdrive([created], spec, settings.hyperdriveOrigins[spec.binding]);
-    assertResourceId(id);
-    ids[spec.binding] = id;
-    await writeAtomic(options.paths.accountEvidence, `${JSON.stringify({
-      ...account,
-      hyperdrives: { ...(account.hyperdrives ?? {}), ...ids },
-    }, null, 2)}\n`);
+    operation.resources[spec.binding] = {
+      ...operation.resources[spec.binding],
+      state: "resolved",
+      id: created.id,
+      disposition: "created",
+    };
+    if (Object.values(operation.resources).every(({ state }) => state === "resolved")) operation.status = "complete";
+    await persistOperation(options.paths.accountEvidence, account, operation);
   }
+  operation.status = "complete";
+  await persistOperation(options.paths.accountEvidence, account, operation);
 
   const completeIds = Object.fromEntries(HYPERDRIVE_SPECS.map(({ binding }) => {
-    const id = ids[binding];
+    const id = operation.resources[binding].id;
     assertResourceId(id);
     return [binding, id];
   }));
@@ -794,10 +1409,6 @@ export async function provisionHyperdrives(options: ProvisionHyperdrivesOptions)
     ingress: ingressSource,
     jobs: jobsSource,
   }, completeIds);
-  await writeAtomic(options.paths.accountEvidence, `${JSON.stringify({
-    ...account,
-    hyperdrives: completeIds,
-  }, null, 2)}\n`);
   await writeAtomic(options.paths.configs.application, patched.application);
   await writeAtomic(options.paths.configs.ingress, patched.ingress);
   await writeAtomic(options.paths.configs.jobs, patched.jobs);
@@ -813,6 +1424,7 @@ const defaultPaths: PreparationPaths = {
   },
   environment: path.resolve(".env.staging"),
   preRotationSecrets: path.resolve(".cloudflare", "pre-rotation-secrets.json"),
+  transactionJournal: path.resolve(".cloudflare", "evidence", "staging-prepare-transaction.json"),
   secretFiles: {
     compatibility: path.resolve(".cloudflare", "staging-compat-secrets.json"),
     application: path.resolve(".cloudflare", "staging-application-secrets.json"),

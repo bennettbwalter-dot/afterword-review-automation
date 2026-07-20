@@ -22,6 +22,8 @@ import {
   buildWranglerWhoamiInvocation,
   createSecretMaterial,
   deriveWorkersDevOrigins,
+  parseHyperdriveCreateOutput,
+  parseHyperdriveGetOutput,
   parseHyperdriveListOutput,
   patchEnvironmentText,
   patchHyperdriveBindings,
@@ -195,7 +197,7 @@ test("capacity diagnostics redact URLs, hosts, passwords, and certificate materi
   assert.match(redacted, /\[REDACTED\]/);
 });
 
-function accountEvidence(): AccountEvidence {
+function accountEvidence(checkedAt = new Date().toISOString()): AccountEvidence {
   return {
     version: 1,
     projectRef,
@@ -206,15 +208,16 @@ function accountEvidence(): AccountEvidence {
     hyperdriveAvailableWithoutUpgrade: true,
     queuesAvailableWithoutUpgrade: true,
     monthlyRecurringCostUsd: 0,
+    checkedAt,
   };
 }
 
-function capacityEvidence() {
+function capacityEvidence(checkedAt = new Date().toISOString()) {
   return {
     version: 1 as const,
     passed: true as const,
     projectRef,
-    checkedAt: "2026-07-20T12:00:00.000Z",
+    checkedAt,
     maxConnections: 40,
     activeConnections: 16,
     availableConnections: 24,
@@ -225,7 +228,8 @@ function capacityEvidence() {
 }
 
 test("account and capacity evidence require the exact verified free staging boundary", () => {
-  assert.deepEqual(validateAccountEvidence(accountEvidence()), accountEvidence());
+  const account = accountEvidence();
+  assert.deepEqual(validateAccountEvidence(account), account);
   assert.equal(validateCapacityEvidence(capacityEvidence()).availableConnections, 24);
 
   for (const invalid of [
@@ -242,7 +246,7 @@ test("account and capacity evidence require the exact verified free staging boun
   }
   assert.throws(
     () => validateCapacityEvidence({ ...capacityEvidence(), availableConnections: 23 }),
-    /24 available/,
+    /arithmetic|24 available/,
   );
   assert.throws(
     () => validateCapacityEvidence({
@@ -250,6 +254,35 @@ test("account and capacity evidence require the exact verified free staging boun
       tableCounts: { ...capacityEvidence().tableCounts, review_requests: 1 },
     }),
     /review_requests=1/,
+  );
+});
+
+test("mutation preflight enforces fresh account and arithmetic-consistent capacity evidence with a controlled clock", async () => {
+  const provisionModule = await import("../scripts/cloudflare/provision.js") as typeof import("../scripts/cloudflare/provision.js") & {
+    validateMutationPreflight?: (account: unknown, capacity: unknown, now: number) => unknown;
+  };
+  assert.equal(typeof provisionModule.validateMutationPreflight, "function");
+  const now = Date.parse("2026-07-20T12:10:00.000Z");
+  assert.ok(provisionModule.validateMutationPreflight?.(
+    accountEvidence("2026-07-20T12:00:00.000Z"),
+    capacityEvidence("2026-07-20T12:00:00.000Z"),
+    now,
+  ));
+  assert.throws(
+    () => provisionModule.validateMutationPreflight?.(
+      accountEvidence("2026-07-20T11:00:00.000Z"),
+      capacityEvidence("2026-07-20T12:00:00.000Z"),
+      now,
+    ),
+    /account.*stale/i,
+  );
+  assert.throws(
+    () => provisionModule.validateMutationPreflight?.(
+      accountEvidence("2026-07-20T12:00:00.000Z"),
+      { ...capacityEvidence("2026-07-20T12:00:00.000Z"), availableConnections: 25 },
+      now,
+    ),
+    /arithmetic/,
   );
 });
 
@@ -397,7 +430,7 @@ test("compatibility binding helper is reversible and rejects a dirty or wrong co
   );
 });
 
-test("Hyperdrive commands use separate direct-origin arguments and redact passwords", () => {
+test("Hyperdrive 4.112.0 commands use the real list/create/get contracts without nonexistent JSON flags", async () => {
   const settings = validateCapacityEnvironment(capacityEnvironment());
   const spec = HYPERDRIVE_SPECS[0];
   const invocation = buildHyperdriveCreateInvocation(spec, settings.hyperdriveOrigins.AUTH_DB, "C:\\synthetic-workspace");
@@ -419,6 +452,7 @@ test("Hyperdrive commands use separate direct-origin arguments and redact passwo
   assert.ok(invocation.args.includes("--caching-disabled"));
   assert.ok(invocation.args.includes("--origin-connection-limit"));
   assert.ok(invocation.args.includes("5"));
+  assert.equal(invocation.args.includes("--json"), false);
   assert.equal(invocation.args.some((value) => value.includes("postgresql://")), false);
   assert.equal(invocation.args.includes("MIGRATION_DATABASE_URL"), false);
 
@@ -426,37 +460,78 @@ test("Hyperdrive commands use separate direct-origin arguments and redact passwo
   assert.equal(JSON.stringify(safe).includes("auth-hyperdrive-password"), false);
   assert.match(JSON.stringify(safe), /\[REDACTED\]/);
   const list = buildHyperdriveListInvocation("C:\\synthetic-workspace");
-  assert.deepEqual(list.args.slice(-3), ["hyperdrive", "list", "--json"]);
+  assert.deepEqual(list.args.slice(-2), ["hyperdrive", "list"]);
+
+  const provisionModule = await import("../scripts/cloudflare/provision.js") as typeof import("../scripts/cloudflare/provision.js") & {
+    buildHyperdriveGetInvocation?: (id: string, cwd: string) => WranglerInvocation;
+    validateWranglerVersion?: (version: string) => string;
+  };
+  assert.equal(typeof provisionModule.buildHyperdriveGetInvocation, "function");
+  assert.deepEqual(
+    provisionModule.buildHyperdriveGetInvocation?.("12".repeat(16), "C:\\synthetic-workspace").args.slice(-3),
+    ["hyperdrive", "get", "12".repeat(16)],
+  );
+  assert.equal(provisionModule.validateWranglerVersion?.("4.112.0"), "4.112.0");
+  assert.throws(() => provisionModule.validateWranglerVersion?.("4.113.0"), /unsupported Wrangler version/);
 });
 
-test("Hyperdrive list parsing reuses only exact sanitized staging metadata", () => {
+const CAPTURED_EMPTY_HYPERDRIVE_LIST = "📋 Listing Hyperdrive configs\n";
+const CAPTURED_NONEMPTY_HYPERDRIVE_LIST = `📋 Listing Hyperdrive configs
+┌──────────────────────────────────┬────────────────────────────┬──────────────────────┬───────────────────────────────────────────────┬──────┬────────────┬──────────┬──────────┬──────┬─────────────────────────┐
+│ id                               │ name                       │ user                 │ host                                          │ port │ scheme     │ database │ caching  │ mtls │ origin_connection_limit │
+├──────────────────────────────────┼────────────────────────────┼──────────────────────┼───────────────────────────────────────────────┼──────┼────────────┼──────────┼──────────┼──────┼─────────────────────────┤
+│ 12121212121212121212121212121212 │ review-anchor-staging-auth │ afterword_auth_login │ db.cwwgvkepocldophqzijf.supabase.co           │ 5432 │ PostgreSQL │ postgres │ disabled │      │ 5                       │
+└──────────────────────────────────┴────────────────────────────┴──────────────────────┴───────────────────────────────────────────────┴──────┴────────────┴──────────┴──────────┴──────┴─────────────────────────┘
+`;
+
+test("Hyperdrive list parser accepts captured Wrangler 4.112.0 empty and Unicode table output only", () => {
   const settings = validateCapacityEnvironment(capacityEnvironment());
   const spec = HYPERDRIVE_SPECS[0];
   const origin = settings.hyperdriveOrigins.AUTH_DB;
-  const exact = {
+  assert.deepEqual(parseHyperdriveListOutput(CAPTURED_EMPTY_HYPERDRIVE_LIST), []);
+  const parsed = parseHyperdriveListOutput(CAPTURED_NONEMPTY_HYPERDRIVE_LIST);
+  assert.equal(parsed.length, 1);
+  assert.deepEqual(parsed[0], {
     id: "12".repeat(16),
     name: spec.name,
-    origin: {
-      host: origin.host,
-      database: origin.database,
-      user: origin.user,
-      port: origin.port,
-      scheme: "postgresql",
-    },
-    caching: { disabled: true },
-    origin_connection_limit: 5,
-    sslmode: "require",
-  };
-  const parsed = parseHyperdriveListOutput(JSON.stringify({ success: true, result: [exact] }));
-  assert.equal(selectReusableHyperdrive(parsed, spec, origin), exact.id);
-  assert.equal(selectReusableHyperdrive([], spec, origin), undefined);
+    user: origin.user,
+    host: origin.host,
+    port: 5432,
+    scheme: "PostgreSQL",
+    database: "postgres",
+    caching: "disabled",
+    mtls: "",
+    originConnectionLimit: 5,
+  });
   assert.throws(
-    () => selectReusableHyperdrive([{ ...exact, origin_connection_limit: 6 }], spec, origin),
-    /same-name Hyperdrive does not match/,
+    () => parseHyperdriveListOutput(`${CAPTURED_NONEMPTY_HYPERDRIVE_LIST}unexpected`),
+    /captured Wrangler 4\.112\.0 table/,
+  );
+  assert.throws(() => parseHyperdriveListOutput("📋 Listing Hyperdrive configs\nmalformed"), /captured Wrangler 4\.112\.0 table/);
+});
+
+test("Hyperdrive get parser accepts captured Wrangler JSON metadata and refuses malformed output", () => {
+  const captured = hyperdriveResource(0);
+  assert.deepEqual(parseHyperdriveGetOutput(JSON.stringify(captured, null, 2)), captured);
+  assert.throws(() => parseHyperdriveGetOutput("not-json"), /did not return valid Wrangler 4\.112\.0 JSON/);
+  assert.throws(
+    () => parseHyperdriveGetOutput(JSON.stringify({ ...captured, origin: null })),
+    /origin metadata/,
+  );
+});
+
+test("Hyperdrive create parser accepts only the exact captured Wrangler 4.112.0 success line", () => {
+  assert.deepEqual(
+    parseHyperdriveCreateOutput(`✅ Created new Hyperdrive PostgreSQL config: ${"12".repeat(16)}\n`),
+    { scheme: "PostgreSQL", id: "12".repeat(16) },
   );
   assert.throws(
-    () => parseHyperdriveListOutput("not json and possibly secret-bearing output"),
-    /valid Wrangler JSON/,
+    () => parseHyperdriveCreateOutput(JSON.stringify({ success: true, id: "12".repeat(16) })),
+    /exact Wrangler 4\.112\.0 success contract/,
+  );
+  assert.throws(
+    () => parseHyperdriveCreateOutput(`✅ Created new Hyperdrive postgresql config: ${"12".repeat(16)}\n`),
+    /exact Wrangler 4\.112\.0 success contract/,
   );
 });
 
@@ -466,6 +541,7 @@ function preparationPaths(root: string): PreparationPaths {
     accountEvidence: path.join(root, ".cloudflare", "staging-resource-ids.json"),
     capacityEvidence: path.join(root, ".cloudflare", "evidence", "capacity.json"),
     preRotationSecrets: path.join(root, ".cloudflare", "pre-rotation-secrets.json"),
+    transactionJournal: path.join(root, ".cloudflare", "evidence", "staging-prepare-transaction.json"),
     secretFiles: {
       compatibility: path.join(root, ".cloudflare", "staging-compat-secrets.json"),
       application: path.join(root, ".cloudflare", "staging-application-secrets.json"),
@@ -569,6 +645,127 @@ test("prepare refuses overwrite without an explicit confirmed rotation and prese
   });
 });
 
+async function fileExists(filePath: string) {
+  try {
+    await readFile(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test("prepare transaction rolls back every prior replacement at multiple injected failure points", async () => {
+  for (const failureIndex of [1, 5]) {
+    const root = await mkdtemp(path.join(os.tmpdir(), `review-anchor-stage-a-transaction-${failureIndex}-`));
+    const paths = await writePreparationFixture(root);
+    let byte = failureIndex + 1;
+    const originals = new Map<string, string>();
+    for (const filePath of [paths.environment, paths.configs.application, paths.configs.ingress]) {
+      originals.set(filePath, await readFile(filePath, "utf8"));
+    }
+    await assert.rejects(
+      prepareStagingFiles({
+        paths,
+        confirmations: {
+          application: "https://review-anchor-staging.review-anchor-staging-test.workers.dev",
+          ingress: "https://review-anchor-staging-ingress.review-anchor-staging-test.workers.dev",
+        },
+        randomBytes: (size) => Buffer.alloc(size, byte++),
+        rotate: false,
+        confirmedEmptyStagingData: false,
+        transactionHooks: {
+          beforeReplace: (index) => {
+            if (index === failureIndex) throw new Error("synthetic replacement failure");
+          },
+        },
+      }),
+      /rolled back/,
+    );
+    for (const [filePath, original] of originals) assert.equal(await readFile(filePath, "utf8"), original);
+    for (const filePath of [...Object.values(paths.secretFiles), paths.preRotationSecrets, paths.transactionJournal]) {
+      assert.equal(await fileExists(filePath), false);
+    }
+  }
+});
+
+test("prepare retry recovers a valid interrupted transaction before generating new outputs", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-recover-"));
+  const paths = await writePreparationFixture(root);
+  const runId = "90000000-0000-4000-8000-000000000010";
+  const transactionDirectory = path.join(path.dirname(paths.transactionJournal), `staging-prepare-${runId}`);
+  const stagedPath = path.join(transactionDirectory, "0.staged");
+  const backupPath = path.join(transactionDirectory, "0.backup");
+  const originalEnvironment = await readFile(paths.environment, "utf8");
+  await mkdir(transactionDirectory, { recursive: true });
+  await writeFile(stagedPath, "synthetic staged output\n");
+  await writeFile(backupPath, originalEnvironment);
+  await writeFile(paths.environment, originalEnvironment.replace("migration:keep", "migration:interrupted"));
+  await writeFile(paths.transactionJournal, JSON.stringify({
+    version: 1,
+    runId,
+    status: "prepared",
+    transactionDirectory,
+    entries: [{
+      destination: paths.environment,
+      stagedPath,
+      backupPath,
+      existed: true,
+    }],
+  }));
+
+  let byte = 1;
+  await prepareStagingFiles({
+    paths,
+    confirmations: {
+      application: "https://review-anchor-staging.review-anchor-staging-test.workers.dev",
+      ingress: "https://review-anchor-staging-ingress.review-anchor-staging-test.workers.dev",
+    },
+    randomBytes: (size) => Buffer.alloc(size, byte++),
+    rotate: false,
+    confirmedEmptyStagingData: false,
+  });
+  const recovered = await readFile(paths.environment, "utf8");
+  assert.match(recovered, /migration:keep/);
+  assert.equal(recovered.includes("migration:interrupted"), false);
+  assert.equal(await fileExists(paths.transactionJournal), false);
+});
+
+test("prepare refuses an invalid recovery journal without touching any destination", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-invalid-journal-"));
+  const paths = await writePreparationFixture(root);
+  const originalEnvironment = await readFile(paths.environment, "utf8");
+  const runId = "90000000-0000-4000-8000-000000000011";
+  const transactionDirectory = path.join(path.dirname(paths.transactionJournal), `staging-prepare-${runId}`);
+  await writeFile(paths.transactionJournal, JSON.stringify({
+    version: 1,
+    runId,
+    status: "prepared",
+    transactionDirectory,
+    entries: [{
+      destination: path.join(root, "outside-staging-target.txt"),
+      stagedPath: path.join(transactionDirectory, "0.staged"),
+      backupPath: path.join(transactionDirectory, "0.backup"),
+      existed: false,
+    }],
+  }));
+  await assert.rejects(
+    prepareStagingFiles({
+      paths,
+      confirmations: {
+        application: "https://review-anchor-staging.review-anchor-staging-test.workers.dev",
+        ingress: "https://review-anchor-staging-ingress.review-anchor-staging-test.workers.dev",
+      },
+      randomBytes: (size) => Buffer.alloc(size, 1),
+      rotate: false,
+      confirmedEmptyStagingData: false,
+    }),
+    /outside the exact staging preparation set/,
+  );
+  assert.equal(await readFile(paths.environment, "utf8"), originalEnvironment);
+  assert.equal(await fileExists(path.join(root, "outside-staging-target.txt")), false);
+  assert.equal(await fileExists(paths.transactionJournal), true);
+});
+
 function hyperdriveProvisionPaths(root: string): HyperdriveProvisionPaths {
   const prepared = preparationPaths(root);
   return {
@@ -616,9 +813,59 @@ function hyperdriveResource(index: number) {
   };
 }
 
+function hyperdriveDescriptor(index: number) {
+  const resource = hyperdriveResource(index);
+  const spec = HYPERDRIVE_SPECS[index];
+  return {
+    binding: spec.binding,
+    name: spec.name,
+    host: resource.origin.host,
+    database: resource.origin.database,
+    user: resource.origin.user,
+    port: 5432,
+    sslmode: "require",
+    cachingDisabled: true,
+    originConnectionLimit: 5,
+  };
+}
+
+function capturedHyperdriveList(resources: Array<ReturnType<typeof hyperdriveResource>>) {
+  if (resources.length === 0) return CAPTURED_EMPTY_HYPERDRIVE_LIST;
+  const border = "┌─┬─┬─┬─┬─┬─┬─┬─┬─┬─┐";
+  const middle = "├─┼─┼─┼─┼─┼─┼─┼─┼─┼─┤";
+  const bottom = "└─┴─┴─┴─┴─┴─┴─┴─┴─┴─┘";
+  const row = (values: Array<string | number>) => `│ ${values.join(" │ ")} │`;
+  return [
+    "📋 Listing Hyperdrive configs",
+    border,
+    row(["id", "name", "user", "host", "port", "scheme", "database", "caching", "mtls", "origin_connection_limit"]),
+    middle,
+    ...resources.map((resource) => row([
+      resource.id,
+      resource.name,
+      resource.origin.user,
+      resource.origin.host,
+      resource.origin.port,
+      "PostgreSQL",
+      resource.origin.database,
+      resource.caching.disabled ? "disabled" : "enabled",
+      "",
+      resource.origin_connection_limit,
+    ])),
+    bottom,
+    "",
+  ].join("\n");
+}
+
+function capturedCreate(resource: ReturnType<typeof hyperdriveResource>) {
+  return `✅ Created new Hyperdrive PostgreSQL config: ${resource.id}\n`;
+}
+
 function whoamiResult(accountId = accountEvidence().accountId) {
   return JSON.stringify({ loggedIn: true, accounts: [{ id: accountId, name: "Synthetic account" }] });
 }
+
+const SYNTHETIC_RUN_ID = "90000000-0000-4000-8000-000000000001";
 
 test("Hyperdrive provisioning re-verifies account ownership and reuses exact resources without create calls", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-reuse-"));
@@ -627,25 +874,21 @@ test("Hyperdrive provisioning re-verifies account ownership and reuses exact res
   await provisionHyperdrives({
     cwd: root,
     paths,
+    runIdFactory: () => SYNTHETIC_RUN_ID,
     runner: async (invocation) => {
       invocations.push(invocation);
       if (invocation.args.includes("whoami")) return { exitCode: 0, stdout: whoamiResult(), stderr: "" };
       if (invocation.args.includes("list")) {
         return {
           exitCode: 0,
-          stdout: JSON.stringify({
-            success: true,
-            result: [
-              {
-                ...hyperdriveResource(0),
-                id: "ff".repeat(16),
-                name: "unrelated-production-resource",
-              },
-              ...HYPERDRIVE_SPECS.map((_, index) => hyperdriveResource(index)),
-            ],
-          }),
+          stdout: capturedHyperdriveList(HYPERDRIVE_SPECS.map((_, index) => hyperdriveResource(index))),
           stderr: "",
         };
+      }
+      if (invocation.args.includes("get")) {
+        const id = invocation.args.at(-1);
+        const resource = HYPERDRIVE_SPECS.map((_, index) => hyperdriveResource(index)).find((candidate) => candidate.id === id);
+        return { exitCode: 0, stdout: JSON.stringify(resource, null, 2), stderr: "" };
       }
       throw new Error("A create call was not expected");
     },
@@ -653,10 +896,13 @@ test("Hyperdrive provisioning re-verifies account ownership and reuses exact res
 
   assert.equal(invocations.filter((invocation) => invocation.args.includes("create")).length, 0);
   assert.deepEqual(invocations[0]?.args.slice(-2), ["whoami", "--json"]);
-  assert.deepEqual(invocations[1]?.args.slice(-3), ["hyperdrive", "list", "--json"]);
+  assert.deepEqual(invocations[1]?.args.slice(-2), ["hyperdrive", "list"]);
   assert.equal(invocations[1]?.environment.CLOUDFLARE_ACCOUNT_ID, accountEvidence().accountId);
   const evidence = JSON.parse(await readFile(paths.accountEvidence, "utf8")) as AccountEvidence;
-  assert.deepEqual(evidence.hyperdrives, Object.fromEntries(HYPERDRIVE_SPECS.map((spec, index) => [spec.binding, hyperdriveResource(index).id])));
+  const operation = (evidence as unknown as { hyperdriveOperation: { runId: string; status: string; resources: Record<string, { disposition: string; id: string; runId: string }> } }).hyperdriveOperation;
+  assert.equal(operation.runId, SYNTHETIC_RUN_ID);
+  assert.equal(operation.status, "complete");
+  assert.ok(Object.values(operation.resources).every((resource) => resource.disposition === "reused" && resource.runId === SYNTHETIC_RUN_ID));
   assert.equal((JSON.parse(await readFile(paths.configs.application, "utf8")) as { hyperdrive: unknown[] }).hyperdrive.length, 2);
 });
 
@@ -667,13 +913,28 @@ test("Hyperdrive provisioning creates four missing resources with redacted fail-
   await provisionHyperdrives({
     cwd: root,
     paths,
+    runIdFactory: () => SYNTHETIC_RUN_ID,
     runner: async (invocation) => {
       invocations.push(invocation);
       if (invocation.args.includes("whoami")) return { exitCode: 0, stdout: whoamiResult(), stderr: "" };
-      if (invocation.args.includes("list")) return { exitCode: 0, stdout: JSON.stringify({ success: true, result: [] }), stderr: "" };
+      if (invocation.args.includes("list")) return { exitCode: 0, stdout: CAPTURED_EMPTY_HYPERDRIVE_LIST, stderr: "" };
+      if (invocation.args.includes("get")) {
+        const id = invocation.args.at(-1);
+        const resource = HYPERDRIVE_SPECS.map((_, index) => hyperdriveResource(index)).find((candidate) => candidate.id === id);
+        return { exitCode: 0, stdout: JSON.stringify(resource, null, 2), stderr: "" };
+      }
       const name = invocation.args[invocation.args.indexOf("create") + 1];
       const index = HYPERDRIVE_SPECS.findIndex((spec) => spec.name === name);
-      return { exitCode: 0, stdout: JSON.stringify({ success: true, result: hyperdriveResource(index) }), stderr: "" };
+      const evidence = JSON.parse(await readFile(paths.accountEvidence, "utf8")) as {
+        hyperdriveOperation: { resources: Record<string, { attempted: boolean; runId: string; state: string }> };
+      };
+      const pending = evidence.hyperdriveOperation.resources[HYPERDRIVE_SPECS[index].binding];
+      assert.deepEqual({ attempted: pending.attempted, runId: pending.runId, state: pending.state }, {
+        attempted: true,
+        runId: SYNTHETIC_RUN_ID,
+        state: "pending",
+      });
+      return { exitCode: 0, stdout: capturedCreate(hyperdriveResource(index)), stderr: "" };
     },
   });
 
@@ -684,6 +945,145 @@ test("Hyperdrive provisioning creates four missing resources with redacted fail-
   assert.ok(creates.every((invocation) => !invocation.args.some((value) => value.includes("postgresql://"))));
   const tracked = await Promise.all(Object.values(paths.configs).map((filePath) => readFile(filePath, "utf8")));
   assert.equal(tracked.some((contents) => contents.includes("hyperdrive-password")), false);
+  const evidence = JSON.parse(await readFile(paths.accountEvidence, "utf8")) as {
+    hyperdriveOperation: { runId: string; status: string; resources: Record<string, { disposition: string; id: string; runId: string }> };
+  };
+  assert.equal(evidence.hyperdriveOperation.status, "complete");
+  assert.ok(Object.values(evidence.hyperdriveOperation.resources).every((resource) => resource.disposition === "created" && resource.runId === SYNTHETIC_RUN_ID));
+});
+
+test("cleanup helpers return only current-run created resources and refuse reused or foreign-run targets", async () => {
+  const provisionModule = await import("../scripts/cloudflare/provision.js") as typeof import("../scripts/cloudflare/provision.js") & {
+    assertHyperdriveCleanupTarget?: (evidence: unknown, runId: string, binding: string, id: string) => unknown;
+    createdHyperdriveCleanupTargets?: (evidence: unknown, runId: string) => Array<{ binding: string; id: string }>;
+  };
+  assert.equal(typeof provisionModule.createdHyperdriveCleanupTargets, "function");
+  assert.equal(typeof provisionModule.assertHyperdriveCleanupTarget, "function");
+  const evidence = {
+    ...accountEvidence(),
+    hyperdriveOperation: {
+      runId: SYNTHETIC_RUN_ID,
+      startedAt: new Date().toISOString(),
+      status: "complete",
+      resources: Object.fromEntries(HYPERDRIVE_SPECS.map((spec, index) => [spec.binding, {
+        descriptor: hyperdriveDescriptor(index),
+        state: "resolved",
+        attempted: index === 0,
+        id: hyperdriveResource(index).id,
+        disposition: index === 0 ? "created" : "reused",
+        runId: SYNTHETIC_RUN_ID,
+      }])),
+    },
+  };
+  assert.deepEqual(provisionModule.createdHyperdriveCleanupTargets?.(evidence, SYNTHETIC_RUN_ID), [
+    { binding: "AUTH_DB", id: "11".repeat(16) },
+  ]);
+  assert.throws(
+    () => provisionModule.assertHyperdriveCleanupTarget?.(evidence, SYNTHETIC_RUN_ID, "RUNTIME_DB", hyperdriveResource(1).id),
+    /reused/,
+  );
+  assert.throws(
+    () => provisionModule.assertHyperdriveCleanupTarget?.(evidence, "90000000-0000-4000-8000-000000000099", "AUTH_DB", "11".repeat(16)),
+    /foreign run/,
+  );
+});
+
+test("ambiguous create output re-lists, gets, and reconciles once without creating twice", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-ambiguous-"));
+  const paths = await writeHyperdriveFixture(root);
+  let listCount = 0;
+  let createCount = 0;
+  const created = HYPERDRIVE_SPECS.map((_, index) => hyperdriveResource(index));
+  await provisionHyperdrives({
+    cwd: root,
+    paths,
+    runIdFactory: () => SYNTHETIC_RUN_ID,
+    runner: async (invocation) => {
+      if (invocation.args.includes("whoami")) return { exitCode: 0, stdout: whoamiResult(), stderr: "" };
+      if (invocation.args.includes("list")) {
+        listCount += 1;
+        return { exitCode: 0, stdout: listCount === 1 ? CAPTURED_EMPTY_HYPERDRIVE_LIST : capturedHyperdriveList(created.slice(0, 1)), stderr: "" };
+      }
+      if (invocation.args.includes("get")) {
+        const resource = created.find((candidate) => candidate.id === invocation.args.at(-1));
+        return { exitCode: 0, stdout: JSON.stringify(resource, null, 2), stderr: "" };
+      }
+      createCount += 1;
+      if (createCount === 1) return { exitCode: 1, stdout: "ambiguous", stderr: "ambiguous" };
+      const name = invocation.args[invocation.args.indexOf("create") + 1];
+      const resource = created[HYPERDRIVE_SPECS.findIndex((spec) => spec.name === name)];
+      return { exitCode: 0, stdout: capturedCreate(resource), stderr: "" };
+    },
+  });
+  assert.equal(createCount, 4);
+  assert.equal(listCount, 2);
+});
+
+test("malformed get output and unresolved ambiguous create fail closed without a second create on retry", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-unresolved-"));
+  const paths = await writeHyperdriveFixture(root);
+  let createCount = 0;
+  const runner = async (invocation: WranglerInvocation) => {
+    if (invocation.args.includes("whoami")) return { exitCode: 0, stdout: whoamiResult(), stderr: "" };
+    if (invocation.args.includes("list")) return { exitCode: 0, stdout: CAPTURED_EMPTY_HYPERDRIVE_LIST, stderr: "" };
+    if (invocation.args.includes("get")) return { exitCode: 0, stdout: "malformed get", stderr: "" };
+    createCount += 1;
+    return { exitCode: 0, stdout: "ambiguous create", stderr: "" };
+  };
+  await assert.rejects(
+    provisionHyperdrives({ cwd: root, paths, runIdFactory: () => SYNTHETIC_RUN_ID, runner }),
+    /ambiguous create could not be reconciled/,
+  );
+  await assert.rejects(
+    provisionHyperdrives({ cwd: root, paths, runIdFactory: () => "90000000-0000-4000-8000-000000000002", runner }),
+    /pending mutation.*manual reconciliation/i,
+  );
+  assert.equal(createCount, 1);
+});
+
+test("mutation evidence is revalidated immediately before create", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-stale-before-create-"));
+  const checkedAt = "2026-07-20T12:00:00.000Z";
+  const paths = await writeHyperdriveFixture(root);
+  await writeFile(paths.accountEvidence, JSON.stringify(accountEvidence(checkedAt)));
+  await writeFile(paths.capacityEvidence, JSON.stringify(capacityEvidence(checkedAt)));
+  let clockCalls = 0;
+  let createCount = 0;
+  await assert.rejects(
+    provisionHyperdrives({
+      cwd: root,
+      paths,
+      runIdFactory: () => SYNTHETIC_RUN_ID,
+      now: () => ++clockCalls === 1 ? Date.parse("2026-07-20T12:05:00.000Z") : Date.parse("2026-07-20T13:00:00.000Z"),
+      runner: async (invocation) => {
+        if (invocation.args.includes("whoami")) return { exitCode: 0, stdout: whoamiResult(), stderr: "" };
+        if (invocation.args.includes("list")) return { exitCode: 0, stdout: CAPTURED_EMPTY_HYPERDRIVE_LIST, stderr: "" };
+        createCount += 1;
+        return { exitCode: 0, stdout: "should not run", stderr: "" };
+      },
+    }),
+    /stale/,
+  );
+  assert.equal(createCount, 0);
+});
+
+test("unsupported Wrangler version fails before authentication or resource commands", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-version-"));
+  const paths = await writeHyperdriveFixture(root);
+  let invocationCount = 0;
+  await assert.rejects(
+    provisionHyperdrives({
+      cwd: root,
+      paths,
+      wranglerVersion: "4.113.0",
+      runner: async () => {
+        invocationCount += 1;
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    }),
+    /unsupported Wrangler version/,
+  );
+  assert.equal(invocationCount, 0);
 });
 
 test("Hyperdrive provisioning stops before list or mutation on the wrong authenticated account", async () => {
@@ -716,14 +1116,8 @@ test("Hyperdrive provisioning refuses same-name drift before any create", async 
       runner: async (invocation) => {
         invocations.push(invocation);
         if (invocation.args.includes("whoami")) return { exitCode: 0, stdout: whoamiResult(), stderr: "" };
-        return {
-          exitCode: 0,
-          stdout: JSON.stringify({
-            success: true,
-            result: [{ ...hyperdriveResource(0), origin_connection_limit: 6 }],
-          }),
-          stderr: "",
-        };
+        if (invocation.args.includes("list")) return { exitCode: 0, stdout: capturedHyperdriveList([hyperdriveResource(0)]), stderr: "" };
+        return { exitCode: 0, stdout: JSON.stringify({ ...hyperdriveResource(0), origin_connection_limit: 6 }, null, 2), stderr: "" };
       },
     }),
     /same-name Hyperdrive does not match/,
@@ -736,7 +1130,19 @@ test("Hyperdrive provisioning refuses recorded resource-ID drift before any crea
   const paths = await writeHyperdriveFixture(root);
   await writeFile(paths.accountEvidence, JSON.stringify({
     ...accountEvidence(),
-    hyperdrives: { AUTH_DB: "aa".repeat(16) },
+    hyperdriveOperation: {
+      runId: SYNTHETIC_RUN_ID,
+      startedAt: new Date().toISOString(),
+      status: "complete",
+      resources: Object.fromEntries(HYPERDRIVE_SPECS.map((spec, index) => [spec.binding, {
+        descriptor: hyperdriveDescriptor(index),
+        state: "resolved",
+        attempted: false,
+        id: index === 0 ? "aa".repeat(16) : hyperdriveResource(index).id,
+        disposition: "reused",
+        runId: SYNTHETIC_RUN_ID,
+      }])),
+    },
   }));
   const invocations: WranglerInvocation[] = [];
   await assert.rejects(
@@ -746,11 +1152,10 @@ test("Hyperdrive provisioning refuses recorded resource-ID drift before any crea
       runner: async (invocation) => {
         invocations.push(invocation);
         if (invocation.args.includes("whoami")) return { exitCode: 0, stdout: whoamiResult(), stderr: "" };
-        return {
-          exitCode: 0,
-          stdout: JSON.stringify({ success: true, result: HYPERDRIVE_SPECS.map((_, index) => hyperdriveResource(index)) }),
-          stderr: "",
-        };
+        if (invocation.args.includes("list")) return { exitCode: 0, stdout: capturedHyperdriveList(HYPERDRIVE_SPECS.map((_, index) => hyperdriveResource(index))), stderr: "" };
+        const id = invocation.args.at(-1);
+        const resource = HYPERDRIVE_SPECS.map((_, index) => hyperdriveResource(index)).find((candidate) => candidate.id === id);
+        return { exitCode: 0, stdout: JSON.stringify(resource, null, 2), stderr: "" };
       },
     }),
     /recorded AUTH_DB Hyperdrive ID does not match/,
@@ -767,7 +1172,7 @@ test("Hyperdrive child failures never expose passwords or child output", async (
       paths,
       runner: async (invocation) => {
         if (invocation.args.includes("whoami")) return { exitCode: 0, stdout: whoamiResult(), stderr: "" };
-        if (invocation.args.includes("list")) return { exitCode: 0, stdout: JSON.stringify({ success: true, result: [] }), stderr: "" };
+        if (invocation.args.includes("list")) return { exitCode: 0, stdout: CAPTURED_EMPTY_HYPERDRIVE_LIST, stderr: "" };
         return {
           exitCode: 1,
           stdout: "auth-hyperdrive-password",
@@ -807,17 +1212,19 @@ test("provision command dispatches hyperdrive through the authenticated gated ex
     runner: async (invocation) => {
       invocations.push(invocation);
       if (invocation.args.includes("whoami")) return { exitCode: 0, stdout: whoamiResult(), stderr: "" };
+      if (invocation.args.includes("get")) {
+        const id = invocation.args.at(-1);
+        const resource = HYPERDRIVE_SPECS.map((_, index) => hyperdriveResource(index)).find((candidate) => candidate.id === id);
+        return { exitCode: 0, stdout: JSON.stringify(resource, null, 2), stderr: "" };
+      }
       return {
         exitCode: 0,
-        stdout: JSON.stringify({
-          success: true,
-          result: HYPERDRIVE_SPECS.map((_, index) => hyperdriveResource(index)),
-        }),
+        stdout: capturedHyperdriveList(HYPERDRIVE_SPECS.map((_, index) => hyperdriveResource(index))),
         stderr: "",
       };
     },
   });
 
   assert.equal(message, "Bound four verified Cloudflare staging Hyperdrives.");
-  assert.equal(invocations.length, 2);
+  assert.equal(invocations.length, 6);
 });
