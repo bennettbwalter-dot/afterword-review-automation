@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -17,9 +18,30 @@ const EXPECTED_ROLES = new Map([
 
 class SafeVerificationError extends Error {}
 
-interface AccountResources {
+export interface AccountResources {
+  accountId?: unknown;
   workersDevSubdomain?: unknown;
 }
+
+interface ValidatedAccountResources {
+  accountId: string;
+  workersDevSubdomain: string;
+}
+
+export interface WranglerInvocation {
+  args: string[];
+  cwd: string;
+  environment: NodeJS.ProcessEnv;
+  file: string;
+}
+
+export interface WranglerCommandResult {
+  exitCode: number;
+  stderr: string;
+  stdout: string;
+}
+
+export type WranglerRunner = (invocation: WranglerInvocation) => Promise<WranglerCommandResult>;
 
 interface RoleResult {
   actual?: unknown;
@@ -44,18 +66,27 @@ async function readJson<T>(filePath: string, description: string): Promise<T> {
   }
 }
 
-async function accountWorkersDevSubdomain() {
-  const resources = await readJson<AccountResources>(RESOURCE_IDS_PATH, "Authenticated account resource evidence");
+function validateAccountResources(resources: AccountResources): ValidatedAccountResources {
+  assert(
+    typeof resources.accountId === "string" && /^[0-9a-f]{32}$/i.test(resources.accountId),
+    "The authenticated Cloudflare account identifier is invalid.",
+  );
   assert(
     typeof resources.workersDevSubdomain === "string"
       && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(resources.workersDevSubdomain),
     "The authenticated account Workers.dev subdomain is invalid.",
   );
-  return resources.workersDevSubdomain.toLowerCase();
+  return {
+    accountId: resources.accountId.toLowerCase(),
+    workersDevSubdomain: resources.workersDevSubdomain.toLowerCase(),
+  };
 }
 
-async function compatibilityBaseUrl() {
-  const value = process.env.COMPAT_BASE_URL?.trim();
+function compatibilityBaseUrl(
+  environment: Readonly<Record<string, string | undefined>>,
+  resources: ValidatedAccountResources,
+) {
+  const value = environment.COMPAT_BASE_URL?.trim();
   assert(value, "COMPAT_BASE_URL is required.");
   let url: URL;
   try {
@@ -63,20 +94,108 @@ async function compatibilityBaseUrl() {
   } catch {
     throw new SafeVerificationError("COMPAT_BASE_URL is invalid.");
   }
-  const subdomain = await accountWorkersDevSubdomain();
   assert(url.protocol === "https:", "COMPAT_BASE_URL must use HTTPS.");
   assert(
-    url.hostname.toLowerCase() === `review-anchor-staging-compat.${subdomain}.workers.dev`,
+    url.hostname.toLowerCase() === `review-anchor-staging-compat.${resources.workersDevSubdomain}.workers.dev`,
     "COMPAT_BASE_URL does not belong to the authenticated account Workers.dev subdomain.",
   );
   assert(url.pathname === "/" && !url.search && !url.hash, "COMPAT_BASE_URL must be an origin without a path or query.");
   return url;
 }
 
-function gateToken() {
-  const value = process.env.COMPAT_GATE_TOKEN?.trim();
+function gateToken(environment: Readonly<Record<string, string | undefined>>) {
+  const value = environment.COMPAT_GATE_TOKEN?.trim();
   assert(value && value.length >= 32, "COMPAT_GATE_TOKEN is required and must be an opaque token.");
   return value;
+}
+
+function wranglerAuthenticationEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const allowed = [
+    "APPDATA",
+    "CLOUDFLARE_API_KEY",
+    "CLOUDFLARE_API_TOKEN",
+    "CLOUDFLARE_COMPLIANCE_REGION",
+    "CLOUDFLARE_EMAIL",
+    "HOME",
+    "LOCALAPPDATA",
+    "PATH",
+    "PATHEXT",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "WINDIR",
+    "WRANGLER_HOME",
+  ];
+  const environment: NodeJS.ProcessEnv = {
+    CI: "true",
+    NO_COLOR: "1",
+    WRANGLER_SEND_METRICS: "false",
+  };
+  for (const name of allowed) {
+    if (source[name] !== undefined) environment[name] = source[name];
+  }
+  return environment;
+}
+
+const defaultWranglerRunner: WranglerRunner = async (invocation) => new Promise((resolve) => {
+  execFile(
+    invocation.file,
+    invocation.args,
+    {
+      cwd: invocation.cwd,
+      encoding: "utf8",
+      env: invocation.environment,
+      maxBuffer: 1024 * 1024,
+      windowsHide: true,
+    },
+    (error, stdout, stderr) => {
+      resolve({
+        exitCode: typeof error?.code === "number" ? error.code : error ? 1 : 0,
+        stderr,
+        stdout,
+      });
+    },
+  );
+});
+
+async function verifyWranglerAccountOwnership(
+  resources: ValidatedAccountResources,
+  runner: WranglerRunner,
+) {
+  const invocation: WranglerInvocation = {
+    args: [path.resolve("node_modules", "wrangler", "bin", "wrangler.js"), "whoami", "--json"],
+    cwd: process.cwd(),
+    environment: wranglerAuthenticationEnvironment(process.env),
+    file: process.execPath,
+  };
+  const result = await runner(invocation);
+  if (result.exitCode !== 0) {
+    throw new SafeVerificationError("Wrangler authentication could not be verified.");
+  }
+  let identity: { accounts?: unknown; loggedIn?: unknown };
+  try {
+    identity = JSON.parse(result.stdout) as typeof identity;
+  } catch {
+    throw new SafeVerificationError("Wrangler authentication returned invalid JSON.");
+  }
+  assert(identity.loggedIn === true && Array.isArray(identity.accounts), "Wrangler authentication could not be verified.");
+  const ownsAccount = identity.accounts.some((account) => {
+    const candidate = account as { id?: unknown } | null;
+    return candidate?.id === resources.accountId;
+  });
+  assert(ownsAccount, "The recorded Cloudflare account is not available to the current Wrangler authentication.");
+}
+
+export async function authorizeCompatibilityTarget(
+  environment: Readonly<Record<string, string | undefined>>,
+  accountResources: AccountResources,
+  runner: WranglerRunner = defaultWranglerRunner,
+) {
+  const resources = validateAccountResources(accountResources);
+  const baseUrl = compatibilityBaseUrl(environment, resources);
+  await verifyWranglerAccountOwnership(resources, runner);
+  return { baseUrl, token: gateToken(environment) };
 }
 
 async function requestJson<T>(
@@ -230,8 +349,11 @@ async function verifyScrypt(baseUrl: URL, token: string) {
 }
 
 async function main() {
-  const baseUrl = await compatibilityBaseUrl();
-  const token = gateToken();
+  const accountResources = await readJson<AccountResources>(
+    RESOURCE_IDS_PATH,
+    "Authenticated account resource evidence",
+  );
+  const { baseUrl, token } = await authorizeCompatibilityTarget(process.env, accountResources);
   const health = await verifyHealth(baseUrl, token);
   await verifyRawBodies(baseUrl, token);
   await verifyContextIsolation(baseUrl, token);

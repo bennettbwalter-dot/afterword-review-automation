@@ -16,6 +16,7 @@ const SYNTHETIC_PASSWORD_HASH = "scrypt$16384$8$1$XrtXOb8CvTz77fgedLmkKg$8Kx_JFy
 const EVIDENCE_DIRECTORY = path.resolve(".cloudflare", "evidence");
 const MANIFEST_PATH = path.join(EVIDENCE_DIRECTORY, "compat-fixture.json");
 const TEMP_MANIFEST_PATH = path.join(EVIDENCE_DIRECTORY, "compat-fixture.pending.json");
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export interface CompatibilityFixtureContext {
   agencyId: string;
@@ -33,6 +34,16 @@ export interface CompatibilityFixtureManifest {
   version: 1;
 }
 
+export interface CompatibilityManifestPaths {
+  activePath: string;
+  pendingPath: string;
+}
+
+export interface LocatedCompatibilityManifest {
+  manifest: CompatibilityFixtureManifest;
+  source: "active" | "pending" | "active-and-pending";
+}
+
 class SafeFixtureError extends Error {}
 
 function loadStagingEnvironment() {
@@ -40,12 +51,24 @@ function loadStagingEnvironment() {
   loadLocalEnvironment();
 }
 
-function migrationConnectionString() {
-  loadStagingEnvironment();
-  if (process.env.SUPABASE_PROJECT_REF !== STAGING_PROJECT_REF) {
+export function validateMigrationEnvironment(
+  environment: Readonly<Record<string, string | undefined>>,
+) {
+  if (environment.SUPABASE_PROJECT_REF !== STAGING_PROJECT_REF) {
     throw new SafeFixtureError("The compatibility fixture is restricted to the Review Anchor staging project.");
   }
-  const value = process.env.MIGRATION_DATABASE_URL?.trim();
+  if (environment.DATABASE_SSL !== "require") {
+    throw new SafeFixtureError("DATABASE_SSL=require is mandatory for the compatibility fixture.");
+  }
+  const certificatePath = environment.DATABASE_CA_CERT_PATH?.trim();
+  if (!certificatePath) {
+    throw new SafeFixtureError("DATABASE_CA_CERT_PATH is required for the compatibility fixture.");
+  }
+  const poolerHost = environment.SUPABASE_POOLER_HOST?.trim().toLowerCase();
+  if (!poolerHost || !/^aws-[01]-[a-z0-9-]+\.pooler\.supabase\.com$/.test(poolerHost)) {
+    throw new SafeFixtureError("SUPABASE_POOLER_HOST is not an exact supported Supabase pooler hostname.");
+  }
+  const value = environment.MIGRATION_DATABASE_URL?.trim();
   if (!value) throw new SafeFixtureError("MIGRATION_DATABASE_URL is required for the local compatibility fixture.");
 
   let parsed: URL;
@@ -54,15 +77,32 @@ function migrationConnectionString() {
   } catch {
     throw new SafeFixtureError("MIGRATION_DATABASE_URL is not a valid PostgreSQL URL.");
   }
-  const belongsToStaging = parsed.hostname.toLowerCase().includes(STAGING_PROJECT_REF)
-    || decodeURIComponent(parsed.username).toLowerCase().includes(STAGING_PROJECT_REF);
-  if (!/^postgres(?:ql)?:$/.test(parsed.protocol) || !belongsToStaging) {
+  const hostname = parsed.hostname.toLowerCase();
+  const username = decodeURIComponent(parsed.username);
+  const directIdentity = hostname === `db.${STAGING_PROJECT_REF}.supabase.co`
+    && username === "afterword_migration_login";
+  const poolerIdentity = hostname === poolerHost
+    && username === `afterword_migration_login.${STAGING_PROJECT_REF}`;
+  if (
+    !/^postgres(?:ql)?:$/.test(parsed.protocol)
+    || (!directIdentity && !poolerIdentity)
+    || parsed.port !== "5432"
+    || parsed.pathname !== "/postgres"
+    || !parsed.password
+    || parsed.search !== ""
+    || parsed.hash !== ""
+  ) {
     throw new SafeFixtureError("MIGRATION_DATABASE_URL does not belong to the Review Anchor staging project.");
   }
-  return value;
+  return { certificatePath, connectionString: value };
 }
 
-function createManifest(): CompatibilityFixtureManifest {
+function migrationConnectionSettings() {
+  loadStagingEnvironment();
+  return validateMigrationEnvironment(process.env);
+}
+
+export function createManifest(): CompatibilityFixtureManifest {
   const firstBusinessId = randomUUID();
   const secondBusinessId = randomUUID();
   const createContext = (businessId: string, otherBusinessId: string): CompatibilityFixtureContext => ({
@@ -84,7 +124,7 @@ function createManifest(): CompatibilityFixtureManifest {
   };
 }
 
-function validateManifest(value: unknown): CompatibilityFixtureManifest {
+export function validateManifest(value: unknown): CompatibilityFixtureManifest {
   const manifest = value as Partial<CompatibilityFixtureManifest> | null;
   if (
     !manifest
@@ -98,13 +138,15 @@ function validateManifest(value: unknown): CompatibilityFixtureManifest {
   for (const context of manifest.contexts) {
     if (
       !context
-      || !context.agencyId
-      || !context.businessId
-      || !context.locationId
-      || !context.otherBusinessId
-      || !context.sessionId
-      || !context.userId
+      || !UUID_PATTERN.test(context.agencyId)
+      || !UUID_PATTERN.test(context.businessId)
+      || !UUID_PATTERN.test(context.locationId)
+      || !UUID_PATTERN.test(context.otherBusinessId)
+      || !UUID_PATTERN.test(context.sessionId)
+      || !UUID_PATTERN.test(context.userId)
       || !/^[0-9a-f]{64}$/i.test(context.sessionHashHex)
+      || Object.keys(context).sort().join(",")
+        !== "agencyId,businessId,locationId,otherBusinessId,sessionHashHex,sessionId,userId"
     ) {
       throw new SafeFixtureError("The compatibility fixture manifest is incomplete.");
     }
@@ -112,20 +154,61 @@ function validateManifest(value: unknown): CompatibilityFixtureManifest {
   if (
     manifest.contexts[0].businessId !== manifest.contexts[1].otherBusinessId
     || manifest.contexts[1].businessId !== manifest.contexts[0].otherBusinessId
+    || new Set(manifest.contexts.flatMap((context) => [
+      context.agencyId,
+      context.businessId,
+      context.locationId,
+      context.sessionId,
+      context.userId,
+    ])).size !== 10
+    || manifest.contexts[0].sessionHashHex === manifest.contexts[1].sessionHashHex
+    || Object.keys(manifest).sort().join(",") !== "contexts,projectRef,version"
   ) {
     throw new SafeFixtureError("The compatibility fixture manifest has an inconsistent tenant pair.");
   }
   return manifest as CompatibilityFixtureManifest;
 }
 
-async function readManifest() {
+async function readManifestFile(filePath: string) {
   try {
-    return validateManifest(JSON.parse(await readFile(MANIFEST_PATH, "utf8")) as unknown);
+    return validateManifest(JSON.parse(await readFile(filePath, "utf8")) as unknown);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     if (error instanceof SafeFixtureError) throw error;
     throw new SafeFixtureError("The compatibility fixture manifest could not be read.");
   }
+}
+
+const defaultManifestPaths: CompatibilityManifestPaths = {
+  activePath: MANIFEST_PATH,
+  pendingPath: TEMP_MANIFEST_PATH,
+};
+
+export async function locateRecoverableManifest(
+  paths: CompatibilityManifestPaths = defaultManifestPaths,
+): Promise<LocatedCompatibilityManifest | undefined> {
+  const [active, pending] = await Promise.all([
+    readManifestFile(paths.activePath),
+    readManifestFile(paths.pendingPath),
+  ]);
+  if (!active && !pending) return undefined;
+  if (active && pending) {
+    if (JSON.stringify(active) !== JSON.stringify(pending)) {
+      throw new SafeFixtureError("Active and pending compatibility fixture manifests conflict.");
+    }
+    return { manifest: active, source: "active-and-pending" };
+  }
+  return active
+    ? { manifest: active, source: "active" }
+    : { manifest: pending as CompatibilityFixtureManifest, source: "pending" };
+}
+
+async function removeLocatedManifest(
+  located: LocatedCompatibilityManifest,
+  paths: CompatibilityManifestPaths = defaultManifestPaths,
+) {
+  if (located.source !== "pending") await unlink(paths.activePath).catch(() => undefined);
+  if (located.source !== "active") await unlink(paths.pendingPath).catch(() => undefined);
 }
 
 function syntheticValues(context: CompatibilityFixtureContext, index: number) {
@@ -225,15 +308,26 @@ async function assertSyntheticIdentity(client: pg.Client, manifest: Compatibilit
 }
 
 async function prepare(client: pg.Client) {
-  const existing = await readManifest();
-  if (existing) {
+  const located = await locateRecoverableManifest();
+  if (located) {
     await client.query("set role afterword_migration_owner");
-    await assertSyntheticIdentity(client, existing);
-    if (await exactFixtureCount(client, existing) !== 16) {
+    const existingCount = await exactFixtureCount(client, located.manifest);
+    if (existingCount === 0 && located.source === "pending") {
+      await unlink(TEMP_MANIFEST_PATH);
+    } else if (existingCount !== 16) {
       throw new SafeFixtureError("The active compatibility fixture is incomplete.");
+    } else {
+      await assertSyntheticIdentity(client, located.manifest);
+      if (located.source === "pending") {
+        await rename(TEMP_MANIFEST_PATH, MANIFEST_PATH).catch(() => {
+          throw new SafeFixtureError("Committed compatibility rows remain recoverable from the pending manifest.");
+        });
+      } else if (located.source === "active-and-pending") {
+        await unlink(TEMP_MANIFEST_PATH);
+      }
+      process.stdout.write("Compatibility fixture is already prepared.\n");
+      return;
     }
-    process.stdout.write("Compatibility fixture is already prepared.\n");
-    return;
   }
 
   const manifest = createManifest();
@@ -289,29 +383,38 @@ async function prepare(client: pg.Client) {
       );
     }
     await client.query("commit");
-    await rename(TEMP_MANIFEST_PATH, MANIFEST_PATH);
   } catch (error) {
     await client.query("rollback").catch(() => undefined);
-    await unlink(TEMP_MANIFEST_PATH).catch(() => undefined);
     throw error;
   }
+  await rename(TEMP_MANIFEST_PATH, MANIFEST_PATH).catch(() => {
+    throw new SafeFixtureError("Committed compatibility rows remain recoverable from the pending manifest.");
+  });
   process.stdout.write("Prepared two synthetic compatibility tenants.\n");
 }
 
 async function cleanup(client: pg.Client) {
-  const manifest = await readManifest();
-  if (!manifest) {
+  const located = await locateRecoverableManifest();
+  if (!located) {
     process.stdout.write("No active compatibility fixture exists.\n");
     return;
   }
+  const { manifest } = located;
 
   await client.query("begin");
   try {
     await client.query("set local role afterword_migration_owner");
-    await assertSyntheticIdentity(client, manifest);
-    if (await exactFixtureCount(client, manifest) !== 16) {
+    const fixtureCount = await exactFixtureCount(client, manifest);
+    if (fixtureCount === 0) {
+      await client.query("commit");
+      await removeLocatedManifest(located);
+      process.stdout.write("Removed a finalized compatibility fixture manifest with no remaining rows.\n");
+      return;
+    }
+    if (fixtureCount !== 16) {
       throw new SafeFixtureError("The compatibility fixture is incomplete; cleanup refused.");
     }
+    await assertSyntheticIdentity(client, manifest);
     const userIds = manifest.contexts.map((context) => context.userId);
     const agencyIds = manifest.contexts.map((context) => context.agencyId);
     const businessIds = manifest.contexts.map((context) => context.businessId);
@@ -333,7 +436,7 @@ async function cleanup(client: pg.Client) {
     await client.query("rollback").catch(() => undefined);
     throw error;
   }
-  await unlink(MANIFEST_PATH);
+  await removeLocatedManifest(located);
   process.stdout.write("Removed the synthetic compatibility tenants.\n");
 }
 
@@ -342,9 +445,10 @@ async function main() {
   if (command !== "prepare" && command !== "cleanup") {
     throw new SafeFixtureError("Usage: compat-fixture.ts prepare|cleanup");
   }
+  const connection = migrationConnectionSettings();
   const client = new Client({
-    connectionString: migrationConnectionString(),
-    ssl: databaseTlsOptions(process.env.DATABASE_SSL === "require"),
+    connectionString: connection.connectionString,
+    ssl: databaseTlsOptions(true, connection.certificatePath),
     application_name: "review-anchor-compat-fixture",
   });
   try {
