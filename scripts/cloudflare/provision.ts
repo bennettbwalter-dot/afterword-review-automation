@@ -133,6 +133,14 @@ export interface PrepareStagingOptions {
   rotate: boolean;
   preparationLock?: {
     afterRecoveryCleanupElection?: (ownerPath: string, claimantOwnerId: string) => Promise<void> | void;
+    afterRecoveryCleanupJournalUpdate?: (
+      kind: "artifact" | "claim",
+      filePath: string,
+    ) => Promise<void> | void;
+    afterRecoveryCleanupUnlinkBeforeJournalUpdate?: (
+      kind: "artifact" | "claim",
+      filePath: string,
+    ) => Promise<void> | void;
     afterRecoveryClaimAcquired?: () => Promise<void> | void;
     afterRecoveryClaimQuarantined?: (quarantinePath: string) => Promise<void> | void;
     beforeExistingRecoveryQuarantineCleanup?: (quarantinePath: string) => Promise<void> | void;
@@ -208,6 +216,58 @@ export interface HyperdriveListEntry {
 class SafeProvisionError extends Error {}
 
 class RecoveryCleanupRetryExhaustedError extends SafeProvisionError {}
+
+export interface CanonicalFilesystemIdentity {
+  dev: string;
+  ino: string;
+  nlink: string;
+}
+
+const CANONICAL_UNSIGNED_DECIMAL = /^(?:0|[1-9][0-9]*)$/;
+
+export function canonicalFilesystemIdentity(value: {
+  dev: bigint;
+  ino: bigint;
+  nlink: bigint;
+}): CanonicalFilesystemIdentity {
+  assertSafe(value.dev >= 0n && value.ino > 0n && value.nlink > 0n, "Filesystem identity is invalid.");
+  return {
+    dev: value.dev.toString(10),
+    ino: value.ino.toString(10),
+    nlink: value.nlink.toString(10),
+  };
+}
+
+export function validateCanonicalFilesystemIdentity(
+  value: unknown,
+  description = "Filesystem identity",
+): CanonicalFilesystemIdentity {
+  assertSafe(
+    isObject(value)
+      && typeof value.dev === "string"
+      && CANONICAL_UNSIGNED_DECIMAL.test(value.dev)
+      && typeof value.ino === "string"
+      && /^[1-9][0-9]*$/.test(value.ino)
+      && typeof value.nlink === "string"
+      && /^[1-9][0-9]*$/.test(value.nlink),
+    `${description} must use canonical non-negative decimal string evidence.`,
+  );
+  return { dev: value.dev, ino: value.ino, nlink: value.nlink };
+}
+
+export function sameFilesystemObject(
+  left: CanonicalFilesystemIdentity,
+  right: CanonicalFilesystemIdentity,
+) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function sameExactFilesystemIdentity(
+  left: CanonicalFilesystemIdentity,
+  right: CanonicalFilesystemIdentity,
+) {
+  return sameFilesystemObject(left, right) && left.nlink === right.nlink;
+}
 
 function assertSafe(condition: unknown, message: string): asserts condition {
   if (!condition) throw new SafeProvisionError(message);
@@ -943,6 +1003,7 @@ function recoveryQuarantinePaths(recoveryClaim: string, staleOwnerId: string) {
 
 interface ExistingRecoveryQuarantine {
   cleanupArtifactClaimPaths: string[];
+  cleanupJournalPath?: string;
   cleanupOwnerPath?: string;
   quarantinePath?: string;
   staleOwnerId: string;
@@ -957,10 +1018,14 @@ async function findExistingRecoveryQuarantine(recoveryClaim: string): Promise<Ex
   const quarantineSuffix = ".quarantine";
   const transitionSuffix = ".quarantine.owner.json";
   const cleanupOwnerSuffix = ".quarantine.cleanup-owner.json";
+  const cleanupJournalSuffix = ".quarantine.cleanup-journal.json";
   const quarantineNames = names.filter((name) => name.startsWith(quarantinePrefix) && name.endsWith(quarantineSuffix));
   const transitionNames = names.filter((name) => name.startsWith(quarantinePrefix) && name.endsWith(transitionSuffix));
   const cleanupOwnerNames = names.filter(
     (name) => name.startsWith(quarantinePrefix) && name.endsWith(cleanupOwnerSuffix),
+  );
+  const cleanupJournalNames = names.filter(
+    (name) => name.startsWith(quarantinePrefix) && name.endsWith(cleanupJournalSuffix),
   );
   const cleanupArtifactClaimNames = names.filter(
     (name) => name.startsWith(quarantinePrefix) && name.includes(".cleanup-") && name.endsWith(".claimed"),
@@ -969,6 +1034,7 @@ async function findExistingRecoveryQuarantine(recoveryClaim: string): Promise<Ex
     quarantineNames.length <= 1
       && transitionNames.length <= 1
       && cleanupOwnerNames.length <= 1
+      && cleanupJournalNames.length <= 1
       && cleanupArtifactClaimNames.length <= 2,
     "Staging preparation lock recovery quarantine state is ambiguous.",
   );
@@ -976,27 +1042,37 @@ async function findExistingRecoveryQuarantine(recoveryClaim: string): Promise<Ex
     cleanupArtifactClaimNames.length === 0 || cleanupOwnerNames.length === 1,
     "Staging preparation lock recovery cleanup artifact claim state is ambiguous.",
   );
-  if (quarantineNames.length === 0 && transitionNames.length === 0 && cleanupOwnerNames.length === 0) return undefined;
+  if (
+    quarantineNames.length === 0
+      && transitionNames.length === 0
+      && cleanupOwnerNames.length === 0
+      && cleanupJournalNames.length === 0
+  ) return undefined;
   const quarantineOwnerId = quarantineNames[0]?.slice(quarantinePrefix.length, -quarantineSuffix.length);
   const transitionOwnerId = transitionNames[0]?.slice(quarantinePrefix.length, -transitionSuffix.length);
   const cleanupOwnerId = cleanupOwnerNames[0]?.slice(quarantinePrefix.length, -cleanupOwnerSuffix.length);
+  const cleanupJournalOwnerId = cleanupJournalNames[0]?.slice(quarantinePrefix.length, -cleanupJournalSuffix.length);
   assertSafe(
     (!quarantineOwnerId || PREPARATION_OWNER_ID_PATTERN.test(quarantineOwnerId))
       && (!transitionOwnerId || PREPARATION_OWNER_ID_PATTERN.test(transitionOwnerId))
-      && (!cleanupOwnerId || PREPARATION_OWNER_ID_PATTERN.test(cleanupOwnerId)),
+      && (!cleanupOwnerId || PREPARATION_OWNER_ID_PATTERN.test(cleanupOwnerId))
+      && (!cleanupJournalOwnerId || PREPARATION_OWNER_ID_PATTERN.test(cleanupJournalOwnerId)),
     "Staging preparation lock recovery quarantine name is invalid.",
   );
   assertSafe(
-    [quarantineOwnerId, transitionOwnerId, cleanupOwnerId]
+    [quarantineOwnerId, transitionOwnerId, cleanupOwnerId, cleanupJournalOwnerId]
       .filter((ownerId): ownerId is string => Boolean(ownerId))
-      .every((ownerId) => ownerId === (quarantineOwnerId ?? transitionOwnerId ?? cleanupOwnerId)),
+      .every((ownerId) => ownerId === (
+        quarantineOwnerId ?? transitionOwnerId ?? cleanupOwnerId ?? cleanupJournalOwnerId
+      )),
     "Staging preparation lock recovery quarantine state is ambiguous.",
   );
-  const staleOwnerId = quarantineOwnerId ?? transitionOwnerId ?? cleanupOwnerId;
+  const staleOwnerId = quarantineOwnerId ?? transitionOwnerId ?? cleanupOwnerId ?? cleanupJournalOwnerId;
   assertSafe(Boolean(staleOwnerId), "Staging preparation lock recovery quarantine state is invalid.");
   return {
     staleOwnerId: staleOwnerId as string,
     cleanupArtifactClaimPaths: cleanupArtifactClaimNames.map((name) => path.join(directory, name)),
+    cleanupJournalPath: cleanupJournalNames[0] ? path.join(directory, cleanupJournalNames[0]) : undefined,
     cleanupOwnerPath: cleanupOwnerNames[0] ? path.join(directory, cleanupOwnerNames[0]) : undefined,
     quarantinePath: quarantineNames[0] ? path.join(directory, quarantineNames[0]) : undefined,
     transitionOwnerPath: transitionNames[0] ? path.join(directory, transitionNames[0]) : undefined,
@@ -1004,22 +1080,23 @@ async function findExistingRecoveryQuarantine(recoveryClaim: string): Promise<Ex
 }
 
 async function assertHardLinkRelationship(leftPath: string, rightPath: string) {
-  const [left, right] = await Promise.all([lstat(leftPath), lstat(rightPath)]);
+  const [left, right] = await Promise.all([
+    lstat(leftPath, { bigint: true }),
+    lstat(rightPath, { bigint: true }),
+  ]);
+  const leftIdentity = canonicalFilesystemIdentity(left);
+  const rightIdentity = canonicalFilesystemIdentity(right);
   assertSafe(
     left.isFile()
       && right.isFile()
-      && left.ino !== 0
-      && left.dev === right.dev
-      && left.ino === right.ino
-      && left.nlink >= 2
-      && right.nlink >= 2,
+      && sameFilesystemObject(leftIdentity, rightIdentity)
+      && BigInt(leftIdentity.nlink) >= 2n
+      && BigInt(rightIdentity.nlink) >= 2n,
     "Staging preparation lock recovery quarantine inode relationship is ambiguous.",
   );
 }
 
-interface RecoveryArtifactIdentity {
-  dev: number;
-  ino: number;
+interface RecoveryArtifactIdentity extends CanonicalFilesystemIdentity {
   owner: PreparationLockOwner;
   path: string;
 }
@@ -1028,20 +1105,16 @@ interface RecoveryArtifactClaim extends RecoveryArtifactIdentity {
   claimedPath: string;
 }
 
-interface StoredRecoveryArtifactIdentity {
-  dev: number;
-  ino: number;
+interface StoredRecoveryArtifactIdentity extends CanonicalFilesystemIdentity {
   owner: PreparationLockOwner;
 }
 
-interface RecoveryCleanupElection {
+interface RecoveryCleanupElection extends CanonicalFilesystemIdentity {
   activeClaim: PreparationLockOwner;
   artifacts: {
     quarantine?: StoredRecoveryArtifactIdentity;
     transition?: StoredRecoveryArtifactIdentity;
   };
-  dev: number;
-  ino: number;
   owner: PreparationLockOwner;
   ownerPath: string;
   staleOwnerId: string;
@@ -1059,24 +1132,58 @@ interface RecoveryCleanupElectionRecord extends PreparationLockOwner {
   };
 }
 
+type RecoveryCleanupArtifactKind = "quarantine" | "transition";
+type RecoveryCleanupPhase = "removing_artifacts" | "removing_claims" | "complete";
+
+interface RecoveryCleanupPendingEntry {
+  identity: StoredRecoveryArtifactIdentity;
+  kind: RecoveryCleanupArtifactKind;
+}
+
+interface RecoveryCleanupJournalRecord {
+  activeClaim: PreparationLockOwner;
+  election: CanonicalFilesystemIdentity;
+  owner: PreparationLockOwner;
+  pendingArtifacts: RecoveryCleanupPendingEntry[];
+  pendingClaims: RecoveryCleanupPendingEntry[];
+  phase: RecoveryCleanupPhase;
+  staleOwnerId: string;
+  version: 1;
+}
+
+interface RecoveryCleanupJournal {
+  fileIdentity: CanonicalFilesystemIdentity;
+  path: string;
+  record: RecoveryCleanupJournalRecord;
+}
+
+interface RecoveryCleanupHandle {
+  election: RecoveryCleanupElection;
+  journal: RecoveryCleanupJournal;
+}
+
 async function readRecoveryArtifactIdentity(filePath: string, description: string): Promise<RecoveryArtifactIdentity> {
-  const before = await lstat(filePath);
+  const before = await lstat(filePath, { bigint: true });
   const owner = validatePreparationLockOwner(await readJson(filePath, description), description);
-  const after = await lstat(filePath);
+  const after = await lstat(filePath, { bigint: true });
+  const beforeIdentity = canonicalFilesystemIdentity(before);
+  const afterIdentity = canonicalFilesystemIdentity(after);
   assertSafe(
     before.isFile()
       && after.isFile()
-      && before.ino !== 0
-      && before.dev === after.dev
-      && before.ino === after.ino,
+      && sameExactFilesystemIdentity(beforeIdentity, afterIdentity),
     `${description} inode changed during validation.`,
   );
-  return { dev: after.dev, ino: after.ino, owner, path: filePath };
+  return { ...afterIdentity, owner, path: filePath };
 }
 
 function sameRecoveryArtifactIdentity(left: RecoveryArtifactIdentity, right: RecoveryArtifactIdentity) {
-  return left.dev === right.dev
-    && left.ino === right.ino
+  return sameFilesystemObject(left, right)
+    && samePreparationLockOwner(left.owner, right.owner);
+}
+
+function sameExactRecoveryArtifactIdentity(left: RecoveryArtifactIdentity, right: RecoveryArtifactIdentity) {
+  return sameExactFilesystemIdentity(left, right)
     && samePreparationLockOwner(left.owner, right.owner);
 }
 
@@ -1093,24 +1200,19 @@ function recoveryCleanupOwnerPath(recoveryClaim: string, staleOwnerId: string) {
   return `${recoveryClaim}.${staleOwnerId}.quarantine.cleanup-owner.json`;
 }
 
+function recoveryCleanupJournalPath(recoveryClaim: string, staleOwnerId: string) {
+  return `${recoveryClaim}.${staleOwnerId}.quarantine.cleanup-journal.json`;
+}
+
 function validateStoredRecoveryArtifactIdentity(
   value: unknown,
   description: string,
 ): StoredRecoveryArtifactIdentity | undefined {
   if (value === undefined) return undefined;
-  assertSafe(
-    isObject(value)
-      && typeof value.dev === "number"
-      && Number.isFinite(value.dev)
-      && value.dev >= 0
-      && typeof value.ino === "number"
-      && Number.isFinite(value.ino)
-      && value.ino > 0,
-    `${description} is invalid.`,
-  );
+  const identity = validateCanonicalFilesystemIdentity(value, description);
+  assertSafe(isObject(value), `${description} is invalid.`);
   return {
-    dev: value.dev,
-    ino: value.ino,
+    ...identity,
     owner: validatePreparationLockOwner(value.owner, `${description} owner`),
   };
 }
@@ -1120,9 +1222,177 @@ function sameStoredRecoveryArtifactIdentity(
   right: StoredRecoveryArtifactIdentity | undefined,
 ) {
   if (!left || !right) return left === right;
-  return left.dev === right.dev
-    && left.ino === right.ino
+  return sameExactFilesystemIdentity(left, right)
     && samePreparationLockOwner(left.owner, right.owner);
+}
+
+function validateRecoveryCleanupPendingEntries(
+  value: unknown,
+  description: string,
+): RecoveryCleanupPendingEntry[] {
+  assertSafe(Array.isArray(value) && value.length <= 2, `${description} is invalid.`);
+  const entries = value.map((entry, index) => {
+    assertSafe(
+      isObject(entry) && (entry.kind === "quarantine" || entry.kind === "transition"),
+      `${description}[${index}] is invalid.`,
+    );
+    const identity = validateStoredRecoveryArtifactIdentity(entry.identity, `${description}[${index}] identity`);
+    assertSafe(Boolean(identity), `${description}[${index}] identity is missing.`);
+    const kind: RecoveryCleanupArtifactKind = entry.kind === "quarantine" ? "quarantine" : "transition";
+    return { identity: identity as StoredRecoveryArtifactIdentity, kind };
+  });
+  assertSafe(new Set(entries.map((entry) => entry.kind)).size === entries.length, `${description} is ambiguous.`);
+  return entries;
+}
+
+function validateRecoveryCleanupJournalRecord(
+  value: unknown,
+  description: string,
+): RecoveryCleanupJournalRecord {
+  assertSafe(
+    isObject(value)
+      && value.version === 1
+      && (value.phase === "removing_artifacts" || value.phase === "removing_claims" || value.phase === "complete")
+      && typeof value.staleOwnerId === "string"
+      && PREPARATION_OWNER_ID_PATTERN.test(value.staleOwnerId),
+    `${description} is invalid.`,
+  );
+  const record: RecoveryCleanupJournalRecord = {
+    activeClaim: validatePreparationLockOwner(value.activeClaim, `${description} active claim`),
+    election: validateCanonicalFilesystemIdentity(value.election, `${description} election identity`),
+    owner: validatePreparationLockOwner(value.owner, `${description} owner`),
+    pendingArtifacts: validateRecoveryCleanupPendingEntries(
+      value.pendingArtifacts,
+      `${description} pending artifacts`,
+    ),
+    pendingClaims: validateRecoveryCleanupPendingEntries(value.pendingClaims, `${description} pending claims`),
+    phase: value.phase,
+    staleOwnerId: value.staleOwnerId,
+    version: 1,
+  };
+  assertSafe(
+    record.phase === "removing_artifacts" || record.pendingArtifacts.length === 0,
+    `${description} phase and pending artifacts are inconsistent.`,
+  );
+  assertSafe(
+    record.phase !== "complete" || record.pendingClaims.length === 0,
+    `${description} complete phase still has pending claims.`,
+  );
+  return record;
+}
+
+function sameRecoveryCleanupJournalRecord(
+  left: RecoveryCleanupJournalRecord,
+  right: RecoveryCleanupJournalRecord,
+) {
+  const sameEntries = (
+    leftEntries: RecoveryCleanupPendingEntry[],
+    rightEntries: RecoveryCleanupPendingEntry[],
+  ) => leftEntries.length === rightEntries.length
+    && leftEntries.every((entry, index) => {
+      const other = rightEntries[index];
+      return Boolean(other)
+        && entry.kind === other?.kind
+        && sameStoredRecoveryArtifactIdentity(entry.identity, other.identity);
+    });
+  return left.version === right.version
+    && left.phase === right.phase
+    && left.staleOwnerId === right.staleOwnerId
+    && samePreparationLockOwner(left.owner, right.owner)
+    && samePreparationLockOwner(left.activeClaim, right.activeClaim)
+    && sameExactFilesystemIdentity(left.election, right.election)
+    && sameEntries(left.pendingArtifacts, right.pendingArtifacts)
+    && sameEntries(left.pendingClaims, right.pendingClaims);
+}
+
+async function readRecoveryCleanupJournal(
+  journalPath: string,
+  description = "Staging preparation lock recovery cleanup journal",
+): Promise<RecoveryCleanupJournal> {
+  const before = await lstat(journalPath, { bigint: true });
+  let value: unknown;
+  try {
+    value = JSON.parse(await readFile(journalPath, "utf8")) as unknown;
+  } catch {
+    throw new SafeProvisionError(`${description} is missing or invalid.`);
+  }
+  const record = validateRecoveryCleanupJournalRecord(value, description);
+  const after = await lstat(journalPath, { bigint: true });
+  const beforeIdentity = canonicalFilesystemIdentity(before);
+  const afterIdentity = canonicalFilesystemIdentity(after);
+  assertSafe(
+    before.isFile() && after.isFile() && sameExactFilesystemIdentity(beforeIdentity, afterIdentity),
+    `${description} changed during validation.`,
+  );
+  return { fileIdentity: afterIdentity, path: journalPath, record };
+}
+
+async function assertRecoveryCleanupJournal(journal: RecoveryCleanupJournal) {
+  const current = await readRecoveryCleanupJournal(journal.path);
+  assertSafe(
+    sameExactFilesystemIdentity(current.fileIdentity, journal.fileIdentity)
+      && sameRecoveryCleanupJournalRecord(current.record, journal.record),
+    "Staging preparation lock recovery cleanup journal changed; mutation was refused.",
+  );
+  return current;
+}
+
+async function installRecoveryCleanupJournal(
+  journalPath: string,
+  record: RecoveryCleanupJournalRecord,
+) {
+  const candidatePath = `${journalPath}.${record.owner.ownerId}.candidate`;
+  await writeFile(candidatePath, `${JSON.stringify(record, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+  const candidateInitial = await readRecoveryCleanupJournal(
+    candidatePath,
+    "Staging preparation lock recovery cleanup journal candidate",
+  );
+  try {
+    try {
+      await link(candidatePath, journalPath);
+    } catch (error) {
+      if (isObject(error) && error.code === "EEXIST") {
+        throw new SafeProvisionError("Staging preparation lock recovery cleanup journal already exists.");
+      }
+      throw error;
+    }
+  } finally {
+    const candidateCurrent = await readRecoveryCleanupJournal(
+      candidatePath,
+      "Staging preparation lock recovery cleanup journal candidate",
+    );
+    assertSafe(
+      sameFilesystemObject(candidateCurrent.fileIdentity, candidateInitial.fileIdentity)
+        && sameRecoveryCleanupJournalRecord(candidateCurrent.record, candidateInitial.record),
+      "Staging preparation lock recovery cleanup journal candidate was replaced; cleanup was refused.",
+    );
+    await removeRecoveryCleanupJournal(candidateCurrent);
+  }
+  const journal = await readRecoveryCleanupJournal(journalPath);
+  assertSafe(
+    sameRecoveryCleanupJournalRecord(journal.record, record),
+    "Staging preparation lock recovery cleanup journal changed during installation.",
+  );
+  return journal;
+}
+
+async function updateRecoveryCleanupJournal(
+  journal: RecoveryCleanupJournal,
+  record: RecoveryCleanupJournalRecord,
+) {
+  await assertRecoveryCleanupJournal(journal);
+  await writeAtomic(journal.path, `${JSON.stringify(record, null, 2)}\n`);
+  const updated = await readRecoveryCleanupJournal(journal.path);
+  assertSafe(
+    sameRecoveryCleanupJournalRecord(updated.record, record),
+    "Staging preparation lock recovery cleanup journal update was replaced or is ambiguous.",
+  );
+  return updated;
+}
+
+async function removeRecoveryCleanupJournal(journal: RecoveryCleanupJournal) {
+  await assertRecoveryCleanupJournal(journal);
+  await unlink(journal.path);
 }
 
 function validateRecoveryCleanupElectionRecord(
@@ -1172,7 +1442,7 @@ async function readRecoveryCleanupElection(
   ownerPath: string,
   description = "Staging preparation lock recovery cleanup ownership metadata",
 ): Promise<RecoveryCleanupElection> {
-  const before = await lstat(ownerPath);
+  const before = await lstat(ownerPath, { bigint: true });
   let value: unknown;
   try {
     value = JSON.parse(await readFile(ownerPath, "utf8")) as unknown;
@@ -1180,20 +1450,19 @@ async function readRecoveryCleanupElection(
     throw new SafeProvisionError(`${description} is missing or invalid.`);
   }
   const record = validateRecoveryCleanupElectionRecord(value, description);
-  const after = await lstat(ownerPath);
+  const after = await lstat(ownerPath, { bigint: true });
+  const beforeIdentity = canonicalFilesystemIdentity(before);
+  const afterIdentity = canonicalFilesystemIdentity(after);
   assertSafe(
     before.isFile()
       && after.isFile()
-      && before.ino !== 0
-      && before.dev === after.dev
-      && before.ino === after.ino,
+      && sameExactFilesystemIdentity(beforeIdentity, afterIdentity),
     `${description} inode changed during validation.`,
   );
   return {
     activeClaim: record.recoveryCleanup.activeClaim,
     artifacts: record.recoveryCleanup.artifacts,
-    dev: after.dev,
-    ino: after.ino,
+    ...afterIdentity,
     owner: record,
     ownerPath,
     staleOwnerId: record.recoveryCleanup.staleOwnerId,
@@ -1212,10 +1481,20 @@ async function installRecoveryCleanupElection(
   const candidatePath = `${ownerPath}.${claimant.ownerId}.candidate`;
   const artifacts = {
     quarantine: quarantinedClaim
-      ? { dev: quarantinedClaim.dev, ino: quarantinedClaim.ino, owner: quarantinedClaim.owner }
+      ? {
+          dev: quarantinedClaim.dev,
+          ino: quarantinedClaim.ino,
+          nlink: quarantinedClaim.nlink,
+          owner: quarantinedClaim.owner,
+        }
       : undefined,
     transition: transitionOwner
-      ? { dev: transitionOwner.dev, ino: transitionOwner.ino, owner: transitionOwner.owner }
+      ? {
+          dev: transitionOwner.dev,
+          ino: transitionOwner.ino,
+          nlink: transitionOwner.nlink,
+          owner: transitionOwner.owner,
+        }
       : undefined,
   };
   const record: RecoveryCleanupElectionRecord = {
@@ -1223,6 +1502,10 @@ async function installRecoveryCleanupElection(
     recoveryCleanup: { activeClaim, artifacts, staleOwnerId, version: 1 },
   };
   await writeFile(candidatePath, `${JSON.stringify(record, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+  const candidateInitial = await readRecoveryCleanupElection(
+    candidatePath,
+    "Staging preparation lock recovery cleanup ownership candidate",
+  );
   try {
     try {
       await link(candidatePath, ownerPath);
@@ -1242,7 +1525,26 @@ async function installRecoveryCleanupElection(
       throw new SafeProvisionError("Staging preparation lock recovery cleanup ownership is stale or ambiguous.");
     }
   } finally {
-    await unlinkIfPresent(candidatePath);
+    const candidateCurrent = await readRecoveryCleanupElection(
+      candidatePath,
+      "Staging preparation lock recovery cleanup ownership candidate",
+    );
+    assertSafe(
+      sameFilesystemObject(candidateCurrent, candidateInitial)
+        && samePreparationLockOwner(candidateCurrent.owner, candidateInitial.owner)
+        && samePreparationLockOwner(candidateCurrent.activeClaim, candidateInitial.activeClaim)
+        && candidateCurrent.staleOwnerId === candidateInitial.staleOwnerId
+        && sameStoredRecoveryArtifactIdentity(
+          candidateCurrent.artifacts.quarantine,
+          candidateInitial.artifacts.quarantine,
+        )
+        && sameStoredRecoveryArtifactIdentity(
+          candidateCurrent.artifacts.transition,
+          candidateInitial.artifacts.transition,
+        ),
+      "Staging preparation lock recovery cleanup ownership candidate was replaced; cleanup was refused.",
+    );
+    await releaseRecoveryCleanupElection(candidateCurrent, undefined);
   }
   const identity = await readRecoveryCleanupElection(ownerPath);
   assertSafe(
@@ -1269,8 +1571,7 @@ async function assertRecoveryCleanupElection(election: RecoveryCleanupElection) 
     );
   }
   assertSafe(
-    current.dev === election.dev
-      && current.ino === election.ino
+    sameExactFilesystemIdentity(current, election)
       && samePreparationLockOwner(current.owner, election.owner)
       && samePreparationLockOwner(current.activeClaim, election.activeClaim)
       && sameStoredRecoveryArtifactIdentity(current.artifacts.quarantine, election.artifacts.quarantine)
@@ -1339,8 +1640,8 @@ async function claimRecoveryArtifact(
   } catch (error) {
     if (created) {
       try {
-        await assertRecoveryArtifactIdentity(observed, claimedPath);
-        await unlink(claimedPath);
+        const createdClaim = await assertRecoveryArtifactIdentity(observed, claimedPath);
+        await unlinkExactOwnedRecoveryArtifact(createdClaim, undefined);
       } catch {
         throw new SafeProvisionError(
           "Staging preparation lock recovery cleanup artifact claim ownership is replaced or ambiguous.",
@@ -1354,22 +1655,6 @@ async function claimRecoveryArtifact(
   }
 }
 
-async function removeClaimedRecoveryArtifact(
-  claim: RecoveryArtifactClaim,
-  election: RecoveryCleanupElection,
-) {
-  await assertRecoveryCleanupElection(election);
-  const [source, claimed] = await Promise.all([
-    assertRecoveryArtifactIdentity(claim),
-    assertRecoveryArtifactIdentity(claim, claim.claimedPath),
-  ]);
-  assertSafe(
-    source.dev === claimed.dev && source.ino === claimed.ino,
-    "Staging preparation lock recovery cleanup hard-link ownership is ambiguous.",
-  );
-  await unlink(claim.path);
-}
-
 async function cleanupRecoveryArtifactClaim(
   claim: RecoveryArtifactClaim,
   election: RecoveryCleanupElection,
@@ -1379,10 +1664,348 @@ async function cleanupRecoveryArtifactClaim(
     claim.claimedPath,
     async () => {
       await assertRecoveryCleanupElection(election);
-      await assertRecoveryArtifactIdentity(claim, claim.claimedPath);
+      const current = await assertRecoveryArtifactIdentity(claim, claim.claimedPath);
+      assertSafe(
+        sameExactRecoveryArtifactIdentity(current, claim),
+        "Staging preparation lock recovery cleanup claim changed; removal was refused.",
+      );
     },
     options?.beforeRecoveryArtifactClaimUnlink,
   );
+}
+
+async function unlinkExactOwnedRecoveryArtifact(
+  expected: RecoveryArtifactIdentity,
+  beforeUnlink: (() => Promise<void> | void) | undefined,
+) {
+  const before = await assertRecoveryArtifactIdentity(expected);
+  await beforeUnlink?.();
+  const after = await assertRecoveryArtifactIdentity(expected);
+  assertSafe(
+    sameExactRecoveryArtifactIdentity(before, after),
+    "Staging preparation lock recovery owned artifact changed during cleanup; removal was refused.",
+  );
+  await unlink(expected.path);
+}
+
+function storedRecoveryArtifactIdentity(identity: RecoveryArtifactIdentity): StoredRecoveryArtifactIdentity {
+  return {
+    dev: identity.dev,
+    ino: identity.ino,
+    nlink: identity.nlink,
+    owner: identity.owner,
+  };
+}
+
+function recoveryCleanupArtifactPaths(
+  recoveryClaim: string,
+  staleOwnerId: string,
+  cleanupOwnerId: string,
+  kind: RecoveryCleanupArtifactKind,
+) {
+  const paths = recoveryQuarantinePaths(recoveryClaim, staleOwnerId);
+  const sourcePath = kind === "quarantine" ? paths.quarantinePath : paths.transitionOwnerPath;
+  return { claimedPath: `${sourcePath}.cleanup-${cleanupOwnerId}.claimed`, sourcePath };
+}
+
+function recoveryCleanupEntryPath(
+  recoveryClaim: string,
+  staleOwnerId: string,
+  cleanupOwnerId: string,
+  entry: RecoveryCleanupPendingEntry,
+  claim: boolean,
+) {
+  const paths = recoveryCleanupArtifactPaths(recoveryClaim, staleOwnerId, cleanupOwnerId, entry.kind);
+  return claim ? paths.claimedPath : paths.sourcePath;
+}
+
+function samePendingEntryIdentity(
+  entry: RecoveryCleanupPendingEntry,
+  expected: StoredRecoveryArtifactIdentity,
+) {
+  return sameFilesystemObject(entry.identity, expected)
+    && samePreparationLockOwner(entry.identity.owner, expected.owner);
+}
+
+async function readExactPendingRecoveryIdentity(
+  entry: RecoveryCleanupPendingEntry,
+  filePath: string,
+  description: string,
+) {
+  const identity = await readRecoveryArtifactIdentity(filePath, description);
+  assertSafe(
+    sameExactFilesystemIdentity(identity, entry.identity)
+      && samePreparationLockOwner(identity.owner, entry.identity.owner),
+    `${description} is missing, replaced, or ambiguous.`,
+  );
+  return identity;
+}
+
+async function validateRecoveryCleanupJournalFilesystem(
+  journal: RecoveryCleanupJournal,
+  election: RecoveryCleanupElection,
+  recoveryClaim: string,
+  activeClaim: PreparationLockOwner,
+) {
+  const record = journal.record;
+  assertSafe(
+    samePreparationLockOwner(record.owner, election.owner)
+      && sameExactFilesystemIdentity(record.election, election)
+      && record.staleOwnerId === election.staleOwnerId
+      && samePreparationLockOwner(record.activeClaim, election.activeClaim)
+      && (
+        samePreparationLockOwner(activeClaim, election.activeClaim)
+        || samePreparationLockOwner(activeClaim, election.owner)
+      ),
+    "Staging preparation lock recovery cleanup journal ownership is inconsistent.",
+  );
+  const originalEntries = new Map<RecoveryCleanupArtifactKind, StoredRecoveryArtifactIdentity>();
+  if (election.artifacts.transition) originalEntries.set("transition", election.artifacts.transition);
+  if (election.artifacts.quarantine) originalEntries.set("quarantine", election.artifacts.quarantine);
+  const originalKinds = [...originalEntries.keys()].sort();
+  const pendingArtifactKinds = record.pendingArtifacts.map((entry) => entry.kind).sort();
+  const pendingClaimKinds = record.pendingClaims.map((entry) => entry.kind).sort();
+  assertSafe(
+    record.phase !== "removing_artifacts"
+      || JSON.stringify(pendingClaimKinds) === JSON.stringify(originalKinds),
+    "Staging preparation lock recovery cleanup journal pending claim set is incomplete or ambiguous.",
+  );
+  assertSafe(
+    record.phase !== "removing_artifacts"
+      || pendingArtifactKinds.every((kind) => pendingClaimKinds.includes(kind)),
+    "Staging preparation lock recovery cleanup journal phase ownership is inconsistent.",
+  );
+  assertSafe(
+    record.phase !== "removing_claims" || record.pendingArtifacts.length === 0,
+    "Staging preparation lock recovery cleanup journal claim phase still has pending artifacts.",
+  );
+  assertSafe(
+    record.phase !== "complete"
+      || (record.pendingArtifacts.length === 0 && record.pendingClaims.length === 0),
+    "Staging preparation lock recovery cleanup journal complete phase is inconsistent.",
+  );
+  for (const entry of [...record.pendingArtifacts, ...record.pendingClaims]) {
+    const original = originalEntries.get(entry.kind);
+    assertSafe(
+      Boolean(original) && samePendingEntryIdentity(entry, original as StoredRecoveryArtifactIdentity),
+      "Staging preparation lock recovery cleanup journal pending identity is unassociated or ambiguous.",
+    );
+  }
+
+  const directory = path.dirname(recoveryClaim);
+  const claimPrefix = `${path.basename(recoveryClaim)}.${election.staleOwnerId}.quarantine`;
+  const observedClaimPaths = (await readdir(directory))
+    .filter((name) => name.startsWith(claimPrefix) && name.includes(".cleanup-") && name.endsWith(".claimed"))
+    .map((name) => path.join(directory, name))
+    .sort();
+  const expectedClaimPaths = record.pendingClaims
+    .map((entry) => recoveryCleanupEntryPath(
+      recoveryClaim,
+      election.staleOwnerId,
+      election.owner.ownerId,
+      entry,
+      true,
+    ))
+    .sort();
+  assertSafe(
+    JSON.stringify(observedClaimPaths) === JSON.stringify(expectedClaimPaths),
+    "Staging preparation lock recovery cleanup journal pending claim set is missing or ambiguous.",
+  );
+  for (const entry of record.pendingClaims) {
+    await readExactPendingRecoveryIdentity(
+      entry,
+      recoveryCleanupEntryPath(recoveryClaim, election.staleOwnerId, election.owner.ownerId, entry, true),
+      "Staging preparation lock recovery cleanup journal pending claim",
+    );
+  }
+
+  const pendingArtifactKindSet = new Set(record.pendingArtifacts.map((entry) => entry.kind));
+  for (const entry of record.pendingArtifacts) {
+    await readExactPendingRecoveryIdentity(
+      entry,
+      recoveryCleanupEntryPath(recoveryClaim, election.staleOwnerId, election.owner.ownerId, entry, false),
+      "Staging preparation lock recovery cleanup journal pending artifact",
+    );
+  }
+  for (const [kind] of originalEntries) {
+    if (pendingArtifactKindSet.has(kind)) continue;
+    const sourcePath = recoveryCleanupArtifactPaths(
+      recoveryClaim,
+      election.staleOwnerId,
+      election.owner.ownerId,
+      kind,
+    ).sourcePath;
+    if (!(await exists(sourcePath))) continue;
+    const legitimateSuccessor = record.phase === "complete"
+      && kind === "transition"
+      && samePreparationLockOwner(activeClaim, election.owner);
+    assertSafe(
+      legitimateSuccessor,
+      "Staging preparation lock recovery cleanup journal cleaned artifact path was replaced or is ambiguous.",
+    );
+    const successor = await readRecoveryArtifactIdentity(
+      sourcePath,
+      "Staging preparation lock recovery successor transition ownership metadata",
+    );
+    assertSafe(
+      samePreparationLockOwner(successor.owner, election.owner),
+      "Staging preparation lock recovery successor transition ownership is replaced or ambiguous.",
+    );
+  }
+}
+
+async function installRecoveryCleanupWorkJournal(
+  recoveryClaim: string,
+  election: RecoveryCleanupElection,
+  activeClaim: PreparationLockOwner,
+  claims: Map<RecoveryCleanupArtifactKind, RecoveryArtifactClaim>,
+) {
+  const pendingArtifacts: RecoveryCleanupPendingEntry[] = [];
+  const pendingClaims: RecoveryCleanupPendingEntry[] = [];
+  for (const kind of ["transition", "quarantine"] as const) {
+    const original = election.artifacts[kind];
+    if (!original) continue;
+    const paths = recoveryCleanupArtifactPaths(
+      recoveryClaim,
+      election.staleOwnerId,
+      election.owner.ownerId,
+      kind,
+    );
+    const source = await readRecoveryArtifactIdentity(
+      paths.sourcePath,
+      "Staging preparation lock recovery cleanup journal source artifact",
+    );
+    const claim = claims.get(kind);
+    assertSafe(Boolean(claim), "Staging preparation lock recovery cleanup journal claim is missing.");
+    const claimed = await readRecoveryArtifactIdentity(
+      paths.claimedPath,
+      "Staging preparation lock recovery cleanup journal claimed artifact",
+    );
+    assertSafe(
+      sameExactFilesystemIdentity(source, claimed)
+        && sameFilesystemObject(source, original)
+        && samePreparationLockOwner(source.owner, original.owner),
+      "Staging preparation lock recovery cleanup journal artifact identity is ambiguous.",
+    );
+    pendingArtifacts.push({ identity: storedRecoveryArtifactIdentity(source), kind });
+    pendingClaims.push({ identity: storedRecoveryArtifactIdentity(claimed), kind });
+  }
+  return installRecoveryCleanupJournal(
+    recoveryCleanupJournalPath(recoveryClaim, election.staleOwnerId),
+    {
+      activeClaim,
+      election: { dev: election.dev, ino: election.ino, nlink: election.nlink },
+      owner: election.owner,
+      pendingArtifacts,
+      pendingClaims,
+      phase: "removing_artifacts",
+      staleOwnerId: election.staleOwnerId,
+      version: 1,
+    },
+  );
+}
+
+async function executeRecoveryCleanupJournal(
+  initialJournal: RecoveryCleanupJournal,
+  election: RecoveryCleanupElection,
+  recoveryClaim: string,
+  activeClaim: PreparationLockOwner,
+  options: PrepareStagingOptions["preparationLock"],
+) {
+  let journal = initialJournal;
+  await validateRecoveryCleanupJournalFilesystem(journal, election, recoveryClaim, activeClaim);
+  while (journal.record.phase === "removing_artifacts" && journal.record.pendingArtifacts.length > 0) {
+    const entry = journal.record.pendingArtifacts[0] as RecoveryCleanupPendingEntry;
+    const sourcePath = recoveryCleanupEntryPath(
+      recoveryClaim,
+      election.staleOwnerId,
+      election.owner.ownerId,
+      entry,
+      false,
+    );
+    const exactSource = await readExactPendingRecoveryIdentity(
+      entry,
+      sourcePath,
+      "Staging preparation lock recovery cleanup journal pending artifact",
+    );
+    await unlinkExactOwnedRecoveryArtifact(exactSource, undefined);
+    await options?.afterRecoveryCleanupUnlinkBeforeJournalUpdate?.("artifact", sourcePath);
+    const pendingClaims = [...journal.record.pendingClaims];
+    const claimIndex = pendingClaims.findIndex((claim) => claim.kind === entry.kind);
+    assertSafe(claimIndex >= 0, "Staging preparation lock recovery cleanup journal claim is missing.");
+    const claimEntry = pendingClaims[claimIndex] as RecoveryCleanupPendingEntry;
+    const claimPath = recoveryCleanupEntryPath(
+      recoveryClaim,
+      election.staleOwnerId,
+      election.owner.ownerId,
+      claimEntry,
+      true,
+    );
+    const refreshedClaim = await readRecoveryArtifactIdentity(
+      claimPath,
+      "Staging preparation lock recovery cleanup journal remaining claim",
+    );
+    assertSafe(
+      sameFilesystemObject(refreshedClaim, claimEntry.identity)
+        && samePreparationLockOwner(refreshedClaim.owner, claimEntry.identity.owner),
+      "Staging preparation lock recovery cleanup journal remaining claim was replaced or is ambiguous.",
+    );
+    pendingClaims[claimIndex] = { identity: storedRecoveryArtifactIdentity(refreshedClaim), kind: claimEntry.kind };
+    journal = await updateRecoveryCleanupJournal(journal, {
+      ...journal.record,
+      pendingArtifacts: journal.record.pendingArtifacts.slice(1),
+      pendingClaims,
+    });
+    await options?.afterRecoveryCleanupJournalUpdate?.("artifact", sourcePath);
+  }
+  if (journal.record.phase === "removing_artifacts") {
+    journal = await updateRecoveryCleanupJournal(journal, {
+      ...journal.record,
+      pendingArtifacts: [],
+      phase: "removing_claims",
+    });
+  }
+  while (journal.record.phase === "removing_claims" && journal.record.pendingClaims.length > 0) {
+    const entry = journal.record.pendingClaims[0] as RecoveryCleanupPendingEntry;
+    const claimPath = recoveryCleanupEntryPath(
+      recoveryClaim,
+      election.staleOwnerId,
+      election.owner.ownerId,
+      entry,
+      true,
+    );
+    const exactClaim = await readExactPendingRecoveryIdentity(
+      entry,
+      claimPath,
+      "Staging preparation lock recovery cleanup journal pending claim",
+    );
+    await cleanupRecoveryArtifactClaim(
+      { ...exactClaim, claimedPath: claimPath, path: recoveryCleanupEntryPath(
+        recoveryClaim,
+        election.staleOwnerId,
+        election.owner.ownerId,
+        entry,
+        false,
+      ) },
+      election,
+      options,
+    );
+    await options?.afterRecoveryCleanupUnlinkBeforeJournalUpdate?.("claim", claimPath);
+    journal = await updateRecoveryCleanupJournal(journal, {
+      ...journal.record,
+      pendingClaims: journal.record.pendingClaims.slice(1),
+    });
+    await options?.afterRecoveryCleanupJournalUpdate?.("claim", claimPath);
+  }
+  if (journal.record.phase !== "complete") {
+    journal = await updateRecoveryCleanupJournal(journal, {
+      ...journal.record,
+      pendingArtifacts: [],
+      pendingClaims: [],
+      phase: "complete",
+    });
+  }
+  return journal;
 }
 
 async function recoverRetainedRecoveryCleanup(
@@ -1415,8 +2038,7 @@ async function recoverRetainedRecoveryCleanup(
     throw new SafeProvisionError("Staging preparation lock recovery cleanup ownership is stale or ambiguous.");
   }
   assertSafe(
-    observed.dev === election.dev
-      && observed.ino === election.ino
+    sameExactFilesystemIdentity(observed, election)
       && samePreparationLockOwner(observed.owner, election.owner),
     "Staging preparation lock recovery cleanup ownership was replaced or is ambiguous.",
   );
@@ -1429,52 +2051,101 @@ async function recoverRetainedRecoveryCleanup(
     "Staging preparation lock recovery cleanup retained state does not match the active recovery claim.",
   );
 
-  const { quarantinePath, transitionOwnerPath } = recoveryQuarantinePaths(
-    recoveryClaim,
-    existing.staleOwnerId,
-  );
-  const expectedClaims = new Map<string, { identity: StoredRecoveryArtifactIdentity; sourcePath: string }>();
-  if (election.artifacts.transition) {
-    expectedClaims.set(
-      `${transitionOwnerPath}.cleanup-${election.owner.ownerId}.claimed`,
-      { identity: election.artifacts.transition, sourcePath: transitionOwnerPath },
-    );
-  }
-  if (election.artifacts.quarantine) {
-    expectedClaims.set(
-      `${quarantinePath}.cleanup-${election.owner.ownerId}.claimed`,
-      { identity: election.artifacts.quarantine, sourcePath: quarantinePath },
-    );
-  }
-  assertSafe(
-    existing.cleanupArtifactClaimPaths.every((claimPath) => expectedClaims.has(claimPath)),
-    "Staging preparation lock recovery cleanup artifact claim ownership is ambiguous.",
-  );
-  for (const claimedPath of existing.cleanupArtifactClaimPaths) {
-    const expected = expectedClaims.get(claimedPath) as {
-      identity: StoredRecoveryArtifactIdentity;
-      sourcePath: string;
-    };
-    const identity = await readRecoveryArtifactIdentity(
-      claimedPath,
-      "Staging preparation lock recovery cleanup artifact claim metadata",
-    );
-    assertSafe(
-      identity.dev === expected.identity.dev
-        && identity.ino === expected.identity.ino
-        && samePreparationLockOwner(identity.owner, expected.identity.owner),
-      "Staging preparation lock recovery cleanup artifact claim ownership is replaced or ambiguous.",
-    );
-    if (await exists(expected.sourcePath)) {
-      await assertRecoveryArtifactIdentity(identity, expected.sourcePath);
+  let journal: RecoveryCleanupJournal;
+  if (existing.cleanupJournalPath) {
+    journal = await readRecoveryCleanupJournal(existing.cleanupJournalPath);
+  } else {
+    const claims = new Map<RecoveryCleanupArtifactKind, RecoveryArtifactClaim>();
+    const observedClaimPaths = new Set(existing.cleanupArtifactClaimPaths);
+    const expectedClaimPaths = new Set<string>();
+    for (const kind of ["transition", "quarantine"] as const) {
+      const original = election.artifacts[kind];
+      if (!original) continue;
+      const { claimedPath, sourcePath } = recoveryCleanupArtifactPaths(
+        recoveryClaim,
+        election.staleOwnerId,
+        election.owner.ownerId,
+        kind,
+      );
+      expectedClaimPaths.add(claimedPath);
+      let source: RecoveryArtifactIdentity;
+      try {
+        source = await readRecoveryArtifactIdentity(
+          sourcePath,
+          "Staging preparation lock recovery cleanup retained source artifact",
+        );
+      } catch {
+        throw new SafeProvisionError(
+          "Staging preparation lock recovery cleanup retained source artifact is missing or ambiguous.",
+        );
+      }
+      assertSafe(
+        sameFilesystemObject(source, original) && samePreparationLockOwner(source.owner, original.owner),
+        "Staging preparation lock recovery cleanup retained source artifact was replaced or is ambiguous.",
+      );
+      if (observedClaimPaths.has(claimedPath)) {
+        const claimed = await readRecoveryArtifactIdentity(
+          claimedPath,
+          "Staging preparation lock recovery cleanup retained artifact claim",
+        );
+        assertSafe(
+          sameExactFilesystemIdentity(source, claimed)
+            && samePreparationLockOwner(claimed.owner, original.owner),
+          "Staging preparation lock recovery cleanup retained artifact claim was replaced or is ambiguous.",
+        );
+        claims.set(kind, { ...claimed, claimedPath, path: sourcePath });
+      } else {
+        claims.set(kind, await claimRecoveryArtifact(source, election.owner));
+      }
     }
-    await cleanupRecoveryArtifactClaim(
-      { ...identity, claimedPath, path: expected.sourcePath },
-      election,
-      options,
+    assertSafe(
+      [...observedClaimPaths].every((claimPath) => expectedClaimPaths.has(claimPath)),
+      "Staging preparation lock recovery cleanup artifact claim ownership is ambiguous.",
     );
+    journal = await installRecoveryCleanupWorkJournal(recoveryClaim, election, election.activeClaim, claims);
   }
+  journal = await executeRecoveryCleanupJournal(journal, election, recoveryClaim, activeClaim, options);
   await releaseRecoveryCleanupElection(election, options);
+  await removeRecoveryCleanupJournal(journal);
+}
+
+async function recoverOrphanedRecoveryCleanupJournal(
+  recoveryClaim: string,
+  existing: ExistingRecoveryQuarantine,
+  activeClaim: PreparationLockOwner,
+  claimant: PreparationLockOwner,
+  options: PrepareStagingOptions["preparationLock"],
+) {
+  assertSafe(
+    Boolean(existing.cleanupJournalPath) && !existing.cleanupOwnerPath,
+    "Staging preparation lock recovery cleanup journal state is invalid.",
+  );
+  const journal = await readRecoveryCleanupJournal(existing.cleanupJournalPath as string);
+  assertSafe(
+    journal.record.staleOwnerId === existing.staleOwnerId
+      && journal.record.owner.hostname.toLowerCase() === claimant.hostname.toLowerCase(),
+    "Staging preparation lock recovery cleanup journal belongs to another host or recovery.",
+  );
+  assertSafe(
+    !(await processIsAlive(journal.record.owner.pid, options?.isProcessAlive)),
+    "A live staging preparation lock recovery cleanup journal owner already exists.",
+  );
+  assertSafe(
+    journal.record.phase === "complete"
+      && journal.record.pendingArtifacts.length === 0
+      && journal.record.pendingClaims.length === 0
+      && existing.cleanupArtifactClaimPaths.length === 0
+      && (
+        samePreparationLockOwner(activeClaim, journal.record.activeClaim)
+        || samePreparationLockOwner(activeClaim, journal.record.owner)
+      ),
+    "Staging preparation lock recovery cleanup journal is incomplete or ambiguous.",
+  );
+  assertSafe(
+    !(await exists(recoveryCleanupOwnerPath(recoveryClaim, existing.staleOwnerId))),
+    "Staging preparation lock recovery cleanup election changed during journal recovery.",
+  );
+  await removeRecoveryCleanupJournal(journal);
 }
 
 async function recoverExistingRecoveryQuarantine(
@@ -1487,6 +2158,10 @@ async function recoverExistingRecoveryQuarantine(
   if (!existing) return undefined;
   if (existing.cleanupOwnerPath) {
     await recoverRetainedRecoveryCleanup(recoveryClaim, existing, activeClaim, claimant, options);
+    return recoverExistingRecoveryQuarantine(recoveryClaim, activeClaim, claimant, options);
+  }
+  if (existing.cleanupJournalPath) {
+    await recoverOrphanedRecoveryCleanupJournal(recoveryClaim, existing, activeClaim, claimant, options);
     return recoverExistingRecoveryQuarantine(recoveryClaim, activeClaim, claimant, options);
   }
   let quarantinedClaim: RecoveryArtifactIdentity | undefined;
@@ -1557,41 +2232,52 @@ async function recoverExistingRecoveryQuarantine(
     transitionOwner,
     options,
   );
-  const claims: RecoveryArtifactClaim[] = [];
+  const claims = new Map<RecoveryCleanupArtifactKind, RecoveryArtifactClaim>();
+  let journal: RecoveryCleanupJournal | undefined;
   try {
     await options?.afterRecoveryCleanupElection?.(election.ownerPath, claimant.ownerId);
-    if (transitionOwner) claims.push(await claimRecoveryArtifact(transitionOwner, claimant));
+    if (transitionOwner) claims.set("transition", await claimRecoveryArtifact(transitionOwner, claimant));
     if (!transitionOwner) {
       assertSafe(
         !(await exists(recoveryQuarantinePaths(recoveryClaim, existing.staleOwnerId).transitionOwnerPath)),
         "Staging preparation lock recovery transition was replaced during cleanup election.",
       );
     }
-    if (quarantinedClaim) claims.push(await claimRecoveryArtifact(quarantinedClaim, claimant));
-    for (const claim of claims) {
-      await removeClaimedRecoveryArtifact(claim, election);
-    }
-    while (claims.length > 0) {
-      const claim = claims[claims.length - 1] as RecoveryArtifactClaim;
-      await cleanupRecoveryArtifactClaim(claim, election, options);
-      claims.pop();
-    }
-    return election;
+    if (quarantinedClaim) claims.set("quarantine", await claimRecoveryArtifact(quarantinedClaim, claimant));
+    journal = await installRecoveryCleanupWorkJournal(recoveryClaim, election, activeClaim, claims);
+    journal = await executeRecoveryCleanupJournal(journal, election, recoveryClaim, activeClaim, options);
+    return { election, journal } satisfies RecoveryCleanupHandle;
   } catch (error) {
+    const journalExists = journal !== undefined
+      || await exists(recoveryCleanupJournalPath(recoveryClaim, existing.staleOwnerId));
+    if (journalExists) {
+      if (error instanceof RecoveryCleanupRetryExhaustedError) {
+        throw new SafeProvisionError(
+          "Staging preparation lock recovery quarantine cleanup failed safely and may be retried.",
+        );
+      }
+      if (isObject(error) && error.code === "ENOENT") {
+        throw new SafeProvisionError(
+          "Staging preparation lock recovery cleanup journal pending artifact or claim is missing or ambiguous.",
+        );
+      }
+      throw error;
+    }
     let cleanupFailed = error instanceof RecoveryCleanupRetryExhaustedError;
+    const claimStack = [...claims.values()];
     if (!cleanupFailed) {
-      while (claims.length > 0) {
+      while (claimStack.length > 0) {
         try {
-          const claim = claims[claims.length - 1] as RecoveryArtifactClaim;
+          const claim = claimStack[claimStack.length - 1] as RecoveryArtifactClaim;
           await cleanupRecoveryArtifactClaim(claim, election, options);
-          claims.pop();
+          claimStack.pop();
         } catch {
           cleanupFailed = true;
           break;
         }
       }
     }
-    if (!cleanupFailed && claims.length === 0) {
+    if (!cleanupFailed && claimStack.length === 0) {
       try {
         await releaseRecoveryCleanupElection(election, options);
       } catch {
@@ -1615,6 +2301,10 @@ async function installRecoveryTransitionOwner(
 ) {
   const candidatePath = `${transitionOwnerPath}.${claimant.ownerId}.candidate`;
   await writeFile(candidatePath, `${JSON.stringify(claimant, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+  const candidateInitial = await readRecoveryArtifactIdentity(
+    candidatePath,
+    "Staging preparation lock recovery transition ownership candidate",
+  );
   try {
     try {
       await link(candidatePath, transitionOwnerPath);
@@ -1634,7 +2324,16 @@ async function installRecoveryTransitionOwner(
       throw new SafeProvisionError("Staging preparation lock recovery transition ownership is ambiguous.");
     }
   } finally {
-    await unlinkIfPresent(candidatePath);
+    const candidateCurrent = await readRecoveryArtifactIdentity(
+      candidatePath,
+      "Staging preparation lock recovery transition ownership candidate",
+    );
+    assertSafe(
+      sameFilesystemObject(candidateCurrent, candidateInitial)
+        && samePreparationLockOwner(candidateCurrent.owner, candidateInitial.owner),
+      "Staging preparation lock recovery transition ownership candidate was replaced; cleanup was refused.",
+    );
+    await unlinkExactOwnedRecoveryArtifact(candidateCurrent, undefined);
   }
   const identity = await readRecoveryArtifactIdentity(
     transitionOwnerPath,
@@ -1653,11 +2352,12 @@ async function replaceDeadRecoveryClaim(
   claimant: PreparationLockOwner,
   options: PrepareStagingOptions["preparationLock"],
 ) {
-  const cleanupElection = await recoverExistingRecoveryQuarantine(recoveryClaim, existingClaim, claimant, options);
+  const cleanupHandle = await recoverExistingRecoveryQuarantine(recoveryClaim, existingClaim, claimant, options);
   const { quarantinePath, transitionOwnerPath } = recoveryQuarantinePaths(recoveryClaim, existingClaim.ownerId);
   let ownsQuarantine = false;
   let ownsTransitionOwner = false;
   let replacementInstalled = false;
+  let quarantineIdentity: RecoveryArtifactIdentity | undefined;
   let transitionOwnerIdentity: RecoveryArtifactIdentity | undefined;
   try {
     transitionOwnerIdentity = await installRecoveryTransitionOwner(transitionOwnerPath, claimant, options);
@@ -1679,32 +2379,38 @@ async function replaceDeadRecoveryClaim(
       }
       throw error;
     }
-    await options?.afterRecoveryClaimQuarantined?.(quarantinePath);
-    const quarantinedClaim = validatePreparationLockOwner(
-      await readJson(quarantinePath, "Staging preparation lock recovery quarantine ownership metadata"),
+    quarantineIdentity = await readRecoveryArtifactIdentity(
+      quarantinePath,
       "Staging preparation lock recovery quarantine ownership metadata",
     );
+    await options?.afterRecoveryClaimQuarantined?.(quarantinePath);
     assertSafe(
-      samePreparationLockOwner(quarantinedClaim, existingClaim),
+      samePreparationLockOwner(quarantineIdentity.owner, existingClaim),
       "Staging preparation lock recovery quarantine ownership changed; reclaim was refused.",
     );
-    const currentClaim = validatePreparationLockOwner(
-      await readJson(recoveryClaim, "Staging preparation lock recovery ownership metadata"),
+    const currentClaimIdentity = await readRecoveryArtifactIdentity(
+      recoveryClaim,
       "Staging preparation lock recovery ownership metadata",
     );
     assertSafe(
-      samePreparationLockOwner(currentClaim, existingClaim),
+      samePreparationLockOwner(currentClaimIdentity.owner, existingClaim)
+        && sameFilesystemObject(currentClaimIdentity, quarantineIdentity),
       "Staging preparation lock recovery ownership changed; reclaim was refused.",
     );
     assertSafe(
-      currentClaim.hostname.toLowerCase() === claimant.hostname.toLowerCase(),
+      currentClaimIdentity.owner.hostname.toLowerCase() === claimant.hostname.toLowerCase(),
       "Staging preparation lock recovery belongs to another host and cannot be proven stale.",
     );
     assertSafe(
-      !(await processIsAlive(currentClaim.pid, options?.isProcessAlive)),
+      !(await processIsAlive(currentClaimIdentity.owner.pid, options?.isProcessAlive)),
       "A live staging preparation lock recovery claimant already exists.",
     );
-    await unlink(recoveryClaim);
+    await unlinkExactOwnedRecoveryArtifact(currentClaimIdentity, async () => {
+      assertSafe(
+        !(await processIsAlive(currentClaimIdentity.owner.pid, options?.isProcessAlive)),
+        "A live staging preparation lock recovery claimant already exists.",
+      );
+    });
     try {
       await writeFile(recoveryClaim, `${JSON.stringify(claimant, null, 2)}\n`, { flag: "wx", mode: 0o600 });
       replacementInstalled = true;
@@ -1727,8 +2433,11 @@ async function replaceDeadRecoveryClaim(
     let cleanupFailed = false;
     if (ownsQuarantine) {
       try {
-        await options?.beforeRecoveryClaimCleanup?.(quarantinePath, "quarantine");
-        await unlinkIfPresent(quarantinePath);
+        assertSafe(Boolean(quarantineIdentity), "Staging preparation lock recovery quarantine identity is missing.");
+        await unlinkExactOwnedRecoveryArtifact(
+          quarantineIdentity as RecoveryArtifactIdentity,
+          () => options?.beforeRecoveryClaimCleanup?.(quarantinePath, "quarantine"),
+        );
       } catch {
         cleanupFailed = true;
       }
@@ -1736,14 +2445,15 @@ async function replaceDeadRecoveryClaim(
     if (ownsTransitionOwner && !replacementInstalled && !cleanupFailed) {
       try {
         assertSafe(Boolean(transitionOwnerIdentity), "Staging preparation lock recovery transition identity is missing.");
-        await assertRecoveryArtifactIdentity(transitionOwnerIdentity as RecoveryArtifactIdentity);
-        await options?.beforeRecoveryClaimCleanup?.(transitionOwnerPath, "transition");
-        await unlinkIfPresent(transitionOwnerPath);
+        await unlinkExactOwnedRecoveryArtifact(
+          transitionOwnerIdentity as RecoveryArtifactIdentity,
+          () => options?.beforeRecoveryClaimCleanup?.(transitionOwnerPath, "transition"),
+        );
       } catch {
         cleanupFailed = true;
       }
     }
-    if (cleanupElection) {
+    if (cleanupHandle) {
       let releaseIsSerialized = !cleanupFailed;
       if (!releaseIsSerialized && ownsTransitionOwner && transitionOwnerIdentity) {
         try {
@@ -1755,7 +2465,8 @@ async function replaceDeadRecoveryClaim(
       }
       if (releaseIsSerialized) {
         try {
-          await releaseRecoveryCleanupElection(cleanupElection, options);
+          await releaseRecoveryCleanupElection(cleanupHandle.election, options);
+          await removeRecoveryCleanupJournal(cleanupHandle.journal);
         } catch {
           cleanupFailed = true;
         }
@@ -1904,18 +2615,15 @@ async function reclaimDeadPreparationLock(
         quarantineDirectory,
         path.basename(recoveryTransition.transitionOwnerPath),
       );
-      const transitionOwner = validatePreparationLockOwner(
-        await readJson(
-          movedTransitionOwnerPath,
-          "Staging preparation lock recovery transition ownership metadata",
-        ),
+      const transitionOwner = await readRecoveryArtifactIdentity(
+        movedTransitionOwnerPath,
         "Staging preparation lock recovery transition ownership metadata",
       );
       assertSafe(
-        samePreparationLockOwner(transitionOwner, claimant),
+        samePreparationLockOwner(transitionOwner.owner, claimant),
         "Staging preparation lock recovery transition ownership changed after quarantine; cleanup was refused.",
       );
-      await unlink(movedTransitionOwnerPath);
+      await unlinkExactOwnedRecoveryArtifact(transitionOwner, undefined);
       ownsRecoveryTransition = false;
     }
     await cleanupPreparationLockDirectory(quarantineDirectory);
@@ -1926,12 +2634,12 @@ async function reclaimDeadPreparationLock(
     if (!lockQuarantined && (ownsRecoveryClaim || ownsRecoveryTransition)) {
       try {
         if (await exists(recoveryClaim)) {
-          const currentClaim = validatePreparationLockOwner(
-            await readJson(recoveryClaim, "Staging preparation lock recovery ownership metadata"),
+          const currentClaim = await readRecoveryArtifactIdentity(
+            recoveryClaim,
             "Staging preparation lock recovery ownership metadata",
           );
-          if (samePreparationLockOwner(currentClaim, claimant)) {
-            await unlink(recoveryClaim);
+          if (samePreparationLockOwner(currentClaim.owner, claimant)) {
+            await unlinkExactOwnedRecoveryArtifact(currentClaim, undefined);
             ownsRecoveryClaim = false;
           } else {
             assertSafe(
@@ -1941,18 +2649,15 @@ async function reclaimDeadPreparationLock(
           }
         }
         if (ownsRecoveryTransition && recoveryTransition && await exists(recoveryTransition.transitionOwnerPath)) {
-          const transitionOwner = validatePreparationLockOwner(
-            await readJson(
-              recoveryTransition.transitionOwnerPath,
-              "Staging preparation lock recovery transition ownership metadata",
-            ),
+          const transitionOwner = await readRecoveryArtifactIdentity(
+            recoveryTransition.transitionOwnerPath,
             "Staging preparation lock recovery transition ownership metadata",
           );
           assertSafe(
-            samePreparationLockOwner(transitionOwner, claimant),
+            samePreparationLockOwner(transitionOwner.owner, claimant),
             "Staging preparation lock recovery transition ownership changed; claimant cleanup was refused.",
           );
-          await unlink(recoveryTransition.transitionOwnerPath);
+          await unlinkExactOwnedRecoveryArtifact(transitionOwner, undefined);
         }
       } catch {
         throw new SafeProvisionError("Staging preparation lock recovery failed and claimant-owned cleanup could not be completed safely.");

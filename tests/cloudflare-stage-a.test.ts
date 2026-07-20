@@ -1402,6 +1402,216 @@ test("retained election retry refuses a delayed replacement and preserves it", a
   assert.equal(await readFile(lock.recoveryCleanupOwnerFile, "utf8"), replacementBytes);
 });
 
+test("filesystem identity keeps distinct Windows-scale bigint inodes and round-trips retained JSON", async () => {
+  const module = await import("../scripts/cloudflare/provision.js") as unknown as {
+    canonicalFilesystemIdentity?: (value: { dev: bigint; ino: bigint; nlink: bigint }) => {
+      dev: string;
+      ino: string;
+      nlink: string;
+    };
+    sameFilesystemObject?: (
+      left: { dev: string; ino: string; nlink: string },
+      right: { dev: string; ino: string; nlink: string },
+    ) => boolean;
+    validateCanonicalFilesystemIdentity?: (
+      value: unknown,
+      description?: string,
+    ) => { dev: string; ino: string; nlink: string };
+  };
+  assert.equal(typeof module.canonicalFilesystemIdentity, "function");
+  assert.equal(typeof module.sameFilesystemObject, "function");
+  assert.equal(typeof module.validateCanonicalFilesystemIdentity, "function");
+
+  const left = module.canonicalFilesystemIdentity?.({
+    dev: 516301289n,
+    ino: 9007199254740992n,
+    nlink: 2n,
+  }) as { dev: string; ino: string; nlink: string };
+  const right = module.canonicalFilesystemIdentity?.({
+    dev: 516301289n,
+    ino: 9007199254740993n,
+    nlink: 2n,
+  }) as { dev: string; ino: string; nlink: string };
+  assert.equal(left.ino, "9007199254740992");
+  assert.equal(right.ino, "9007199254740993");
+  assert.equal(module.sameFilesystemObject?.(left, right), false);
+  assert.deepEqual(
+    module.validateCanonicalFilesystemIdentity?.(JSON.parse(JSON.stringify(left)), "retained identity"),
+    left,
+  );
+  for (const invalid of [
+    { ...left, ino: 9007199254740992 },
+    { ...left, ino: "09007199254740992" },
+    { ...left, ino: "-1" },
+    { ...left, nlink: "0" },
+    { ...left, dev: "1.0" },
+  ]) {
+    assert.throws(
+      () => module.validateCanonicalFilesystemIdentity?.(invalid, "retained identity"),
+      /canonical|identity|invalid/i,
+    );
+  }
+});
+
+test("final quarantine and transition cleanup preserve replacements introduced after async hooks", async () => {
+  for (const artifact of ["quarantine", "transition"] as const) {
+    const root = await mkdtemp(path.join(os.tmpdir(), `review-anchor-stage-a-final-${artifact}-replacement-`));
+    const paths = await writePreparationFixture(root);
+    const lock = await writePreparationLock(paths);
+    await writeRecoveryClaim(paths);
+    await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+    await writeFile(
+      lock.recoveryQuarantineOwnerFile,
+      JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+    );
+    const replacementBytes = `${JSON.stringify(syntheticLockOwner(
+      artifact === "quarantine" ? 4771 : 4772,
+      artifact === "quarantine"
+        ? "90000000-0000-4000-8000-000000000051"
+        : "90000000-0000-4000-8000-000000000052",
+    ))}\n`;
+    let replacementPath = "";
+    let replacementBefore!: Awaited<ReturnType<typeof stat>>;
+
+    await assert.rejects(
+      prepareStagingFiles({
+        ...prepareOptions(paths),
+        preparationLock: {
+          isProcessAlive: async () => false,
+          afterRecoveryClaimQuarantined: artifact === "transition"
+            ? () => { throw new Error("synthetic transition cleanup entry"); }
+            : undefined,
+          beforeRecoveryClaimCleanup: async (filePath: string, kind: "quarantine" | "transition") => {
+            if (kind !== artifact) return;
+            replacementPath = filePath;
+            await unlink(filePath);
+            await writeFile(filePath, replacementBytes, { flag: "wx" });
+            replacementBefore = await stat(filePath);
+          },
+        },
+      }),
+      /cleanup|recovery|synthetic/i,
+    );
+    assert.notEqual(replacementPath, "");
+    const replacementAfter = await stat(replacementPath);
+    assert.equal(replacementAfter.dev, replacementBefore.dev);
+    assert.equal(replacementAfter.ino, replacementBefore.ino);
+    assert.equal(await readFile(replacementPath, "utf8"), replacementBytes);
+  }
+});
+
+test("a missing journal-pending exhausted claim is ambiguous and cannot release its election", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-pending-claim-missing-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+  await writeFile(
+    lock.recoveryQuarantineOwnerFile,
+    JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+  );
+  let failedPath = "";
+
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(paths),
+      preparationLock: {
+        isProcessAlive: async () => false,
+        beforeRecoveryArtifactClaimUnlink: (filePath: string) => {
+          if (!failedPath) failedPath = filePath;
+          if (filePath === failedPath) {
+            throw Object.assign(new Error("synthetic persistent pending claim"), { code: "EBUSY" });
+          }
+        },
+      },
+    }),
+    /cleanup failed safely and may be retried/i,
+  );
+  await unlink(failedPath);
+
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(paths, 9),
+      preparationLock: { isProcessAlive: async () => false },
+    }),
+    /pending|claim|ambiguous|missing/i,
+  );
+  assert.equal(await pathExists(lock.recoveryCleanupOwnerFile), true);
+});
+
+test("artifact disappearance before its cleanup journal update remains fail closed", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-before-journal-update-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+  await writeFile(
+    lock.recoveryQuarantineOwnerFile,
+    JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+  );
+  let interruptedPath = "";
+
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(paths),
+      preparationLock: {
+        isProcessAlive: async () => false,
+        afterRecoveryCleanupUnlinkBeforeJournalUpdate: (kind: "artifact" | "claim", filePath: string) => {
+          if (kind !== "artifact" || interruptedPath) return;
+          interruptedPath = filePath;
+          throw new Error("synthetic crash before cleanup journal update");
+        },
+      },
+    }),
+    /journal|cleanup|synthetic/i,
+  );
+  assert.notEqual(interruptedPath, "");
+  assert.equal(await pathExists(interruptedPath), false);
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(paths, 9),
+      preparationLock: { isProcessAlive: async () => false },
+    }),
+    /pending|artifact|ambiguous|missing/i,
+  );
+  assert.equal(await pathExists(lock.recoveryCleanupOwnerFile), true);
+});
+
+test("artifact disappearance after its cleanup journal update resumes safely", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-after-journal-update-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+  await writeFile(
+    lock.recoveryQuarantineOwnerFile,
+    JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+  );
+  let interruptedPath = "";
+
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(paths),
+      preparationLock: {
+        isProcessAlive: async () => false,
+        afterRecoveryCleanupJournalUpdate: (kind: "artifact" | "claim", filePath: string) => {
+          if (kind !== "artifact" || interruptedPath) return;
+          interruptedPath = filePath;
+          throw new Error("synthetic crash after cleanup journal update");
+        },
+      },
+    }),
+    /journal|cleanup|synthetic/i,
+  );
+  assert.notEqual(interruptedPath, "");
+  assert.equal(await pathExists(interruptedPath), false);
+  await prepareStagingFiles({
+    ...prepareOptions(paths, 9),
+    preparationLock: { isProcessAlive: async () => false },
+  });
+  assert.equal(await pathExists(lock.lockDirectory), false);
+});
+
 test("foreign artifact claim survives EEXIST and replacement cleanup is refused", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-foreign-cleanup-claim-"));
   const paths = await writePreparationFixture(root);
