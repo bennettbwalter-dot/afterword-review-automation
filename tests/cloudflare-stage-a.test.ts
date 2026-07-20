@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { access, link, mkdir, mkdtemp, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -694,10 +695,13 @@ async function pathExists(filePath: string) {
 
 function preparationLockPaths(paths: PreparationPaths) {
   const lockDirectory = path.join(path.dirname(paths.transactionJournal), "staging-prepare.lock");
+  const recoveryOwnerFile = path.join(lockDirectory, "recovery-owner.json");
   return {
     lockDirectory,
     ownerFile: path.join(lockDirectory, "owner.json"),
-    recoveryOwnerFile: path.join(lockDirectory, "recovery-owner.json"),
+    recoveryOwnerFile,
+    recoveryQuarantineFile: `${recoveryOwnerFile}.90000000-0000-4000-8000-000000000021.quarantine`,
+    recoveryQuarantineOwnerFile: `${recoveryOwnerFile}.90000000-0000-4000-8000-000000000021.quarantine.owner.json`,
   };
 }
 
@@ -851,7 +855,8 @@ test("only one concurrent claimant can reclaim an interrupted dead recovery clai
   const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-recovery-claim-race-"));
   const paths = await writePreparationFixture(root);
   const lock = await writePreparationLock(paths);
-  await writeRecoveryClaim(paths);
+  const stalePid = process.pid === 4343 ? 4344 : 4343;
+  await writeRecoveryClaim(paths, { pid: stalePid });
   let staleClaimChecks = 0;
   let releaseClaimChecks!: () => void;
   const bothCheckedClaim = new Promise<void>((resolve) => { releaseClaimChecks = resolve; });
@@ -859,7 +864,7 @@ test("only one concurrent claimant can reclaim an interrupted dead recovery clai
   const holdWinner = new Promise<void>((resolve) => { releaseWinner = resolve; });
   let winnerEntered = false;
   const isProcessAlive = async (pid: number) => {
-    if (pid === 4343) {
+    if (pid === stalePid) {
       staleClaimChecks += 1;
       if (staleClaimChecks === 2) releaseClaimChecks();
       await bothCheckedClaim;
@@ -886,7 +891,7 @@ test("only one concurrent claimant can reclaim an interrupted dead recovery clai
   await Promise.race(runs);
   releaseWinner();
   const results = await Promise.all(runs);
-  assert.equal(winnerEntered, true);
+  assert.equal(winnerEntered, true, JSON.stringify(results));
   assert.equal(results.filter(({ status }) => status === "fulfilled").length, 1);
   const rejected = results.filter(({ status }) => status === "rejected");
   assert.equal(rejected.length, 1);
@@ -974,6 +979,160 @@ test("recovery claims remain fail-closed when live, foreign-host, invalid, or PI
     /recovery ownership metadata is invalid/i,
   );
   assert.equal(await pathExists(invalidLock.recoveryOwnerFile), true);
+});
+
+async function waitForSubprocessSignal(signalPath: string, child: ReturnType<typeof spawn>) {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (await pathExists(signalPath)) return;
+    if (child.exitCode !== null) throw new Error(`Synthetic crash child exited before signalling: ${child.exitCode}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("Timed out waiting for synthetic crash child quarantine signal.");
+}
+
+test("prepare recovers after a real subprocess is terminated immediately after quarantine hard-link creation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-quarantine-process-crash-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  const signalPath = path.join(root, "quarantine-created.signal");
+  const provisionUrl = new URL("../scripts/cloudflare/provision.ts", import.meta.url).href;
+  const childSource = `
+    import { writeFile } from "node:fs/promises";
+    import { prepareStagingFiles } from ${JSON.stringify(provisionUrl)};
+    const paths = ${JSON.stringify(paths)};
+    let byte = 1;
+    await prepareStagingFiles({
+      paths,
+      confirmations: {
+        application: "https://review-anchor-staging.review-anchor-staging-test.workers.dev",
+        ingress: "https://review-anchor-staging-ingress.review-anchor-staging-test.workers.dev",
+      },
+      randomBytes: (size) => Buffer.alloc(size, byte++),
+      rotate: false,
+      confirmedEmptyStagingData: false,
+      preparationLock: {
+        isProcessAlive: async (pid) => pid === process.pid,
+        afterRecoveryClaimQuarantined: async (quarantinePath) => {
+          await writeFile(${JSON.stringify(signalPath)}, JSON.stringify({ pid: process.pid, quarantinePath }), { flag: "wx" });
+          await new Promise(() => setInterval(() => undefined, 1_000));
+        },
+      },
+    });
+  `;
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", childSource], {
+    cwd: path.resolve("."),
+    env: {
+      NODE_NO_WARNINGS: "1",
+      PATH: process.env.PATH,
+      SystemRoot: process.env.SystemRoot,
+      TEMP: process.env.TEMP,
+      TMP: process.env.TMP,
+    },
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  try {
+    await waitForSubprocessSignal(signalPath, child);
+    const activeStat = await stat(lock.recoveryOwnerFile);
+    const quarantineStat = await stat(lock.recoveryQuarantineFile);
+    assert.equal(activeStat.dev, quarantineStat.dev);
+    assert.equal(activeStat.ino, quarantineStat.ino);
+    assert.ok(activeStat.nlink >= 2);
+    assert.equal(child.kill("SIGKILL"), true);
+    await once(child, "exit");
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+      await once(child, "exit");
+    }
+  }
+
+  await prepareStagingFiles({
+    ...prepareOptions(paths),
+    preparationLock: { isProcessAlive: async (pid) => pid === process.pid },
+  });
+  assert.equal(await pathExists(lock.lockDirectory), false);
+  assert.equal(await pathExists(lock.recoveryQuarantineFile), false);
+});
+
+test("stale quarantine unlink failure remains recoverable on the next prepare", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-quarantine-retry-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+  await writeFile(
+    lock.recoveryQuarantineOwnerFile,
+    JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+  );
+
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(paths),
+      preparationLock: {
+        isProcessAlive: async (pid) => pid === process.pid,
+        beforeExistingRecoveryQuarantineCleanup: async (quarantinePath) => {
+          await unlink(quarantinePath);
+        },
+      },
+    }),
+    /quarantine cleanup failed safely and may be retried/i,
+  );
+  assert.equal(await pathExists(lock.recoveryQuarantineFile), false);
+  assert.equal(await pathExists(lock.recoveryQuarantineOwnerFile), true);
+
+  await prepareStagingFiles({
+    ...prepareOptions(paths),
+    preparationLock: { isProcessAlive: async (pid) => pid === process.pid },
+  });
+  assert.equal(await pathExists(lock.lockDirectory), false);
+});
+
+test("live, replaced, invalid, or inode-ambiguous recovery quarantines fail closed", async () => {
+  const liveRoot = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-live-quarantine-"));
+  const livePaths = await writePreparationFixture(liveRoot);
+  const liveLock = await writePreparationLock(livePaths);
+  await writeRecoveryClaim(livePaths);
+  await link(liveLock.recoveryOwnerFile, liveLock.recoveryQuarantineFile);
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(livePaths),
+      preparationLock: { isProcessAlive: async (pid) => pid === 4343 },
+    }),
+    /live staging preparation lock recovery claimant/i,
+  );
+  assert.equal(await pathExists(liveLock.recoveryQuarantineFile), true);
+
+  for (const state of ["replaced", "invalid", "ambiguous"] as const) {
+    const root = await mkdtemp(path.join(os.tmpdir(), `review-anchor-stage-a-${state}-quarantine-`));
+    const paths = await writePreparationFixture(root);
+    const lock = await writePreparationLock(paths);
+    await writeRecoveryClaim(paths);
+    if (state === "replaced") {
+      await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+      await unlink(lock.recoveryOwnerFile);
+      await writeFile(lock.recoveryOwnerFile, JSON.stringify(syntheticLockOwner(
+        4545,
+        "90000000-0000-4000-8000-000000000022",
+      )));
+    } else if (state === "invalid") {
+      await writeFile(lock.recoveryQuarantineFile, "{\"pid\":4343}");
+    } else {
+      await writeFile(lock.recoveryQuarantineFile, await readFile(lock.recoveryOwnerFile));
+    }
+    const originalEnvironment = await readFile(paths.environment, "utf8");
+    await assert.rejects(
+      prepareStagingFiles({
+        ...prepareOptions(paths),
+        preparationLock: { isProcessAlive: async () => false },
+      }),
+      /quarantine.*(?:invalid|ambiguous|replaced)|recovery ownership changed/i,
+    );
+    assert.equal(await readFile(paths.environment, "utf8"), originalEnvironment);
+    assert.equal(await pathExists(lock.recoveryQuarantineFile), true);
+  }
 });
 
 test("prepare transaction rolls back every prior replacement at multiple injected failure points", async () => {
