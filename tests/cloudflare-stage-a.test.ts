@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { access, link, mkdir, mkdtemp, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { access, link, mkdir, mkdtemp, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -1214,6 +1214,194 @@ test("verified cleanup election is released after an injected claimant unlink fa
   assert.equal(await pathExists(lock.lockDirectory), false);
 });
 
+test("artifact claim unlink retries a transient sharing violation in the same prepare", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-claim-unlink-transient-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+  await writeFile(
+    lock.recoveryQuarantineOwnerFile,
+    JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+  );
+  const attempts = new Map<string, number>();
+  let failedPath = "";
+
+  await prepareStagingFiles({
+    ...prepareOptions(paths),
+    preparationLock: {
+      isProcessAlive: async () => false,
+      beforeRecoveryArtifactClaimUnlink: (filePath: string) => {
+        const next = (attempts.get(filePath) ?? 0) + 1;
+        attempts.set(filePath, next);
+        if (!failedPath) failedPath = filePath;
+        if (filePath === failedPath && next === 1) {
+          throw Object.assign(new Error("synthetic claim sharing violation"), { code: "EPERM" });
+        }
+      },
+    },
+  });
+
+  assert.notEqual(failedPath, "");
+  assert.equal(attempts.get(failedPath), 2);
+  assert.equal(await pathExists(lock.lockDirectory), false);
+});
+
+test("exhausted artifact claim unlink remains durable and the next prepare resumes it", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-claim-unlink-resume-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+  await writeFile(
+    lock.recoveryQuarantineOwnerFile,
+    JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+  );
+  let failedPath = "";
+  let attempts = 0;
+
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(paths),
+      preparationLock: {
+        isProcessAlive: async () => false,
+        beforeRecoveryArtifactClaimUnlink: (filePath: string) => {
+          if (!failedPath) failedPath = filePath;
+          if (filePath !== failedPath) return;
+          attempts += 1;
+          throw Object.assign(new Error("synthetic persistent claim sharing violation"), { code: "EBUSY" });
+        },
+      },
+    }),
+    /cleanup failed safely and may be retried/i,
+  );
+
+  assert.equal(attempts, 5);
+  assert.equal(await pathExists(failedPath), true);
+  assert.equal(await pathExists(lock.recoveryCleanupOwnerFile), true);
+  assert.ok((await readdir(lock.lockDirectory)).some((name) => name.endsWith(".claimed")));
+
+  await prepareStagingFiles({
+    ...prepareOptions(paths, 9),
+    preparationLock: { isProcessAlive: async () => false },
+  });
+  assert.equal(await pathExists(lock.lockDirectory), false);
+});
+
+test("cleanup election unlink retries a transient sharing violation in the same prepare", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-election-unlink-transient-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+  await writeFile(
+    lock.recoveryQuarantineOwnerFile,
+    JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+  );
+  let attempts = 0;
+
+  await prepareStagingFiles({
+    ...prepareOptions(paths),
+    preparationLock: {
+      isProcessAlive: async () => false,
+      beforeRecoveryCleanupElectionUnlink: () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw Object.assign(new Error("synthetic election sharing violation"), { code: "EBUSY" });
+        }
+      },
+    },
+  });
+
+  assert.equal(attempts, 2);
+  assert.equal(await pathExists(lock.lockDirectory), false);
+});
+
+test("exhausted cleanup election unlink is reclaimed by the next prepare", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-election-unlink-resume-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+  await writeFile(
+    lock.recoveryQuarantineOwnerFile,
+    JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+  );
+  let attempts = 0;
+
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(paths),
+      preparationLock: {
+        isProcessAlive: async () => false,
+        beforeRecoveryCleanupElectionUnlink: () => {
+          attempts += 1;
+          throw Object.assign(new Error("synthetic persistent election sharing violation"), { code: "EPERM" });
+        },
+      },
+    }),
+    /cleanup failed safely and may be retried/i,
+  );
+
+  assert.equal(attempts, 5);
+  assert.equal(await pathExists(lock.recoveryCleanupOwnerFile), true);
+  await prepareStagingFiles({
+    ...prepareOptions(paths, 9),
+    preparationLock: { isProcessAlive: async () => false },
+  });
+  assert.equal(await pathExists(lock.lockDirectory), false);
+});
+
+test("retained election retry refuses a delayed replacement and preserves it", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-election-unlink-replaced-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+  await writeFile(
+    lock.recoveryQuarantineOwnerFile,
+    JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+  );
+
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(paths),
+      preparationLock: {
+        isProcessAlive: async () => false,
+        beforeRecoveryCleanupElectionUnlink: () => {
+          throw Object.assign(new Error("synthetic persistent election sharing violation"), { code: "EBUSY" });
+        },
+      },
+    }),
+    /cleanup failed safely and may be retried/i,
+  );
+
+  const replacementBytes = `${JSON.stringify(syntheticLockOwner(
+    4661,
+    "90000000-0000-4000-8000-000000000041",
+  ))}\n`;
+  let replacementBefore!: Awaited<ReturnType<typeof stat>>;
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(paths, 9),
+      preparationLock: {
+        isProcessAlive: async () => false,
+        beforeRecoveryCleanupElectionUnlink: async (filePath: string, attempt: number) => {
+          if (attempt !== 1) return;
+          await unlink(filePath);
+          await writeFile(filePath, replacementBytes, { flag: "wx" });
+          replacementBefore = await stat(filePath);
+        },
+      },
+    }),
+    /cleanup ownership changed|replaced|ambiguous/i,
+  );
+  const replacementAfter = await stat(lock.recoveryCleanupOwnerFile);
+  assert.equal(replacementAfter.dev, replacementBefore.dev);
+  assert.equal(replacementAfter.ino, replacementBefore.ino);
+  assert.equal(await readFile(lock.recoveryCleanupOwnerFile, "utf8"), replacementBytes);
+});
+
 test("foreign artifact claim survives EEXIST and replacement cleanup is refused", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-foreign-cleanup-claim-"));
   const paths = await writePreparationFixture(root);
@@ -1280,6 +1468,22 @@ test("live, replaced, or ambiguous cleanup-election ownership remains fail close
       bytes: "{\"pid\":4553}",
       alive: () => false,
       error: /cleanup ownership metadata is invalid/i,
+    },
+    {
+      label: "foreign",
+      bytes: JSON.stringify(syntheticLockOwner(
+        4554,
+        "90000000-0000-4000-8000-000000000033",
+        "foreign-review-anchor-host",
+      )),
+      alive: () => false,
+      error: /cleanup belongs to another host/i,
+    },
+    {
+      label: "pid-reused",
+      bytes: JSON.stringify(syntheticLockOwner(4555, "90000000-0000-4000-8000-000000000034")),
+      alive: (pid: number) => pid === 4555,
+      error: /live staging preparation lock recovery cleanup claimant/i,
     },
   ];
 
