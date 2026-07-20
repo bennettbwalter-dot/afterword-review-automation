@@ -1,4 +1,5 @@
 export type ActorRole = "business_owner" | "agency_admin";
+export type BusinessRole = "owner" | "admin" | "operator" | "viewer" | "billing";
 export type SupportScope = "view" | "configuration";
 export type Channel = "SMS" | "Email";
 export type RequestStatus = "Queued" | "Delivered" | "Clicked" | "Reviewed" | "Opted out" | "Blocked";
@@ -24,6 +25,7 @@ export interface SessionContext {
   userId: string;
   userName: string;
   role: ActorRole;
+  businessRole?: BusinessRole;
   businessId?: string;
   mfaVerified: boolean;
   stepUpVerifiedAt?: string;
@@ -94,6 +96,39 @@ export interface LocationReportSummary {
   smsSegments: number;
 }
 
+export interface LocationWorkflowSummary {
+  businessId: string;
+  locationId: string;
+  channels: Array<{
+    channel: "sms" | "email";
+    enabled: boolean;
+    timezone: string;
+    allowedWeekdays: number[];
+    sendWindowStart: string;
+    sendWindowEnd: string;
+    maxMessages: number;
+    minimumGapSeconds: number;
+    ruleVersion: string;
+    template: {
+      id: string;
+      key: string;
+      version: number;
+      body: string;
+      subject?: string;
+      includesBusinessIdentity: boolean;
+      includesUnsubscribe: boolean;
+      approvedAt: string;
+    } | null;
+  }>;
+  reviewDestination: {
+    runtimeUrl?: string;
+    qrUrl?: string;
+    verifiedAt?: string;
+    connectionHealth?: string;
+    matchesRuntime: boolean;
+  } | null;
+}
+
 export interface BusinessAccount {
   id: string;
   locationId?: string;
@@ -125,6 +160,7 @@ export interface BusinessAccount {
 export interface RequestRecord {
   id: string;
   businessId: string;
+  locationId?: string;
   customer: string;
   job: string;
   channel: Channel;
@@ -141,6 +177,7 @@ export interface RequestRecord {
 export interface ReviewRecord {
   id: string;
   businessId: string;
+  locationId?: string;
   name: string;
   rating: number;
   date: string;
@@ -150,6 +187,7 @@ export interface ReviewRecord {
 
 export interface QrCodeRecord {
   businessId: string;
+  locationId?: string;
   publicToken: string;
   destinationUrl: string;
   destinationVerified: boolean;
@@ -211,8 +249,26 @@ const ROLE_PERMISSIONS: Record<ActorRole, ReadonlySet<Permission>> = {
   ]),
 };
 
+const BUSINESS_ROLE_PERMISSIONS: Record<BusinessRole, ReadonlySet<Permission>> = {
+  owner: ROLE_PERMISSIONS.business_owner,
+  admin: ROLE_PERMISSIONS.business_owner,
+  operator: new Set(["tenant.read"]),
+  viewer: new Set(["tenant.read"]),
+  billing: new Set(["billing.manage"]),
+};
+
 export function hasPermission(session: SessionContext, permission: Permission) {
+  if (session.role === "business_owner") {
+    if (!session.businessRole) return permission === "tenant.read";
+    return BUSINESS_ROLE_PERMISSIONS[session.businessRole].has(permission);
+  }
   return ROLE_PERMISSIONS[session.role].has(permission);
+}
+
+export function canManageBilling(actor: SessionContext, businessId: string) {
+  return actor.role === "business_owner"
+    && actor.businessId === businessId
+    && hasPermission(actor, "billing.manage");
 }
 
 export function isSupportSessionActive(session: SupportSession | null, now = new Date()) {
@@ -229,7 +285,9 @@ export function canReadTenantData(
   supportSession: SupportSession | null,
   now = new Date(),
 ) {
-  if (actor.role === "business_owner") return actor.businessId === businessId;
+  if (actor.role === "business_owner") {
+    return actor.businessId === businessId && hasPermission(actor, "tenant.read");
+  }
   return Boolean(
     isSupportSessionActive(supportSession, now)
     && supportSession?.actorUserId === actor.userId
@@ -244,9 +302,15 @@ export function canConfigureTenant(
   now = new Date(),
 ) {
   if (actor.role === "business_owner") return actor.businessId === businessId && hasPermission(actor, "tenant.manage");
+  const stepUpAt = actor.stepUpVerifiedAt ? new Date(actor.stepUpVerifiedAt).getTime() : Number.NaN;
+  const nowTime = now.getTime();
+  const freshStepUp = Number.isFinite(stepUpAt)
+    && stepUpAt > nowTime - 15 * 60 * 1_000
+    && stepUpAt <= nowTime + 5 * 60 * 1_000;
   return Boolean(
     canReadTenantData(actor, businessId, supportSession, now)
-    && supportSession?.scope === "configuration",
+    && supportSession?.scope === "configuration"
+    && freshStepUp,
   );
 }
 
@@ -354,6 +418,7 @@ const multiBilling: BillingSummary = {
 export const BUSINESSES: BusinessAccount[] = [
   {
     id: "business_123",
+    locationId: "location_123_bristol",
     agencyId: "agency_afterword",
     name: "Harbour & Hearth",
     locationName: "Bristol",
@@ -375,6 +440,7 @@ export const BUSINESSES: BusinessAccount[] = [
   },
   {
     id: "business_201",
+    locationId: "location_201_leeds",
     agencyId: "agency_afterword",
     name: "Northline Electrical",
     locationName: "Leeds",
@@ -396,6 +462,7 @@ export const BUSINESSES: BusinessAccount[] = [
   },
   {
     id: "business_202",
+    locationId: "location_202_austin",
     agencyId: "agency_afterword",
     name: "Bright Smile Dental",
     locationName: "Austin",
@@ -417,6 +484,7 @@ export const BUSINESSES: BusinessAccount[] = [
   },
   {
     id: "business_203",
+    locationId: "location_203_bath",
     agencyId: "agency_afterword",
     name: "Elm & Stone Landscaping",
     locationName: "Bath",
@@ -444,6 +512,7 @@ export const BUSINESSES: BusinessAccount[] = [
   },
   {
     id: "business_204",
+    locationId: "location_204_glasgow",
     agencyId: "agency_afterword",
     name: "Ember Heating",
     locationName: "Glasgow",
@@ -465,6 +534,7 @@ export const BUSINESSES: BusinessAccount[] = [
   },
   {
     id: "business_205",
+    locationId: "location_205_tampa",
     agencyId: "agency_afterword",
     name: "Coastline Air",
     locationName: "Tampa",
@@ -499,6 +569,7 @@ const request = (
   consentStatus: ConsentStatus = "Verified",
 ): RequestRecord => ({
   businessId,
+  locationId: BUSINESSES.find((business) => business.id === businessId)?.locationId,
   id,
   customer,
   job,
@@ -534,6 +605,7 @@ export const REVIEWS_BY_BUSINESS: Record<string, ReviewRecord[]> = Object.fromEn
   BUSINESSES.map((business, index) => [business.id, [{
     id: `REV-${311 + index}`,
     businessId: business.id,
+    locationId: business.locationId,
     name: ["Amelia C.", "Grace H.", "Jordan L.", "Megan R.", "Fiona R.", "Alex M."][index],
     rating: index === 3 ? 4 : 5,
     date: index === 0 ? "Today · 10:18" : `${15 - index} Jul · 11:20`,
@@ -559,6 +631,7 @@ const qrRecord = (
   reviewConversions: number,
 ): QrCodeRecord => ({
   businessId,
+  locationId: BUSINESSES.find((business) => business.id === businessId)?.locationId,
   publicToken,
   destinationUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${businessName} ${locationName}`)}`,
   destinationVerified: false,
@@ -608,6 +681,7 @@ export const OWNER_SESSION: SessionContext = {
   userId: "user_owner_123",
   userName: "Sarah Collins",
   role: "business_owner",
+  businessRole: "owner",
   businessId: "business_123",
   mfaVerified: true,
 };

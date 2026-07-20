@@ -8,6 +8,7 @@ import {
   OWNER_SESSION,
   REVIEWS_BY_BUSINESS,
   canConfigureTenant,
+  canManageBilling,
   canReadTenantData,
   isSupportSessionActive,
   makeAuditEvent,
@@ -22,6 +23,26 @@ test("business owners are limited to their own tenant", () => {
   assert.equal(canReadTenantData(OWNER_SESSION, "business_123", null, now), true);
   assert.equal(canReadTenantData(OWNER_SESSION, "business_201", null, now), false);
   assert.equal(canConfigureTenant(OWNER_SESSION, "business_201", null, now), false);
+});
+
+test("business membership roles fail closed before database authorisation", () => {
+  const session = (businessRole: SessionContext["businessRole"]): SessionContext => ({
+    ...OWNER_SESSION,
+    businessRole,
+  });
+  for (const businessRole of ["owner", "admin"] as const) {
+    assert.equal(canConfigureTenant(session(businessRole), "business_123", null, now), true);
+    assert.equal(canManageBilling(session(businessRole), "business_123"), true);
+  }
+  for (const businessRole of ["operator", "viewer"] as const) {
+    assert.equal(canReadTenantData(session(businessRole), "business_123", null, now), true);
+    assert.equal(canConfigureTenant(session(businessRole), "business_123", null, now), false);
+    assert.equal(canManageBilling(session(businessRole), "business_123"), false);
+  }
+  assert.equal(canReadTenantData(session("billing"), "business_123", null, now), false);
+  assert.equal(canConfigureTenant(session("billing"), "business_123", null, now), false);
+  assert.equal(canManageBilling(session("billing"), "business_123"), true);
+  assert.equal(canManageBilling(session("billing"), "business_201"), false);
 });
 
 test("agency portfolio access does not silently grant tenant data access", () => {
@@ -85,6 +106,7 @@ test("configuration support requires recent step-up verification", () => {
     now,
   );
   assert.equal(canConfigureTenant(freshAdmin, "business_123", session, now), true);
+  assert.equal(canConfigureTenant(freshAdmin, "business_123", session, new Date("2026-07-16T12:10:01.000Z")), false);
 });
 
 test("neutral template checks block gating, incentives and missing compliance fields", () => {

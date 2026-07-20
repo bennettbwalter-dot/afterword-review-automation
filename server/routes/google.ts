@@ -80,7 +80,7 @@ const selectionParamsSchema = z.object({
 const selectionBodySchema = z.object({ profileIndex: z.number().int().min(0).max(499) }).strict();
 
 function appRedirect(origin: string, values: Record<string, string>) {
-  const url = new URL(origin);
+  const url = new URL("/app/integrations", origin);
   for (const [key, value] of Object.entries(values)) url.searchParams.set(key, value);
   return url.toString();
 }
@@ -114,6 +114,13 @@ export async function registerGoogleRoutes(app: FastifyInstance, options: BuildA
     async (request, reply) => {
       requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production");
       const actor = requireActor(request);
+      if (actor.supportSessionId) {
+        throw new ApiError(
+          403,
+          "GOOGLE_OWNER_REQUIRED",
+          "Google Business Profile must be connected by a direct business owner or administrator session.",
+        );
+      }
       const { businessId, locationId } = oauthParamsSchema.parse(request.params);
       await requireBusinessAccess(options.repository, actor, businessId);
       const googleClient = googleUnavailable(options);
@@ -155,6 +162,8 @@ export async function registerGoogleRoutes(app: FastifyInstance, options: BuildA
       return reply.redirect(appRedirect(options.config.APP_ORIGIN, {
         google: "error",
         reason: query.error ?? "authorization_cancelled",
+        business: storedState.businessId,
+        location: storedState.locationId,
       }));
     }
 
@@ -210,6 +219,8 @@ export async function registerGoogleRoutes(app: FastifyInstance, options: BuildA
         return reply.redirect(appRedirect(options.config.APP_ORIGIN, {
           google: "selection_required",
           selection: selectionToken,
+          business: storedState.businessId,
+          location: storedState.locationId,
         }));
       }
       const profile = profiles[0];
@@ -236,13 +247,16 @@ export async function registerGoogleRoutes(app: FastifyInstance, options: BuildA
       });
       return reply.redirect(appRedirect(options.config.APP_ORIGIN, {
         google: "connected",
-        businessId: storedState.businessId,
+        business: storedState.businessId,
+        location: storedState.locationId,
       }));
     } catch (error) {
       request.log.warn({ err: error, requestId: request.id }, "google oauth callback failed");
       return reply.redirect(appRedirect(options.config.APP_ORIGIN, {
         google: "error",
         reason: "connection_failed",
+        business: storedState.businessId,
+        location: storedState.locationId,
       }));
     }
   });

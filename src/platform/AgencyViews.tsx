@@ -4,7 +4,6 @@ import {
   CheckCircle2,
   Clock3,
   KeyRound,
-  PauseCircle,
   Search,
   ShieldAlert,
   ShieldCheck,
@@ -32,27 +31,28 @@ function AgencyDemoNotice() {
 export function AgencyOverviewView({
   businesses,
   exceptions,
-  pausedBusinessIds,
   onView,
   onStartSupport,
+  supportAvailable,
 }: {
   businesses: BusinessAccount[];
   exceptions: PlatformException[];
-  pausedBusinessIds: ReadonlySet<string>;
   onView: (view: WorkspaceView) => void;
   onStartSupport: (business: BusinessAccount) => void;
+  supportAvailable: boolean;
 }) {
   const healthy = businesses.filter((business) => business.healthTone === "success").length;
-  const paused = businesses.filter((business) => business.automationState !== "Live" || pausedBusinessIds.has(business.id)).length;
+  const paused = businesses.filter((business) => business.automationState !== "Live").length;
   const affected = businesses.reduce((total, business) => total + business.affectedCount, 0);
+  const portfolioDetailAvailable = IS_DEMO_MODE;
   return (
     <div className="view-stack">
       <AgencyDemoNotice />
       <section className="metric-grid agency-metric-grid" aria-label="Agency portfolio metrics">
         <article className="metric-card metric-card--wide"><span>Client accounts</span><strong>{businesses.length}</strong><small>{businesses.length} active locations{IS_DEMO_MODE ? " in this demo" : ""}</small></article>
-        <article className="metric-card metric-card--success"><span>Healthy</span><strong>{healthy}</strong><small>Normal automation and integrations</small></article>
-        <article className="metric-card metric-card--warning"><span>Open exceptions</span><strong>{exceptions.length}</strong><small>{affected} events or messages affected</small></article>
-        <article className="metric-card"><span>Paused scopes</span><strong>{paused}</strong><small>Held safely; queued work retained</small></article>
+        <article className="metric-card metric-card--success"><span>Healthy</span><strong>{portfolioDetailAvailable ? healthy : "Scoped"}</strong><small>{portfolioDetailAvailable ? "Normal automation and integrations" : "Open a client with authorised support access"}</small></article>
+        <article className="metric-card metric-card--warning"><span>Open exceptions</span><strong>{portfolioDetailAvailable ? exceptions.length : "Scoped"}</strong><small>{portfolioDetailAvailable ? `${affected} events or messages affected` : "Tenant operational detail stays protected"}</small></article>
+        <article className="metric-card"><span>Paused scopes</span><strong>{portfolioDetailAvailable ? paused : "Scoped"}</strong><small>{portfolioDetailAvailable ? "Held safely; queued work retained" : "Read inside the selected tenant session"}</small></article>
       </section>
 
       <section className="agency-dashboard-grid">
@@ -65,10 +65,13 @@ export function AgencyOverviewView({
                 <article key={item.id}>
                   <span className={`agency-exception-list__icon agency-exception-list__icon--${item.tone}`}><AlertTriangle size={17} /></span>
                   <div><span><ToneTag tone={item.tone}>{item.category}</ToneTag><small>{item.id}</small></span><strong>{item.title}</strong><p>{business.name} · {business.locationName} · {item.affectedLabel}</p></div>
-                  <button className="button button--secondary" type="button" disabled={!IS_DEMO_MODE} onClick={() => onStartSupport(business)}>{IS_DEMO_MODE ? "Open safely" : "Support endpoint pending"}</button>
+                  {supportAvailable
+                    ? <button className="button button--secondary" type="button" onClick={() => onStartSupport(business)}>Open safely</button>
+                    : <small>MFA required for tenant access</small>}
                 </article>
               );
             })}
+            {exceptions.length === 0 && <div className="empty-state"><ShieldCheck size={22} /><h2>{portfolioDetailAvailable ? "No open exceptions." : "Client exception detail is protected."}</h2><p>{portfolioDetailAvailable ? "There are no client issues requiring agency attention." : "Choose a client and start a scoped support session before reading tenant operations."}</p></div>}
           </div>
         </article>
 
@@ -76,13 +79,13 @@ export function AgencyOverviewView({
           <header className="panel__head"><div><h2>Client health</h2><p>Explicit states, not an opaque score</p></div><button className="text-action" type="button" onClick={() => onView("clients")}>All clients <ArrowRight size={15} /></button></header>
           <div className="fleet-health-list">
             {businesses.map((business) => {
-              const isPaused = business.automationState !== "Live" || pausedBusinessIds.has(business.id);
+              const isPaused = business.automationState !== "Live";
               return (
                 <div key={business.id}>
                   <span className="client-avatar">{business.initials}</span>
-                  <span><strong>{business.name}</strong><small>{business.locationName} · {business.lastSuccess}</small></span>
-                  <ToneTag tone={business.healthTone}>{business.health}</ToneTag>
-                  <small>{isPaused ? "Sending held" : business.automationState}</small>
+                  <span><strong>{business.name}</strong><small>{portfolioDetailAvailable ? `${business.locationName} · ${business.lastSuccess}` : "Tenant detail requires scoped access"}</small></span>
+                  <ToneTag tone={portfolioDetailAvailable ? business.healthTone : "muted"}>{portfolioDetailAvailable ? business.health : "Protected"}</ToneTag>
+                  <small>{portfolioDetailAvailable ? isPaused ? "Sending held" : business.automationState : "Start support"}</small>
                 </div>
               );
             })}
@@ -95,14 +98,12 @@ export function AgencyOverviewView({
 
 export function ClientsView({
   businesses,
-  pausedBusinessIds,
   onStartSupport,
-  onPause,
+  supportAvailable,
 }: {
   businesses: BusinessAccount[];
-  pausedBusinessIds: ReadonlySet<string>;
   onStartSupport: (business: BusinessAccount) => void;
-  onPause: (business: BusinessAccount) => void;
+  supportAvailable: boolean;
 }) {
   const [query, setQuery] = useState("");
   const filtered = useMemo(
@@ -120,19 +121,18 @@ export function ClientsView({
         <div className="agency-client-list" role="table" aria-label="Agency client accounts">
           <div className="agency-client-list__head" role="row"><span role="columnheader">Client</span><span role="columnheader">Health</span><span role="columnheader">Automation</span><span role="columnheader">Last success</span><span role="columnheader">Actions</span></div>
           {filtered.map((business) => {
-            const isManuallyPaused = pausedBusinessIds.has(business.id);
-            const isSystemProtected = business.automationState !== "Live" && !isManuallyPaused;
-            const isPaused = isManuallyPaused || isSystemProtected;
+            const isPaused = business.automationState !== "Live";
             return (
               <article className="agency-client-row" role="row" key={business.id}>
                 <span role="cell" className="agency-client-row__identity"><span className="client-avatar">{business.initials}</span><span><strong>{business.name}</strong><small>{business.locationName} · {business.timezone}</small></span></span>
-                <span role="cell"><ToneTag tone={business.healthTone}>{business.health}</ToneTag><small>{business.integrationSummary}</small></span>
-                <span role="cell"><strong>{isPaused ? "Held" : business.automationState}</strong><small>{business.affectedCount ? `${business.affectedCount} affected` : "No affected work"}</small></span>
-                <span role="cell"><strong>{business.lastSuccess}</strong><small>{business.plan}</small></span>
-                <span role="cell" className="agency-client-row__actions"><button className="button button--secondary" type="button" disabled={!IS_DEMO_MODE} onClick={() => onStartSupport(business)}><UserCog size={16} /> {IS_DEMO_MODE ? "Start support" : "Support pending"}</button><button className="button button--quiet" type="button" disabled={!IS_DEMO_MODE || isSystemProtected} onClick={() => onPause(business)}>{isSystemProtected ? <ShieldAlert size={16} /> : <PauseCircle size={16} />} {isSystemProtected ? "System protected" : isManuallyPaused ? "Resume scope" : "Pause scope"}</button></span>
+                <span role="cell"><ToneTag tone={IS_DEMO_MODE ? business.healthTone : "muted"}>{IS_DEMO_MODE ? business.health : "Scoped access"}</ToneTag><small>{IS_DEMO_MODE ? business.integrationSummary : "Tenant integrations remain protected"}</small></span>
+                <span role="cell"><strong>{IS_DEMO_MODE ? isPaused ? "Held" : business.automationState : "Protected"}</strong><small>{IS_DEMO_MODE ? business.affectedCount ? `${business.affectedCount} affected` : "No affected work" : "Open client to inspect"}</small></span>
+                <span role="cell"><strong>{IS_DEMO_MODE ? business.lastSuccess : "Tenant scoped"}</strong><small>{IS_DEMO_MODE ? business.plan : "Shared account preserved"}</small></span>
+                <span role="cell" className="agency-client-row__actions">{supportAvailable ? <button className="button button--secondary" type="button" onClick={() => onStartSupport(business)}><UserCog size={16} /> Start support</button> : <small>MFA required</small>}</span>
               </article>
             );
           })}
+          {filtered.length === 0 && <div className="empty-state"><Search size={22} /><h2>No matching clients.</h2><p>Try another client or location name.</p><button className="text-action" type="button" onClick={() => setQuery("")}>Clear search</button></div>}
         </div>
       </section>
     </div>
@@ -142,15 +142,13 @@ export function ClientsView({
 export function ExceptionsView({
   businesses,
   exceptions,
-  pausedBusinessIds,
   onStartSupport,
-  onPause,
+  supportAvailable,
 }: {
   businesses: BusinessAccount[];
   exceptions: PlatformException[];
-  pausedBusinessIds: ReadonlySet<string>;
   onStartSupport: (business: BusinessAccount) => void;
-  onPause: (business: BusinessAccount) => void;
+  supportAvailable: boolean;
 }) {
   const [filter, setFilter] = useState("All");
   const shown = filter === "All" ? exceptions : exceptions.filter((item) => item.category === filter);
@@ -158,26 +156,31 @@ export function ExceptionsView({
     <div className="view-stack">
       <AgencyDemoNotice />
       <section className="exception-summary-strip">
-        <span><ShieldAlert size={18} /><strong>{exceptions.filter((item) => item.tone === "danger").length} safety-critical</strong><small>Sending blocked or paused</small></span>
-        <span><Clock3 size={18} /><strong>{exceptions.filter((item) => item.category === "Delayed").length} delayed</strong><small>Automatic backoff active</small></span>
-        <span><CheckCircle2 size={18} /><strong>Protection working</strong><small>No duplicate or unpermitted sends</small></span>
+        {IS_DEMO_MODE ? <>
+          <span><ShieldAlert size={18} /><strong>{exceptions.filter((item) => item.tone === "danger").length} safety-critical</strong><small>Sending blocked or paused</small></span>
+          <span><Clock3 size={18} /><strong>{exceptions.filter((item) => item.category === "Delayed").length} delayed</strong><small>Automatic backoff active</small></span>
+          <span><CheckCircle2 size={18} /><strong>Protection working</strong><small>No duplicate or unpermitted sends</small></span>
+        </> : <>
+          <span><ShieldAlert size={18} /><strong>Tenant protected</strong><small>No cross-client exception payloads</small></span>
+          <span><Clock3 size={18} /><strong>Scoped access</strong><small>Open one authorised client at a time</small></span>
+          <span><CheckCircle2 size={18} /><strong>Audited support</strong><small>Every support session is time bounded</small></span>
+        </>}
       </section>
       <section className="panel exception-panel">
-        <header className="table-toolbar"><div><strong>Open exceptions</strong><small>What failed, who is affected and what the system protected</small></div><label className="select-field"><span className="sr-only">Filter exception category</span><select value={filter} onChange={(event) => setFilter(event.target.value)}><option>All</option><option>Critical</option><option>Compliance</option><option>Security</option><option>Warning</option><option>Delayed</option></select></label></header>
+        <header className="table-toolbar"><div><strong>Open exceptions</strong><small>What failed, who is affected and what the system protected</small></div><label className="select-field"><span className="sr-only">Filter exception category</span><select value={filter} onChange={(event) => setFilter(event.target.value)}><option>All</option><option>Critical</option><option>Compliance</option><option>Security</option><option>Warning</option><option>Delayed</option><option>Dead letter</option></select></label></header>
         <div className="exception-list">
           {shown.map((item) => {
             const business = businesses.find((candidate) => candidate.id === item.businessId)!;
-            const isManuallyPaused = pausedBusinessIds.has(business.id);
-            const isSystemProtected = business.automationState !== "Live" && !isManuallyPaused;
             return (
               <article key={item.id}>
                 <header><span><ToneTag tone={item.tone}>{item.category}</ToneTag><small>{item.id} · began {item.startedAt}</small></span><strong>{item.title}</strong><p>{business.name} · {business.locationName}</p></header>
                 <dl><div><dt>Affected</dt><dd>{item.affectedLabel}</dd></div><div><dt>System response</dt><dd>{item.protectedAction}</dd></div><div><dt>Client</dt><dd>{item.clientNotified ? "Notified" : "Notification pending"}</dd></div><div><dt>Owner</dt><dd>{item.owner}</dd></div></dl>
                 <div className="exception-resolution"><ShieldCheck size={17} /><span><strong>Recommended resolution</strong><small>{item.resolution}</small></span></div>
-                <footer><button className="button button--secondary" type="button" disabled={!IS_DEMO_MODE} onClick={() => onStartSupport(business)}>{IS_DEMO_MODE ? "Start support session" : "Support endpoint pending"}</button><button className="button button--quiet" type="button" disabled={!IS_DEMO_MODE || isSystemProtected} onClick={() => onPause(business)}>{isSystemProtected ? <ShieldAlert size={16} /> : <PauseCircle size={16} />} {isSystemProtected ? "System protected" : isManuallyPaused ? "Resume scope" : "Pause scope"}</button></footer>
+                <footer>{supportAvailable ? <button className="button button--secondary" type="button" onClick={() => onStartSupport(business)}>Start support session</button> : <small>MFA is required before tenant access can be requested.</small>}</footer>
               </article>
             );
           })}
+          {shown.length === 0 && <div className="empty-state"><ShieldCheck size={22} /><h2>{IS_DEMO_MODE ? "No matching exceptions." : "Exception detail requires client scope."}</h2><p>{IS_DEMO_MODE ? "No open issues match this category." : "Use Clients to start an authorised support session for the selected business."}</p>{filter !== "All" && <button className="text-action" type="button" onClick={() => setFilter("All")}>{IS_DEMO_MODE ? "Show all exceptions" : "Clear filter"}</button>}</div>}
         </div>
       </section>
     </div>
@@ -223,17 +226,23 @@ export function AuditLogView({ businesses, events }: { businesses: BusinessAccou
 export function TeamBillingView({
   business,
   canConfigure,
+  canManageStripe,
+  canViewTeamMembers,
   onSaveSmsPolicy,
   onStartCheckout,
   onOpenBillingPortal,
-  stripeActionsEnabled,
+  stripeCheckoutEnabled,
+  stripePortalEnabled,
 }: {
   business: BusinessAccount;
   canConfigure: boolean;
+  canManageStripe: boolean;
+  canViewTeamMembers: boolean;
   onSaveSmsPolicy: (policy: SmsOveragePolicy) => Promise<void>;
   onStartCheckout: () => Promise<void>;
   onOpenBillingPortal: () => Promise<void>;
-  stripeActionsEnabled: boolean;
+  stripeCheckoutEnabled: boolean;
+  stripePortalEnabled: boolean;
 }) {
   const billing = business.billing;
   const [smsPolicy, setSmsPolicy] = useState<SmsOveragePolicy>(billing?.smsOveragePolicy ?? "pause_sms");
@@ -282,7 +291,7 @@ export function TeamBillingView({
     <div className="view-stack">
       <div className="demo-notice"><span className="demo-label">Tenant scoped</span><p>Team and billing data below belongs only to {business.name}. Production membership checks are enforced by the API and database.</p></div>
       <section className="team-billing-grid">
-        <article className="panel team-panel"><header className="panel__head"><div><h2>Team members</h2><p>Roles apply only inside this business</p></div><button className="button button--secondary" type="button" disabled aria-label={canConfigure ? "Invitations are simulated in this demo" : "View-only support cannot invite members"}><UsersRound size={16} /> Invite · Demo</button></header><div className="team-list">{business.teamMembers.map((member) => <div key={member.name}><span className="client-avatar">{member.initials}</span><span><strong>{member.name}</strong><small>{member.role}</small></span><ToneTag tone="success">Active</ToneTag></div>)}</div><p className="panel-note"><ShieldCheck size={16} /> Owners cannot remove the final active owner or grant a role above their own.</p></article>
+      <article className="panel team-panel"><header className="panel__head"><div><h2>Team members</h2><p>Roles apply only inside this business</p></div></header>{canViewTeamMembers && business.teamMembers.length > 0 ? <div className="team-list">{business.teamMembers.map((member) => <div key={member.name}><span className="client-avatar">{member.initials}</span><span><strong>{member.name}</strong><small>{member.role}</small></span><ToneTag tone="success">Active</ToneTag></div>)}</div> : <div className="empty-state"><UsersRound size={22} /><h3>Member directory unavailable.</h3><p>This role can use the billing workspace but cannot enumerate other account members.</p></div>}<p className="panel-note"><ShieldCheck size={16} /> Team invitations are hidden until the audited invitation endpoint is available.</p></article>
         <article className="panel billing-panel">
           <header className="panel__head"><div><h2>Subscription and SMS</h2><p>Plan allowance, pooled usage and account controls</p></div><ToneTag tone="accent">{business.plan}</ToneTag></header>
           {billing ? <>
@@ -294,9 +303,13 @@ export function TeamBillingView({
             </div>
             <div className="billing-action-row">
               {billing.stripeSubscriptionReady || billing.subscriptionStatus === "Active" || billing.subscriptionStatus === "Past due"
-                ? <button className="button button--secondary" type="button" disabled={!canConfigure || !stripeActionsEnabled || billingAction !== null} onClick={() => void runBillingAction("portal")}>{billingAction === "portal" ? "Opening billing…" : "Manage billing"}</button>
-                : <button className="button" type="button" disabled={!canConfigure || !stripeActionsEnabled || billingAction !== null} onClick={() => void runBillingAction("checkout")}>{billingAction === "checkout" ? "Opening secure checkout…" : "Activate with Stripe"}</button>}
-              <p>{stripeActionsEnabled ? "Stripe hosts payment collection. Review Anchor never receives card details." : "Stripe actions are disabled in the seeded demo and until the server launch flag is enabled."}</p>
+                ? <button className="button button--secondary" type="button" disabled={!canManageStripe || !stripePortalEnabled || billingAction !== null} onClick={() => void runBillingAction("portal")}>{billingAction === "portal" ? "Opening billing…" : "Manage billing"}</button>
+                : <button className="button" type="button" disabled={!canManageStripe || !stripeCheckoutEnabled || billingAction !== null} onClick={() => void runBillingAction("checkout")}>{billingAction === "checkout" ? "Opening secure checkout…" : "Activate with Stripe"}</button>}
+              <p>{!canManageStripe
+                ? "Stripe actions require a direct owner, administrator or billing-role session; support sessions remain read-only for payment changes."
+                : (billing.stripeSubscriptionReady || billing.subscriptionStatus === "Active" || billing.subscriptionStatus === "Past due")
+                  ? stripePortalEnabled ? "Stripe hosts billing management. Review Anchor never receives card details." : "The Stripe billing portal is not available for this deployment."
+                  : stripeCheckoutEnabled ? "Stripe hosts payment collection. Review Anchor never receives card details." : "Stripe Checkout is not available for this deployment."}</p>
             </div>
             {billingError && <p className="field-error" role="alert">{billingError}</p>}
             <section className="sms-usage" aria-labelledby="sms-usage-title">

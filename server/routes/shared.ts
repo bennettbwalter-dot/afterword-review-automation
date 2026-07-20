@@ -54,7 +54,7 @@ export async function requireBusinessAccess(
   actor: ActorContext,
   businessId: string,
 ): Promise<BusinessSummary> {
-  if (actor.role === "business_owner" && actor.businessId !== businessId) {
+  if (actor.role === "business_owner" && actor.businessId && actor.businessId !== businessId) {
     throw new ApiError(403, "BUSINESS_ACCESS_DENIED", "You do not have access to this business.");
   }
   const workspace = await repository.getWorkspace(actor, businessId);
@@ -75,6 +75,7 @@ export function redactActor(actor: ActorContext) {
     userName: actor.userName,
     email: actor.email,
     role: actor.role,
+    businessRole: actor.businessRole,
     businessId: actor.businessId,
     agencyId: actor.agencyId,
     mfaVerified: actor.mfaVerified,

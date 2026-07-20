@@ -3,6 +3,7 @@ import type {
   BusinessAccount,
   Channel,
   ConsentStatus,
+  LocationWorkflowSummary,
   PlatformException,
   QrCodeRecord,
   RequestRecord,
@@ -26,8 +27,20 @@ export interface WorkspacePayload {
   requestsByBusiness: Record<string, RequestRecord[]>;
   reviewsByBusiness: Record<string, ReviewRecord[]>;
   qrCodesByBusiness: Record<string, QrCodeRecord>;
+  workflowsByLocation: Record<string, LocationWorkflowSummary>;
+  access?: WorkspaceAccess;
   exceptions: PlatformException[];
   auditEvents: AuditEvent[];
+}
+
+export interface WorkspaceAccess {
+  businessId: string;
+  locationId?: string;
+  canReadTenant: boolean;
+  canManageBusiness: boolean;
+  canReadBilling: boolean;
+  canManageBilling: boolean;
+  canManageStripeBilling: boolean;
 }
 
 export interface CompletedJobDraft {
@@ -57,6 +70,23 @@ export interface CompletedJobResult {
   requestId: string;
   status: "Queued" | "Blocked";
   duplicate: boolean;
+}
+
+export type ServiceKey =
+  | "google"
+  | "sms"
+  | "email"
+  | "whatsapp"
+  | "stripeCheckout"
+  | "stripeBillingPortal"
+  | "reviewSync";
+
+export interface ServiceStatus {
+  key: ServiceKey;
+  label: string;
+  configured: boolean;
+  requires: string[];
+  detail: string;
 }
 
 export interface PublicReviewFlowPayload {
@@ -165,6 +195,10 @@ function normalizeWorkspace(payload: unknown): WorkspacePayload {
     qrCodesByBusiness: isRecord(candidate.qrCodesByBusiness)
       ? candidate.qrCodesByBusiness as Record<string, QrCodeRecord>
       : {},
+    workflowsByLocation: isRecord(candidate.workflowsByLocation)
+      ? candidate.workflowsByLocation as Record<string, LocationWorkflowSummary>
+      : {},
+    access: isRecord(candidate.access) ? candidate.access as unknown as WorkspaceAccess : undefined,
     exceptions: Array.isArray(candidate.exceptions) ? candidate.exceptions as PlatformException[] : [],
     auditEvents: Array.isArray(candidate.auditEvents) ? candidate.auditEvents as AuditEvent[] : [],
   };
@@ -172,6 +206,7 @@ function normalizeWorkspace(payload: unknown): WorkspacePayload {
 
 export const platformApi = {
   async login(email: string, password: string) {
+    activeSupportSessionId = undefined;
     await request<unknown>("/api/v1/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
@@ -179,17 +214,31 @@ export const platformApi = {
   },
 
   async logout() {
-    await request<unknown>("/api/v1/auth/logout", { method: "POST" });
-    activeSupportSessionId = undefined;
+    try {
+      await request<unknown>("/api/v1/auth/logout", { method: "POST" });
+    } finally {
+      activeSupportSessionId = undefined;
+    }
   },
 
   async getSession() {
     return unwrapSession(await request<unknown>("/api/v1/session"));
   },
 
-  async getWorkspace(businessId?: string) {
-    const query = businessId ? `?businessId=${encodeURIComponent(businessId)}` : "";
+  async getWorkspace(businessId?: string, locationId?: string) {
+    const params = new URLSearchParams();
+    if (businessId) params.set("businessId", businessId);
+    if (locationId) params.set("locationId", locationId);
+    const query = params.size > 0 ? `?${params.toString()}` : "";
     return normalizeWorkspace(await request<unknown>(`/api/v1/workspace${query}`));
+  },
+
+  async getServiceStatus() {
+    const payload = unwrapData(await request<unknown>("/api/v1/service-status"));
+    if (!isRecord(payload) || !Array.isArray(payload.services)) {
+      throw new ApiError("The server returned an invalid service status.", 502, "INVALID_SERVICE_STATUS");
+    }
+    return payload.services as ServiceStatus[];
   },
 
   async createCompletedJob(businessId: string, draft: CompletedJobDraft) {
@@ -220,10 +269,10 @@ export const platformApi = {
     return payload.policy as SmsOveragePolicy;
   },
 
-  async startStripeCheckout(businessId: string, attemptId: string) {
+  async startStripeCheckout(businessId: string, locationId: string | undefined, attemptId: string) {
     const payload = unwrapData(await request<unknown>(
       `/api/v1/businesses/${encodeURIComponent(businessId)}/billing/checkout`,
-      { method: "POST", body: JSON.stringify({ attemptId }) },
+      { method: "POST", body: JSON.stringify({ locationId, attemptId }) },
     ));
     if (!isRecord(payload) || typeof payload.url !== "string") {
       throw new ApiError("The server returned an invalid Stripe Checkout URL.", 502, "INVALID_CHECKOUT_RESPONSE");
@@ -231,10 +280,10 @@ export const platformApi = {
     return payload.url;
   },
 
-  async openStripeBillingPortal(businessId: string) {
+  async openStripeBillingPortal(businessId: string, locationId?: string) {
     const payload = unwrapData(await request<unknown>(
       `/api/v1/businesses/${encodeURIComponent(businessId)}/billing/portal`,
-      { method: "POST", body: JSON.stringify({}) },
+      { method: "POST", body: JSON.stringify({ locationId }) },
     ));
     if (!isRecord(payload) || typeof payload.url !== "string") {
       throw new ApiError("The server returned an invalid Stripe billing portal URL.", 502, "INVALID_PORTAL_RESPONSE");
@@ -313,14 +362,44 @@ export const platformApi = {
     return payload as unknown as { id: string; businessId: string; scope: "view" | "configuration"; expiresAt: string };
   },
 
+  async getActiveSupportSession() {
+    activeSupportSessionId = undefined;
+    const payload = unwrapData(await request<unknown>("/api/v1/support-sessions/active"));
+    if (!isRecord(payload) || !(payload.session === null || isRecord(payload.session))) {
+      throw new ApiError("The server returned an invalid active support session.", 502, "INVALID_SUPPORT_SESSION");
+    }
+    if (payload.session === null) return null;
+    const session = payload.session;
+    if (
+      typeof session.id !== "string"
+      || typeof session.businessId !== "string"
+      || (session.scope !== "view" && session.scope !== "configuration")
+      || typeof session.startedAt !== "string"
+      || typeof session.expiresAt !== "string"
+    ) {
+      throw new ApiError("The server returned an invalid active support session.", 502, "INVALID_SUPPORT_SESSION");
+    }
+    activeSupportSessionId = session.id;
+    return session as unknown as { id: string; businessId: string; scope: "view" | "configuration"; startedAt: string; expiresAt: string };
+  },
+
+  clearSupportSession() {
+    activeSupportSessionId = undefined;
+  },
+
   async endSupportSession(supportSessionId: string, reason: string) {
+    const shouldRestoreOnFailure = activeSupportSessionId === supportSessionId;
+    if (shouldRestoreOnFailure) activeSupportSessionId = undefined;
     try {
       await request<unknown>(`/api/v1/support-sessions/${encodeURIComponent(supportSessionId)}`, {
         method: "DELETE",
         body: JSON.stringify({ reason }),
       });
-    } finally {
-      if (activeSupportSessionId === supportSessionId) activeSupportSessionId = undefined;
+    } catch (caught) {
+      if (shouldRestoreOnFailure && activeSupportSessionId === undefined) {
+        activeSupportSessionId = supportSessionId;
+      }
+      throw caught;
     }
   },
 };

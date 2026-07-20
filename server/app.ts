@@ -13,6 +13,7 @@ import { registerAuthRoutes } from "./routes/auth.js";
 import { registerBillingRoutes } from "./routes/billing.js";
 import { registerGoogleRoutes } from "./routes/google.js";
 import { registerPublicReviewRoutes } from "./routes/public-review.js";
+import { registerServiceStatusRoutes } from "./routes/service-status.js";
 import { registerSupportRoutes } from "./routes/support.js";
 import { ApiError } from "./routes/shared.js";
 import { registerWebhookRoutes } from "./routes/webhooks.js";
@@ -128,6 +129,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     await registerBillingRoutes(app, options);
     await registerWorkspaceRoutes(app, options);
     await registerGoogleRoutes(app, options);
+    await registerServiceStatusRoutes(app, options);
     await registerSupportRoutes(app, options);
   }
   if (surface !== "application") {
@@ -156,9 +158,21 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     }));
   }
 
-  app.setNotFoundHandler((request, reply) => reply.code(404).send({
-    error: { code: "NOT_FOUND", message: "The requested API resource was not found.", requestId: request.id },
-  }));
+  app.setNotFoundHandler((request, reply) => {
+    const pathname = request.url.split("?", 1)[0];
+    const normalizedPathname = pathname.toLowerCase();
+    if (
+      surface === "application"
+      && options.frontendRoot
+      && request.method === "GET"
+      && (normalizedPathname === "/app" || normalizedPathname.startsWith("/app/") || normalizedPathname === "/workspace")
+    ) {
+      return reply.sendFile("index.html", { maxAge: 0, immutable: false });
+    }
+    return reply.code(404).send({
+      error: { code: "NOT_FOUND", message: "The requested API resource was not found.", requestId: request.id },
+    });
+  });
 
   app.setErrorHandler((error: unknown, request, reply) => {
     if (error instanceof ApiError) {
