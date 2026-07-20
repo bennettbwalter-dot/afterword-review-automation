@@ -2,12 +2,14 @@
 
 Review Anchor connects a Google Business Profile to completed-job events and turns those events into neutral, consent-backed review requests by SMS or email.
 
-This branch contains two distinct surfaces:
+This branch contains one connected product surface:
 
-- A polished React workspace and public QR review flow.
-- An authenticated Fastify/PostgreSQL foundation for real users, agencies, businesses, requests, consent records, reviews, audit events and provider delivery.
+- `/` is the public landing page only.
+- `/app/growth` is the authenticated Growth Suite dashboard.
+- Review Anchor is the native reviews and reputation module inside that dashboard, with stable routes for reviews, requests, workflow, QR codes, reports, integrations, and team/billing.
+- Every application route uses the same opaque session, tenant/location context, Fastify API, capability-separated PostgreSQL roles, and Supabase-managed PostgreSQL data. The public QR review flow remains a deliberately unauthenticated ingress surface.
 
-It is a backend foundation, not a production launch. The five PostgreSQL migrations and SQL tenant-isolation suite have been executed successfully against the dedicated Review Anchor Supabase project, including an idempotent second migration pass and a clean Supabase Security Advisor rerun. Google Business Profile, Twilio, SendGrid and Stripe have not been exercised end to end with real provider events, and no real-business pilot has run.
+It is a backend foundation, not a production launch. Migrations 001–007 and the SQL tenant-isolation suite were previously executed successfully against the dedicated Review Anchor Supabase project, including an idempotent second migration pass and a clean Supabase Security Advisor rerun. Migration 008 adds the business membership role to authenticated sessions and must be applied before deploying this branch. Google Business Profile, Twilio, SendGrid and Stripe have not been exercised end to end with real provider events, and no real-business pilot has run.
 
 ## Run locally
 
@@ -31,7 +33,7 @@ npm.cmd run deploy:demo
 
 This Direct Upload project is intentionally demo-only. Do not attach the production customer domain or inject production secrets into it. The authenticated API, public ingress and background worker require a separate deployment design with capability-separated secrets and PostgreSQL connections.
 
-The prepared Render topologies and database-first activation sequence are documented in [`docs/render-pilot-deployment.md`](docs/render-pilot-deployment.md). `render.yaml` defines the paid capability-separated pilot. `render.hobby.yaml` defines a disposable free preview with only the application API and public ingress; Render does not offer a Free background-worker instance. Neither Blueprint should be synced until the separate database roles and internal connection URLs have been created.
+The prepared Render topologies and database-first activation sequence are documented in [`docs/render-pilot-deployment.md`](docs/render-pilot-deployment.md). `render.paid.yaml` defines the paid three-service pilot with separate application API, public ingress and background worker processes. The root `render.yaml` and its explicit alias `render.hobby.yaml` define two-web-service Hobby/free previews with only the application API and public ingress; they omit the worker because Render does not offer a Free background-worker instance. No Blueprint should be synced until the separate database roles and internal connection URLs have been created.
 
 For the authenticated API and web application:
 
@@ -104,7 +106,12 @@ idempotency on a completed job, checks the billing and agency-support
 boundaries, and confirms the session is invalidated on sign-out. Point it at a
 deployment with `API_BASE`, `VERIFY_EMAIL` and `VERIFY_PASSWORD`. It creates one
 clearly-labelled completed job, which the consent rules block while no Google
-review destination is connected.
+review destination is connected. It re-saves the current SMS policy without
+changing it and skips Stripe session creation by default. Set
+`VERIFY_ALLOW_STRIPE_SESSION=true` only for an intentional test-mode Checkout
+probe. This command targets one `API_BASE`; it does not prove the separately
+deployed ingress or worker processes, or Cloudflare/static-host deep-link
+fallback behaviour. Verify those deployment surfaces independently.
 
 The Node tests exercise API/security helpers, process-surface separation and provider-signature behaviour without a live database. Database proof is separate: apply all migrations to a clean PostgreSQL instance and run `database/tests/003_tenant_isolation.sql` as the real least-privilege roles. The repository includes `.github/workflows/application-security.yml` and `.github/workflows/database-security.yml`, but their presence is not evidence that either workflow has passed.
 

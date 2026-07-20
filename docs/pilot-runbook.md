@@ -2,7 +2,7 @@
 
 The pilot is a launch gate, not a demo. Billing and public self-service stay disabled until every acceptance item below has evidence attached to the pilot record.
 
-Current execution status: **not started**. The migrations and SQL isolation tests have not been run locally because this workspace has no PostgreSQL runtime. No real Google Business Profile, Twilio, SendGrid or Stripe credentials have been connected.
+Current execution status: **not started**. Migrations 001-008 and the SQL isolation tests have not been run locally because this workspace has no PostgreSQL runtime. No current-branch Google Business Profile, Twilio or SendGrid provider journey, or Stripe Checkout/webhook journey, has been run. Earlier Stripe test-mode API/catalog connectivity evidence predates this branch and is not pilot proof.
 
 ## Required access
 
@@ -29,7 +29,7 @@ Configure provider callbacks to their exact deployed HTTPS URLs:
 
 ## Safe activation order
 
-1. Create the six database group roles and four application logins, deploy the three capability-separated processes, apply migrations 001-005 in a clean PostgreSQL environment, then run `database/tests/003_tenant_isolation.sql` and the remaining pool-reuse/two-connection checks. If a reverse proxy is used, pin the exact trusted hop count and block direct origin access.
+1. Create the six database group roles and four application logins, then apply migrations 001-008 in a clean PostgreSQL environment before starting this branch's API. Migration 008 is required because the authenticated session projection consumes the business membership role it exposes. Run `database/tests/003_tenant_isolation.sql` and the remaining pool-reuse/two-connection checks, then deploy the three capability-separated API, ingress and worker processes from `render.paid.yaml`. If a reverse proxy is used, pin the exact trusted hop count and block direct origin access.
 2. Bootstrap one business-owner account and one location with `BOOTSTRAP_PLAN=pro_monthly`. This creates a non-chargeable pilot billing period and a 100-segment allowance. When provider variables are configured, retain the printed `twilioIntegrationId` for the inbound callback URL. Keep Stripe checkout, paid top-ups, agency support access and public registration off.
 3. Connect Google, explicitly choose the correct account/location when more than one is returned, capture the canonical Google review URL, then run a read-only review reconciliation. Confirm the selection is actor-bound, single-use and exposes no OAuth tokens to the browser.
 4. Configure the exact provider callback URLs above and prove bad signatures/OIDC claims are rejected before any live send. Send only to controlled internal destinations first.
