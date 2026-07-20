@@ -132,9 +132,14 @@ export interface PrepareStagingOptions {
   randomBytes?: (size: number) => Uint8Array;
   rotate: boolean;
   preparationLock?: {
+    afterRecoveryCleanupElection?: (ownerPath: string, claimantOwnerId: string) => Promise<void> | void;
     afterRecoveryClaimAcquired?: () => Promise<void> | void;
     afterRecoveryClaimQuarantined?: (quarantinePath: string) => Promise<void> | void;
     beforeExistingRecoveryQuarantineCleanup?: (quarantinePath: string) => Promise<void> | void;
+    beforeRecoveryClaimCleanup?: (
+      filePath: string,
+      artifact: "quarantine" | "transition",
+    ) => Promise<void> | void;
     isProcessAlive?: (pid: number) => boolean | Promise<boolean>;
   };
   transactionHooks?: {
@@ -952,9 +957,16 @@ async function findExistingRecoveryQuarantine(recoveryClaim: string): Promise<Ex
   const cleanupOwnerNames = names.filter(
     (name) => name.startsWith(quarantinePrefix) && name.endsWith(cleanupOwnerSuffix),
   );
+  const cleanupArtifactClaimNames = names.filter(
+    (name) => name.startsWith(quarantinePrefix) && name.includes(".cleanup-") && name.endsWith(".claimed"),
+  );
   assertSafe(
     quarantineNames.length <= 1 && transitionNames.length <= 1 && cleanupOwnerNames.length <= 1,
     "Staging preparation lock recovery quarantine state is ambiguous.",
+  );
+  assertSafe(
+    cleanupArtifactClaimNames.length === 0,
+    "Staging preparation lock recovery cleanup artifact claim state is ambiguous.",
   );
   if (quarantineNames.length === 0 && transitionNames.length === 0 && cleanupOwnerNames.length === 0) return undefined;
   const quarantineOwnerId = quarantineNames[0]?.slice(quarantinePrefix.length, -quarantineSuffix.length);
@@ -1110,12 +1122,26 @@ async function claimRecoveryArtifact(
   claimant: PreparationLockOwner,
 ): Promise<RecoveryArtifactClaim> {
   const claimedPath = `${observed.path}.cleanup-${claimant.ownerId}.claimed`;
+  let created = false;
   try {
     await link(observed.path, claimedPath);
+    created = true;
     const claimed = await assertRecoveryArtifactIdentity(observed, claimedPath);
     return { ...claimed, claimedPath, path: observed.path };
   } catch (error) {
-    await unlinkIfPresent(claimedPath);
+    if (created) {
+      try {
+        await assertRecoveryArtifactIdentity(observed, claimedPath);
+        await unlink(claimedPath);
+      } catch {
+        throw new SafeProvisionError(
+          "Staging preparation lock recovery cleanup artifact claim ownership is replaced or ambiguous.",
+        );
+      }
+    }
+    if (isObject(error) && error.code === "EEXIST") {
+      throw new SafeProvisionError("Staging preparation lock recovery cleanup artifact claim already exists.");
+    }
     throw error;
   }
 }
@@ -1229,6 +1255,7 @@ async function recoverExistingRecoveryQuarantine(
   );
   const claims: RecoveryArtifactClaim[] = [];
   try {
+    await options?.afterRecoveryCleanupElection?.(election.ownerPath, claimant.ownerId);
     if (transitionOwner) claims.push(await claimRecoveryArtifact(transitionOwner, claimant));
     if (!transitionOwner) {
       assertSafe(
@@ -1295,6 +1322,15 @@ async function installRecoveryTransitionOwner(
   } finally {
     await unlinkIfPresent(candidatePath);
   }
+  const identity = await readRecoveryArtifactIdentity(
+    transitionOwnerPath,
+    "Staging preparation lock recovery transition ownership metadata",
+  );
+  assertSafe(
+    samePreparationLockOwner(identity.owner, claimant),
+    "Staging preparation lock recovery transition ownership changed during installation.",
+  );
+  return identity;
 }
 
 async function replaceDeadRecoveryClaim(
@@ -1308,8 +1344,9 @@ async function replaceDeadRecoveryClaim(
   let ownsQuarantine = false;
   let ownsTransitionOwner = false;
   let replacementInstalled = false;
+  let transitionOwnerIdentity: RecoveryArtifactIdentity | undefined;
   try {
-    await installRecoveryTransitionOwner(transitionOwnerPath, claimant, options);
+    transitionOwnerIdentity = await installRecoveryTransitionOwner(transitionOwnerPath, claimant, options);
     ownsTransitionOwner = true;
     const claimBeforeQuarantine = validatePreparationLockOwner(
       await readJson(recoveryClaim, "Staging preparation lock recovery ownership metadata"),
@@ -1376,6 +1413,7 @@ async function replaceDeadRecoveryClaim(
     let cleanupFailed = false;
     if (ownsQuarantine) {
       try {
+        await options?.beforeRecoveryClaimCleanup?.(quarantinePath, "quarantine");
         await unlinkIfPresent(quarantinePath);
       } catch {
         cleanupFailed = true;
@@ -1383,16 +1421,30 @@ async function replaceDeadRecoveryClaim(
     }
     if (ownsTransitionOwner && !replacementInstalled && !cleanupFailed) {
       try {
+        assertSafe(Boolean(transitionOwnerIdentity), "Staging preparation lock recovery transition identity is missing.");
+        await assertRecoveryArtifactIdentity(transitionOwnerIdentity as RecoveryArtifactIdentity);
+        await options?.beforeRecoveryClaimCleanup?.(transitionOwnerPath, "transition");
         await unlinkIfPresent(transitionOwnerPath);
       } catch {
         cleanupFailed = true;
       }
     }
-    if (cleanupElection && !cleanupFailed) {
-      try {
-        await releaseRecoveryCleanupElection(cleanupElection);
-      } catch {
-        cleanupFailed = true;
+    if (cleanupElection) {
+      let releaseIsSerialized = !cleanupFailed;
+      if (!releaseIsSerialized && ownsTransitionOwner && transitionOwnerIdentity) {
+        try {
+          await assertRecoveryArtifactIdentity(transitionOwnerIdentity);
+          releaseIsSerialized = true;
+        } catch {
+          releaseIsSerialized = false;
+        }
+      }
+      if (releaseIsSerialized) {
+        try {
+          await releaseRecoveryCleanupElection(cleanupElection);
+        } catch {
+          cleanupFailed = true;
+        }
       }
     }
     if (cleanupFailed) {

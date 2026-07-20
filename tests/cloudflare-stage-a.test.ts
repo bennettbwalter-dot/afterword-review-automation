@@ -1177,6 +1177,139 @@ test("concurrent stale-quarantine cleanup elects one winner and a delayed loser 
   assert.equal(await pathExists(lock.lockDirectory), false);
 });
 
+test("verified cleanup election is released after an injected claimant unlink failure and retry recovers", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-cleanup-election-retry-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+  await writeFile(
+    lock.recoveryQuarantineOwnerFile,
+    JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+  );
+  let injected = false;
+
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(paths),
+      preparationLock: {
+        isProcessAlive: async () => false,
+        beforeRecoveryClaimCleanup: (_filePath: string, artifact: "quarantine" | "transition") => {
+          if (artifact !== "quarantine" || injected) return;
+          injected = true;
+          throw Object.assign(new Error("synthetic cleanup sharing violation"), { code: "EPERM" });
+        },
+      },
+    }),
+    /cleanup failed safely and may be retried/i,
+  );
+  assert.equal(injected, true);
+  assert.equal(await pathExists(lock.recoveryCleanupOwnerFile), false);
+  assert.equal(await pathExists(lock.recoveryQuarantineOwnerFile), true);
+
+  await prepareStagingFiles({
+    ...prepareOptions(paths, 9),
+    preparationLock: { isProcessAlive: async () => false },
+  });
+  assert.equal(await pathExists(lock.lockDirectory), false);
+});
+
+test("foreign artifact claim survives EEXIST and replacement cleanup is refused", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-foreign-cleanup-claim-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+  await writeFile(
+    lock.recoveryQuarantineOwnerFile,
+    JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+  );
+  let foreignClaimPath = "";
+  let foreignClaimBefore!: Awaited<ReturnType<typeof stat>>;
+  const foreignBytes = "foreign cleanup ownership\n";
+
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(paths),
+      preparationLock: {
+        isProcessAlive: async () => false,
+        afterRecoveryCleanupElection: async (_ownerPath: string, claimantOwnerId: string) => {
+          foreignClaimPath = `${lock.recoveryQuarantineOwnerFile}.cleanup-${claimantOwnerId}.claimed`;
+          await writeFile(foreignClaimPath, foreignBytes, { flag: "wx" });
+          foreignClaimBefore = await stat(foreignClaimPath);
+        },
+      },
+    }),
+    /EEXIST|cleanup artifact claim/i,
+  );
+  assert.notEqual(foreignClaimPath, "");
+  const foreignClaimAfter = await stat(foreignClaimPath);
+  assert.equal(foreignClaimAfter.dev, foreignClaimBefore.dev);
+  assert.equal(foreignClaimAfter.ino, foreignClaimBefore.ino);
+  assert.equal(await readFile(foreignClaimPath, "utf8"), foreignBytes);
+
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(paths, 9),
+      preparationLock: { isProcessAlive: async () => false },
+    }),
+    /cleanup artifact claim.*ambiguous/i,
+  );
+  const foreignClaimFinal = await stat(foreignClaimPath);
+  assert.equal(foreignClaimFinal.dev, foreignClaimBefore.dev);
+  assert.equal(foreignClaimFinal.ino, foreignClaimBefore.ino);
+  assert.equal(await readFile(foreignClaimPath, "utf8"), foreignBytes);
+});
+
+test("live, replaced, or ambiguous cleanup-election ownership remains fail closed", async () => {
+  const cases = [
+    {
+      label: "live",
+      bytes: JSON.stringify(syntheticLockOwner(4551, "90000000-0000-4000-8000-000000000031")),
+      alive: (pid: number) => pid === 4551,
+      error: /live staging preparation lock recovery cleanup claimant/i,
+    },
+    {
+      label: "replaced",
+      bytes: JSON.stringify(syntheticLockOwner(4552, "90000000-0000-4000-8000-000000000032")),
+      alive: () => false,
+      error: /cleanup ownership is stale or ambiguous/i,
+    },
+    {
+      label: "ambiguous",
+      bytes: "{\"pid\":4553}",
+      alive: () => false,
+      error: /cleanup ownership metadata is invalid/i,
+    },
+  ];
+
+  for (const fixture of cases) {
+    const root = await mkdtemp(path.join(os.tmpdir(), `review-anchor-stage-a-${fixture.label}-cleanup-owner-`));
+    const paths = await writePreparationFixture(root);
+    const lock = await writePreparationLock(paths);
+    await writeRecoveryClaim(paths);
+    await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+    await writeFile(
+      lock.recoveryQuarantineOwnerFile,
+      JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+    );
+    await writeFile(lock.recoveryCleanupOwnerFile, fixture.bytes);
+    const cleanupBefore = await stat(lock.recoveryCleanupOwnerFile);
+
+    await assert.rejects(
+      prepareStagingFiles({
+        ...prepareOptions(paths),
+        preparationLock: { isProcessAlive: async (pid) => fixture.alive(pid) },
+      }),
+      fixture.error,
+    );
+    const cleanupAfter = await stat(lock.recoveryCleanupOwnerFile);
+    assert.equal(cleanupAfter.dev, cleanupBefore.dev);
+    assert.equal(cleanupAfter.ino, cleanupBefore.ino);
+    assert.equal(await readFile(lock.recoveryCleanupOwnerFile, "utf8"), fixture.bytes);
+  }
+});
+
 test("live, replaced, invalid, or inode-ambiguous recovery quarantines fail closed", async () => {
   const liveRoot = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-live-quarantine-"));
   const livePaths = await writePreparationFixture(liveRoot);
