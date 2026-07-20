@@ -1,7 +1,7 @@
 # Review Anchor Cloudflare-Native Staging Design
 
 Date: 20 July 2026
-Status: Cloudflare direction approved; written specification pending review
+Status: Approved; implementation planning complete
 
 ## Decision
 
@@ -36,7 +36,7 @@ The migration database login remains local-only. It must never be stored in a Wo
 | Surface | Cloudflare resource | Database capability | Responsibilities |
 | --- | --- | --- | --- |
 | Application | `review-anchor-staging` Worker with Static Assets | `AUTH_DB` and `RUNTIME_DB` Hyperdrive bindings | React SPA, sessions, authenticated API, workspace routes |
-| Public ingress | `review-anchor-staging-ingress` Worker | `INGRESS_DB` Hyperdrive binding | Public QR/review flow and fail-closed provider callbacks |
+| Public ingress | `review-anchor-staging-ingress` Worker with Static Assets | `INGRESS_DB` Hyperdrive binding | Public QR/review SPA, public API, and fail-closed provider callbacks |
 | Background jobs | `review-anchor-staging-jobs` Worker | `WORKER_DB` Hyperdrive binding | Queue consumer and bounded scheduled maintenance |
 | Schema changes | Local migration command only | `MIGRATION_DATABASE_URL` in ignored `.env.staging` | Migrations and grants; never deployed |
 
@@ -98,6 +98,8 @@ Hyperdrive operates in transaction-pooling mode, so any session state must be se
 
 The ingress Worker exposes only the existing public QR/review and webhook routes. It does not serve the authenticated application and receives no auth, runtime, worker, or migration database capability.
 
+The live public review route `/r/:token` is a React route whose API calls are relative to its current origin. The ingress deployment therefore includes the same Vite Static Assets bundle, serves assets and `/r/*`, and runs Worker code first for `/api/*` and `/webhooks/*`. Requests for `/app/*` or `/workspace` on the ingress hostname return 404 so the authenticated product remains on the application hostname.
+
 The Worker must preserve exact raw request bytes before JSON or form parsing so Twilio, SendGrid, Google Pub/Sub, and Stripe signatures can be verified later. During this staging phase, real provider credentials remain absent. Provider callback routes must fail closed with a stable non-success response when their verifier is unconfigured; they must not accept or persist unverifiable events.
 
 Public QR links use the ingress Worker origin. Application links and login use the application Worker origin. No wildcard CORS policy is introduced.
@@ -122,11 +124,11 @@ Use separate tracked Wrangler JSONC configurations under a `cloudflare/` directo
 
 Secrets are set through Wrangler or the Cloudflare dashboard and never committed:
 
-- Application Worker: `SESSION_PEPPER` and `FIELD_ENCRYPTION_KEY`.
-- Ingress Worker: `FIELD_ENCRYPTION_KEY` only after configuration parsing is split by surface.
+- Application Worker: `SESSION_PEPPER`, `DATA_HASH_PEPPER`, and `FIELD_ENCRYPTION_KEY`.
+- Ingress Worker: the same `DATA_HASH_PEPPER` and `FIELD_ENCRYPTION_KEY`, but never `SESSION_PEPPER`.
 - Jobs Worker: the same `FIELD_ENCRYPTION_KEY` used by the other staging Workers.
 
-The same staging `FIELD_ENCRYPTION_KEY` is required wherever encrypted staging data is written or read. `SESSION_PEPPER` exists only on the application surface. Hyperdrive stores the database-role credentials; Worker code receives bindings rather than plaintext PostgreSQL URLs.
+The same staging `FIELD_ENCRYPTION_KEY` is required wherever encrypted staging data is written or read. `DATA_HASH_PEPPER` is a purpose-specific key for destination and privacy-minimised visitor hashes that must match between application and ingress. `SESSION_PEPPER` remains separate and exists only on the application surface. Existing Node deployments may temporarily fall back from `DATA_HASH_PEPPER` to `SESSION_PEPPER` for release compatibility, but every new Cloudflare staging Worker uses the explicit split. Hyperdrive stores the database-role credentials; Worker code receives bindings rather than plaintext PostgreSQL URLs.
 
 `STRIPE_CHECKOUT_ENABLED` remains `false`, `STRIPE_MODE` remains `test`, and Google, Twilio, SendGrid, and Stripe secrets remain absent. `.env.staging`, Supabase platform credentials, role passwords, and `MIGRATION_DATABASE_URL` must never be uploaded.
 
