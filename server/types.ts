@@ -201,6 +201,10 @@ export interface StripeBillingWebhookInput {
 }
 
 export interface PlatformRepository {
+  requestAgencyClientGrant?(actor: ActorContext, input: import("./agency/types.js").AgencyGrantRequest): Promise<import("./agency/types.js").AgencyGrant>;
+  acceptAgencyClientGrant?(actor: ActorContext, grantId: string, correlationId: string): Promise<import("./agency/types.js").AgencyGrant>;
+  rejectAgencyClientGrant?(actor: ActorContext, grantId: string, correlationId: string): Promise<import("./agency/types.js").AgencyGrant>;
+  revokeAgencyClientGrant?(actor: ActorContext, grantId: string, correlationId: string): Promise<import("./agency/types.js").AgencyGrant>;
   createSignupIntent?(input: import("./onboarding/types.js").SignupIntentInput): Promise<{ accepted: boolean; shouldSendEmail: boolean }>;
   consumeSignupIntent?(tokenHash: Buffer): Promise<import("./onboarding/types.js").VerifiedSignup | null>;
   registerVerifiedSignup?(input: import("./onboarding/types.js").RegistrationInput): Promise<import("./onboarding/types.js").RegistrationResult>;

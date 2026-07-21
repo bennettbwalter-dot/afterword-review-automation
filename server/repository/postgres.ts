@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import type { AppConfig } from "../config.js";
 import { inTransaction, setActorContext } from "../db.js";
+import { AgencyGrantPostgres } from "../agency/postgres.js";
+import type { AgencyGrantRequest } from "../agency/types.js";
 import { decryptField, encryptField, hashDestination } from "../security/crypto.js";
 import type {
   ActorContext,
@@ -189,6 +191,22 @@ export class PostgresRepository implements PlatformRepository {
     const row = result.rows[0];
     if (!row) throw new Error("Verified signup registration was not created.");
     return { userId: row.user_id, sessionId: row.session_id, agencyId: row.agency_id, businessId: row.business_id ?? undefined, locationId: row.location_id ?? undefined, onboardingStep: row.onboarding_step };
+  }
+
+  async requestAgencyClientGrant(actor: ActorContext, input: AgencyGrantRequest) {
+    return new AgencyGrantPostgres(this.runtime()).request(actor, input);
+  }
+
+  async acceptAgencyClientGrant(actor: ActorContext, grantId: string, correlationId: string) {
+    return new AgencyGrantPostgres(this.runtime()).accept(actor, grantId, correlationId);
+  }
+
+  async rejectAgencyClientGrant(actor: ActorContext, grantId: string, correlationId: string) {
+    return new AgencyGrantPostgres(this.runtime()).reject(actor, grantId, correlationId);
+  }
+
+  async revokeAgencyClientGrant(actor: ActorContext, grantId: string, correlationId: string) {
+    return new AgencyGrantPostgres(this.runtime()).revoke(actor, grantId, correlationId);
   }
 
   async recordLoginResult(email: string, succeeded: boolean) {

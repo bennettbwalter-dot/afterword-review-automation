@@ -11,6 +11,7 @@ import type { StripeBillingClient, StripeWebhookVerifier } from "./providers/str
 import type { TransactionalEmailProvider } from "./providers/transactional-email.js";
 import type { WebhookSecurity } from "./providers/webhook-security.js";
 import { registerAuthRoutes } from "./routes/auth.js";
+import { registerAgencyGrantRoutes } from "./routes/agency-grants.js";
 import { registerOnboardingRoutes } from "./routes/onboarding.js";
 import { registerBillingRoutes } from "./routes/billing.js";
 import { registerGoogleRoutes } from "./routes/google.js";
@@ -129,6 +130,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
   if (surface !== "ingress") {
     await registerAuthRoutes(app, options);
+    await registerAgencyGrantRoutes(app, options);
     await registerOnboardingRoutes(app, options);
     await registerBillingRoutes(app, options);
     await registerWorkspaceRoutes(app, options);
