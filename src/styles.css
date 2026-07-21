@@ -3055,12 +3055,14 @@ textarea[aria-invalid="true"] {
 
 .integration-grid {
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
   gap: var(--space-sm);
 }
 
 .integration-card {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: 2.75rem minmax(12rem, 1fr);
+  align-items: start;
   gap: var(--space-md);
   padding: var(--space-md);
 }
@@ -3071,6 +3073,8 @@ textarea[aria-invalid="true"] {
 }
 
 .integration-card h2 {
+  overflow-wrap: normal;
+  word-break: normal;
   font-size: var(--text-md);
   line-height: 1.2;
 }
@@ -3079,6 +3083,13 @@ textarea[aria-invalid="true"] {
   margin-block-start: var(--space-2xs);
   color: var(--color-muted);
   font-size: var(--text-sm);
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.integration-card > div,
+.integration-card__status-note {
+  min-width: 0;
 }
 
 .integration-card .status-pill,
@@ -4816,11 +4827,11 @@ textarea[aria-invalid="true"] {
   }
 
   .integration-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
   }
 
   .integration-card {
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: 2.75rem minmax(12rem, 1fr);
     align-content: start;
   }
 }
