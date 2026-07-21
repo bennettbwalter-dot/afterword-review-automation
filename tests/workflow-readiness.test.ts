@@ -44,9 +44,20 @@ test("the shipped product source does not advertise retired product surfaces", (
 
   for (const retiredClaim of [
     "heatmap", "keywordtracking", "airankingaudit", "ranktracker", "citation", "directoryintegration",
+    "trackinguptotenkeywords", "aiplatformrankingaudits", "citationmanagement", "citationduplicateprotection",
+    "automaticdirectorysynchronisation", "automaticdirectorysynchronization", "automaticnegativereviewflagging",
+    "sentimentgating", "positiveonlyreviewroutes", "appreciationmessageautomation", "onemilliondatapoints",
     "websitewidget", "whitelabel", "geotagging", "imagedripping", "autonomousstrategy", "custompermission",
-    "companycam", "zapier", "professionaleditor", "professionalvideoeditor",
+    "googledrivemediaimports", "webhookmediaimports", "companycam", "zapier", "gbpauditleadwebhooks",
+    "instantaianswers", "professionaleditor", "professionalvideoeditor", "multiclipcampaignbuilder", "unlimitedusers",
   ]) {
     assert.equal(productSource.includes(retiredClaim), false, `must not advertise ${retiredClaim}`);
+  }
+});
+
+test("workspace headers describe only currently rendered product surfaces", () => {
+  const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8").toLowerCase();
+  for (const unsupportedClaim of ["action inbox", "allowance summary", "approvals, failures, and client allowance use"]) {
+    assert.equal(appSource.includes(unsupportedClaim), false, `must not claim ${unsupportedClaim}`);
   }
 });

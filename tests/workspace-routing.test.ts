@@ -37,6 +37,20 @@ test("legacy routes resolve to the simplified product destinations", () => {
   assert.equal(appViewFromPath("/app/not-a-module"), undefined);
 });
 
+test("routing aliases domain-owned product and tab unions", () => {
+  const routingSource = readFileSync(new URL("../src/routing.ts", import.meta.url), "utf8");
+  assert.match(routingSource, /from "\.\/platform\/domain"/u);
+  assert.match(routingSource, /ProductView/u);
+  assert.match(routingSource, /GoogleProfileTab as DomainGoogleProfileTab/u);
+  assert.match(routingSource, /ContentTab as DomainContentTab/u);
+  assert.match(routingSource, /export type AppView = ProductView;/u);
+  assert.match(routingSource, /export type GoogleProfileTab = DomainGoogleProfileTab;/u);
+  assert.match(routingSource, /export type ContentTab = DomainContentTab;/u);
+  assert.doesNotMatch(routingSource, /export type AppView\s*=\s*\|/u);
+  assert.doesNotMatch(routingSource, /export type GoogleProfileTab\s*=\s*["']/u);
+  assert.doesNotMatch(routingSource, /export type ContentTab\s*=\s*["']/u);
+});
+
 test("workspace routes preserve one canonical business and location context", () => {
   assert.equal(
     workspaceRoute("google-profile", { businessId: "business-1", locationId: "location-2" }),

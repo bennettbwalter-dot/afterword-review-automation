@@ -2179,12 +2179,12 @@ function AppShell() {
   ));
   const page = [...CLIENT_NAV, ...AGENCY_NAV].find((item) => item.id === view) ?? navItems[0];
   const descriptions: Record<AppView, string> = {
-    home: "Action inbox, connection health, recent results, and allowance summary.",
+    home: "Google review snapshot, request status, connection health, and reporting links.",
     "google-profile": "Google connection status, current reviews, review requests, and QR details.",
     content: "Content publishing availability and destination authorisation status.",
     reports: IS_DEMO_MODE ? "A simple monthly proof-of-value report." : "Current durable metrics and integration status for this tenant.",
     "settings-billing": "Connections, workspace settings, users, and billing.",
-    agency: "Portfolio readiness, approvals, failures, and client allowance use.",
+    agency: "Client accounts, connection health, open exceptions, and paused scopes.",
     "operations-exceptions": "Operational failures with impact and safe resolution paths.",
     "operations-audit": "Append-only evidence for administrative and support actions.",
   };

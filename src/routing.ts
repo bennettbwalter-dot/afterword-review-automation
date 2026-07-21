@@ -1,17 +1,14 @@
-import type { ActorRole, BusinessRole } from "./platform/domain";
+import type {
+  ActorRole,
+  BusinessRole,
+  ContentTab as DomainContentTab,
+  GoogleProfileTab as DomainGoogleProfileTab,
+  ProductView,
+} from "./platform/domain";
 
-export type AppView =
-  | "home"
-  | "google-profile"
-  | "content"
-  | "reports"
-  | "settings-billing"
-  | "agency"
-  | "operations-exceptions"
-  | "operations-audit";
-
-export type GoogleProfileTab = "profile" | "reviews" | "requests-qr" | "posts-media";
-export type ContentTab = "create" | "uploads" | "approvals" | "scheduled" | "published" | "failed";
+export type AppView = ProductView;
+export type GoogleProfileTab = DomainGoogleProfileTab;
+export type ContentTab = DomainContentTab;
 export type SettingsBillingTab = "connections" | "billing";
 
 export type WorkspaceRouteContext = {
