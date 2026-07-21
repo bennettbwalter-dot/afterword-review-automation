@@ -88,3 +88,10 @@ test("external feasibility evidence uses anchored release-gate metadata", () => 
     );
   }
 });
+
+test("MobileWAN benchmark wrapper requires complete snapshot provenance and one qualifying GPU", () => {
+  const benchmark = readFileSync(new URL("../scripts/mobilewan/benchmark.ps1", import.meta.url), "utf8");
+  assert.match(benchmark, /Get-ChildItem\s+-LiteralPath\s+\$Snapshot\s+-Recurse\s+-File/u, "must enumerate every snapshot file");
+  assert.match(benchmark, /must contain exactly one entry for every snapshot file/u, "must require one manifest entry per file");
+  assert.match(benchmark, /if\s*\(\$GpuRecords\.Count\s+-ne\s+1\)/u, "must reject mixed-GPU hosts");
+});

@@ -42,7 +42,18 @@ function Assert-SnapshotProvenance([string]$Snapshot, $Entry, [string]$Revision,
   if ($null -eq $Entry.files -or $Entry.files.Count -eq 0) {
     throw "$Label provenance must contain SHA-256 entries for snapshot files"
   }
-  foreach ($file in $Entry.files) {
+  $snapshotFiles = @(
+    Get-ChildItem -LiteralPath $Snapshot -Recurse -File | ForEach-Object {
+      [PSCustomObject]@{
+        relative_path = $_.FullName.Substring($Snapshot.Length).TrimStart([char[]]@([char]92, [char]47)).Replace([string][char]92, '/')
+        full_path = $_.FullName
+      }
+    }
+  )
+  if ($snapshotFiles.Count -eq 0) { throw "$Label snapshot contains no files" }
+
+  $manifestByPath = [System.Collections.Generic.Dictionary[string, object]]::new([System.StringComparer]::Ordinal)
+  foreach ($file in @($Entry.files)) {
     if ([string]::IsNullOrWhiteSpace($file.path) -or [string]::IsNullOrWhiteSpace($file.sha256)) {
       throw "$Label provenance file entries require path and sha256"
     }
@@ -50,22 +61,33 @@ function Assert-SnapshotProvenance([string]$Snapshot, $Entry, [string]$Revision,
       throw "$Label provenance contains an unsafe relative path: $($file.path)"
     }
     if ($file.sha256 -notmatch '^[a-fA-F0-9]{64}$') { throw "$Label provenance has an invalid SHA-256 for $($file.path)" }
-    $filePath = Join-Path $Snapshot $file.path
-    if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) { throw "$Label provenance file is missing: $($file.path)" }
-    if ((Get-FileHash -LiteralPath $filePath -Algorithm SHA256).Hash -cne $file.sha256.ToUpperInvariant()) {
-      throw "$Label provenance hash mismatch: $($file.path)"
+    $relativePath = $file.path.Replace([string][char]92, '/')
+    if (-not $manifestByPath.TryAdd($relativePath, $file)) { throw "$Label provenance has a duplicate file entry: $relativePath" }
+  }
+  if ($manifestByPath.Count -ne $snapshotFiles.Count) { throw "$Label provenance must contain exactly one entry for every snapshot file" }
+
+  $snapshotByPath = [System.Collections.Generic.Dictionary[string, object]]::new([System.StringComparer]::Ordinal)
+  foreach ($snapshotFile in $snapshotFiles) {
+    if (-not $snapshotByPath.TryAdd($snapshotFile.relative_path, $snapshotFile)) { throw "$Label snapshot has a duplicate relative path" }
+    if (-not $manifestByPath.ContainsKey($snapshotFile.relative_path)) { throw "$Label provenance is missing snapshot file: $($snapshotFile.relative_path)" }
+    $file = $manifestByPath[$snapshotFile.relative_path]
+    if ((Get-FileHash -LiteralPath $snapshotFile.full_path -Algorithm SHA256).Hash -cne $file.sha256.ToUpperInvariant()) {
+      throw "$Label provenance hash mismatch: $($snapshotFile.relative_path)"
     }
+  }
+  foreach ($relativePath in $manifestByPath.Keys) {
+    if (-not $snapshotByPath.ContainsKey($relativePath)) { throw "$Label provenance references an absent snapshot file: $relativePath" }
   }
 }
 
 function Get-GpuQualification([string[]]$GpuRecords) {
-  foreach ($record in $GpuRecords) {
-    if ($record -match '^(?<name>.+?),\s*(?<memory>\d+)\s*$') {
-      $gpuName = $Matches.name
-      $gpuMemoryMiB = [int]$Matches.memory
-      if ($gpuName -match '(?i)\bA100\b' -and $gpuMemoryMiB -ge 81920) {
-        return "qualifying_a100_80gb"
-      }
+  if ($GpuRecords.Count -ne 1) { return "non_qualifying" }
+  $record = $GpuRecords[0]
+  if ($record -match '^(?<name>.+?),\s*(?<memory>\d+)\s*$') {
+    $gpuName = $Matches.name
+    $gpuMemoryMiB = [int]$Matches.memory
+    if ($gpuName -match '(?i)\bA100\b' -and $gpuMemoryMiB -ge 81920) {
+      return "qualifying_a100_80gb"
     }
   }
   return "non_qualifying"
