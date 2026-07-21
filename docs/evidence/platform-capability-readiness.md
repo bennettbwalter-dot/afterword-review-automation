@@ -29,3 +29,41 @@ Meta, LinkedIn, and YouTube remain blocked pending their own developer review, O
 ## Release consequence
 
 Only capabilities with a passed row and preserved pilot evidence can be enabled later. Publication UI and workers must present unavailable adapters as unavailable, while manual content and independently-ready paths continue without claiming publication support.
+
+## Agency-grant integrity gate (before migration 012)
+
+Migration 012 remains paused. On the migration database, after migration 011 is present and before any follow-on change is approved, run the query below as the migration owner. It must return **zero rows**, and its output must be retained with the migration evidence.
+
+Before deploying the current source revision, first check whether migration 011 has ever been recorded in the target environment. This revision removes a function from migration 011 itself. If 011 is already applied, do **not** alter its recorded checksum or rerun it: create a new forward-only migration that revokes and drops the retired generic function instead.
+
+```sql
+select
+  grant.id,
+  grant.agency_id,
+  grant.business_id,
+  grant.location_id,
+  grant.accepted_by_user_id,
+  grant.expires_at
+from public.agency_client_grants as grant
+left join public.businesses as business
+  on business.id = grant.business_id
+left join public.locations as location
+  on location.id = grant.location_id
+ and location.business_id = grant.business_id
+left join public.business_memberships as accepting_member
+  on accepting_member.business_id = grant.business_id
+ and accepting_member.user_id = grant.accepted_by_user_id
+ and accepting_member.status = 'active'
+ and accepting_member.role::text in ('owner', 'admin')
+where grant.status = 'active'
+  and (
+    business.id is null
+    or business.archived_at is not null
+    or location.id is null
+    or location.archived_at is not null
+    or accepting_member.user_id is null
+    or (grant.expires_at is not null and grant.expires_at <= statement_timestamp())
+  );
+```
+
+The local suite includes an actor-behaviour probe for the same boundaries, but it cannot establish this live database result without `MIGRATION_DATABASE_URL` and the ability to assume `afterword_migration_owner`.

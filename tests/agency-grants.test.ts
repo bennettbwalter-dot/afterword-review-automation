@@ -50,6 +50,19 @@ test("agency permission checks deny support sessions and grant claims are opaque
   assert.match(schema, /consumed_at is null and claim\.expires_at > statement_timestamp\(\)/i);
   assert.match(databaseTest, /support-session permission denial/i);
   assert.match(databaseTest, /sibling location/i);
+  assert.match(databaseTest, /Actor-behaviour probe/i);
+  assert.match(databaseTest, /request_agency_client_grant/i);
+  assert.match(databaseTest, /accept_agency_client_grant/i);
+  assert.match(databaseTest, /revoke_current_client_agency_grant/i);
+  assert.match(databaseTest, /revoked_grant_loses_permission_immediately/i);
+});
+
+test("the release evidence requires a zero-row live integrity query before migration 012", async () => {
+  const readiness = await readFile(path.resolve("docs", "evidence", "platform-capability-readiness.md"), "utf8");
+  assert.match(readiness, /Agency-grant integrity gate \(before migration 012\)/i);
+  assert.match(readiness, /It must return \*\*zero rows\*\*/i);
+  assert.match(readiness, /accepting_member\.role::text in \('owner', 'admin'\)/i);
+  assert.match(readiness, /forward-only migration/i);
 });
 
 test("claim approval lets only the direct client discover and select a named location, with replay-safe consumption", async () => {
