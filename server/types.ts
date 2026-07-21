@@ -208,7 +208,7 @@ export interface PlatformRepository {
   issueAgencyClientGrantClaim?(actor: ActorContext, grantId: string, email: string, tokenHash: Buffer, expiresAt: Date, correlationId: string): Promise<void>;
   consumeAgencyClientGrantClaim?(actor: ActorContext, tokenHash: Buffer): Promise<import("./agency/types.js").AgencyGrantClaimScope | null>;
   listAgencyClientGrantClaimLocations?(actor: ActorContext, tokenHash: Buffer): Promise<import("./agency/types.js").AgencyGrantClaimScope[]>;
-  issueAgencyClientAccessClaim?(actor: ActorContext, email: string, permissions: import("./agency/types.js").AgencyGrantPermission[], tokenHash: Buffer, expiresAt: Date, correlationId: string): Promise<void>;
+  issueAgencyClientAccessClaim?(actor: ActorContext, agencyId: string, email: string, permissions: import("./agency/types.js").AgencyGrantPermission[], tokenHash: Buffer, expiresAt: Date, correlationId: string): Promise<void>;
   consumeAgencyClientAccessClaim?(actor: ActorContext, tokenHash: Buffer): Promise<boolean>;
   listAgencyClientAccessLocations?(actor: ActorContext, tokenHash: Buffer): Promise<import("./agency/types.js").AgencyClientClaimLocation[]>;
   selectAgencyClientAccessLocation?(actor: ActorContext, tokenHash: Buffer, locationId: string, correlationId: string): Promise<import("./agency/types.js").AgencyGrant>;

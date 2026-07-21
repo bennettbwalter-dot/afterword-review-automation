@@ -173,19 +173,19 @@ create table app_private.agency_client_access_claims (
   agency_id uuid not null references public.agencies(id), email text not null check (email=lower(btrim(email))),
   permissions text[] not null check (permissions <@ array['content.create','content.submit','content.approve','content.self_approve','content.schedule','content.publish','video.spend']::text[]),
   self_approver_user_id uuid references public.users(id), video_soft_monthly_cap integer, video_hard_monthly_cap integer,
-  grant_expires_at timestamptz, expires_at timestamptz not null, consumed_by_user_id uuid references public.users(id), consumed_at timestamptz, selected_grant_id uuid references public.agency_client_grants(id), created_at timestamptz not null default statement_timestamp(),
+  grant_expires_at timestamptz, expires_at timestamptz not null, issued_by_user_id uuid not null references public.users(id), consumed_by_user_id uuid references public.users(id), consumed_at timestamptz, selected_grant_id uuid references public.agency_client_grants(id), created_at timestamptz not null default statement_timestamp(),
   check ((('content.self_approve'=any(permissions)))=(self_approver_user_id is not null))
 );
 
-create or replace function app_private.issue_agency_client_access_claim(p_email text,p_permissions text[],p_self_approver_user_id uuid,p_video_soft_monthly_cap integer,p_video_hard_monthly_cap integer,p_grant_expires_at timestamptz,p_token_hash bytea,p_expires_at timestamptz,p_correlation_id uuid)
+create or replace function app_private.issue_agency_client_access_claim(p_agency_id uuid,p_email text,p_permissions text[],p_self_approver_user_id uuid,p_video_soft_monthly_cap integer,p_video_hard_monthly_cap integer,p_grant_expires_at timestamptz,p_token_hash bytea,p_expires_at timestamptz,p_correlation_id uuid)
 returns void language plpgsql volatile security definer set search_path=pg_catalog as $$
-declare v_agency uuid; v_email text:=lower(btrim(p_email));
+declare v_email text:=lower(btrim(p_email));
 begin
  perform app_private.reject_agency_grant_support_mutation();
- select membership.agency_id into v_agency from public.agency_memberships membership where membership.user_id=app_private.current_user_id() and membership.status='active' and membership.role::text in ('owner','admin','operator') order by membership.created_at limit 1;
- if v_agency is null or p_token_hash is null or length(p_token_hash)<>32 or v_email='' or coalesce(array_length(p_permissions,1),0)=0 or p_expires_at<=statement_timestamp() or p_expires_at>statement_timestamp()+interval '7 days' then raise exception 'invalid agency client claim'; end if;
+ if app_private.current_agency_role(p_agency_id)::text not in ('owner','admin','operator') or p_token_hash is null or length(p_token_hash)<>32 or v_email='' or coalesce(array_length(p_permissions,1),0)=0 or p_expires_at<=statement_timestamp() or p_expires_at>statement_timestamp()+interval '7 days' then raise exception 'invalid agency client claim'; end if;
  if ('content.self_approve'=any(p_permissions))<>(p_self_approver_user_id is not null) then raise exception 'self approval requires a named user'; end if;
- insert into app_private.agency_client_access_claims(token_hash,agency_id,email,permissions,self_approver_user_id,video_soft_monthly_cap,video_hard_monthly_cap,grant_expires_at,expires_at) values(p_token_hash,v_agency,v_email,p_permissions,p_self_approver_user_id,p_video_soft_monthly_cap,p_video_hard_monthly_cap,p_grant_expires_at,p_expires_at);
+ insert into app_private.agency_client_access_claims(token_hash,agency_id,email,permissions,self_approver_user_id,video_soft_monthly_cap,video_hard_monthly_cap,grant_expires_at,expires_at,issued_by_user_id) values(p_token_hash,p_agency_id,v_email,p_permissions,p_self_approver_user_id,p_video_soft_monthly_cap,p_video_hard_monthly_cap,p_grant_expires_at,p_expires_at,app_private.current_user_id());
+ perform app_private.write_audit_event('user',p_agency_id,null,null,null,'agency.grant.claim.issue','agency_client_claim',encode(p_token_hash,'hex'),'completed',null,p_correlation_id,array['email_claim'],'{}'::jsonb);
 end $$;
 
 create or replace function app_private.consume_agency_client_access_claim(p_token_hash bytea)
@@ -222,8 +222,9 @@ begin
  if v_claim.selected_grant_id is not null then select * into v_grant from public.agency_client_grants where id=v_claim.selected_grant_id; return v_grant; end if;
  select membership.business_id into v_business from public.business_memberships membership join public.locations location on location.business_id=membership.business_id and location.id=p_location_id and location.archived_at is null where membership.user_id=app_private.current_user_id() and membership.status='active' and membership.role::text in ('owner','admin'); get diagnostics v_found = row_count;
  if v_found<>1 then raise exception 'selected location is not a direct client location'; end if;
- insert into public.agency_client_grants(agency_id,business_id,location_id,status,permissions,self_approver_user_id,video_soft_monthly_cap,video_hard_monthly_cap,requested_by_user_id,expires_at) values(v_claim.agency_id,v_business,p_location_id,'requested',v_claim.permissions,v_claim.self_approver_user_id,v_claim.video_soft_monthly_cap,v_claim.video_hard_monthly_cap,app_private.current_user_id(),v_claim.grant_expires_at) returning * into v_grant;
+ insert into public.agency_client_grants(agency_id,business_id,location_id,status,permissions,self_approver_user_id,video_soft_monthly_cap,video_hard_monthly_cap,requested_by_user_id,accepted_by_user_id,accepted_at,expires_at) values(v_claim.agency_id,v_business,p_location_id,'active',v_claim.permissions,v_claim.self_approver_user_id,v_claim.video_soft_monthly_cap,v_claim.video_hard_monthly_cap,v_claim.issued_by_user_id,app_private.current_user_id(),statement_timestamp(),v_claim.grant_expires_at) returning * into v_grant;
  update app_private.agency_client_access_claims set selected_grant_id=v_grant.id where id=v_claim.id;
+ perform app_private.write_audit_event('user',v_claim.agency_id,v_business,p_location_id,null,'agency.grant.client_accept','agency_client_grant',v_grant.id::text,'completed',null,p_correlation_id,array['location_id','status'],'{}'::jsonb);
  return v_grant;
 end $$;
 
@@ -240,6 +241,10 @@ revoke all on function app_private.request_agency_client_grant(uuid,uuid,uuid,te
 revoke all on function app_private.accept_agency_client_grant(uuid,uuid) from public;
 revoke all on function app_private.reject_agency_client_grant(uuid,uuid) from public;
 revoke all on function app_private.revoke_agency_client_grant(uuid,uuid) from public;
+revoke all on function app_private.issue_agency_client_access_claim(uuid,text,text[],uuid,integer,integer,timestamptz,bytea,timestamptz,uuid) from public;
+revoke all on function app_private.consume_agency_client_access_claim(bytea) from public;
+revoke all on function app_private.list_agency_client_claim_locations(bytea) from public;
+revoke all on function app_private.select_agency_client_claim_location(bytea,uuid,uuid) from public;
 grant execute on function app_private.has_agency_client_permission(uuid,uuid,text,uuid) to afterword_runtime;
 grant execute on function app_private.expire_stale_agency_client_grants(integer) to afterword_runtime, afterword_worker;
 grant execute on function app_private.issue_agency_client_grant_claim(uuid,text,bytea,timestamptz,uuid) to afterword_runtime;
@@ -249,7 +254,7 @@ grant execute on function app_private.request_agency_client_grant(uuid,uuid,uuid
 grant execute on function app_private.accept_agency_client_grant(uuid,uuid) to afterword_runtime;
 grant execute on function app_private.reject_agency_client_grant(uuid,uuid) to afterword_runtime;
 grant execute on function app_private.revoke_agency_client_grant(uuid,uuid) to afterword_runtime;
-grant execute on function app_private.issue_agency_client_access_claim(text,text[],uuid,integer,integer,timestamptz,bytea,timestamptz,uuid) to afterword_runtime;
+grant execute on function app_private.issue_agency_client_access_claim(uuid,text,text[],uuid,integer,integer,timestamptz,bytea,timestamptz,uuid) to afterword_runtime;
 grant execute on function app_private.consume_agency_client_access_claim(bytea) to afterword_runtime;
 grant execute on function app_private.list_agency_client_claim_locations(bytea) to afterword_runtime;
 grant execute on function app_private.select_agency_client_claim_location(bytea,uuid,uuid) to afterword_runtime;
