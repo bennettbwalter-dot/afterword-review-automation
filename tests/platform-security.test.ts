@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { parseAuthenticatedSession } from "../src/platform/api.ts";
 import {
   ADMIN_SESSION,
   BUSINESSES,
@@ -17,6 +18,7 @@ import {
   validateNeutralReviewTemplate,
   type SessionContext,
 } from "../src/platform/domain.ts";
+import { PostgresRepository } from "../server/repository/postgres.ts";
 
 const now = new Date("2026-07-16T12:00:00.000Z");
 
@@ -81,6 +83,45 @@ test("billing membership is limited to Settings and Billing", () => {
   assert.equal(canManageBilling(billing, "business_123"), true);
   assert.equal(canReadTenantData(billing, "business_123", null, now), false);
   assert.equal(canConfigureTenant(billing, "business_123", null, now), false);
+});
+
+test("agency-user sessions survive client parsing with their narrow role", () => {
+  const session = parseAuthenticatedSession({
+    userId: "agency-operator",
+    userName: "Agency Operator",
+    role: "agency_user",
+    agencyRole: "operator",
+    productRole: "staff",
+    mfaVerified: true,
+  });
+  assert.equal(session.role, "agency_user");
+  assert.equal(session.agencyRole, "operator");
+  assert.equal(session.productRole, "staff");
+});
+
+test("repository rejects unknown non-null business roles before they reach permissions", async () => {
+  const repository = new PostgresRepository({
+    authPool: {
+      query: async () => ({
+        rows: [{
+          session_id: "session-unknown-role",
+          user_id: "user-unknown-role",
+          email: "unknown-role@example.test",
+          display_name: "Unknown Role",
+          agency_id: null,
+          agency_role: null,
+          business_id: "business-unknown-role",
+          business_role: "future_untrusted_role",
+          platform_role: "business_owner",
+          product_role: null,
+          mfa_verified_at: null,
+          step_up_verified_at: null,
+        }],
+      }),
+    } as never,
+    config: { FIELD_ENCRYPTION_KEY: "test-key", SESSION_PEPPER: "test-pepper" },
+  });
+  assert.equal(await repository.resolveLoginSession(Buffer.from("unknown-role")), null);
 });
 
 test("agency portfolio access does not silently grant tenant data access", () => {

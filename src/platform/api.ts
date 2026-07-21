@@ -12,7 +12,7 @@ import type {
   SmsOveragePolicy,
 } from "./domain";
 
-export const IS_DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
+export const IS_DEMO_MODE = import.meta.env?.VITE_DEMO_MODE === "true";
 let activeSupportSessionId: string | undefined;
 
 export interface AuthenticatedSession extends SessionContext {
@@ -162,14 +162,14 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return payload as T;
 }
 
-function unwrapSession(payload: unknown): AuthenticatedSession {
+export function parseAuthenticatedSession(payload: unknown): AuthenticatedSession {
   const unwrapped = unwrapData(payload);
   const candidate = isRecord(unwrapped) && isRecord(unwrapped.session) ? unwrapped.session : unwrapped;
   if (
     !isRecord(candidate)
     || typeof candidate.userId !== "string"
     || typeof candidate.userName !== "string"
-    || (candidate.role !== "business_owner" && candidate.role !== "agency_admin")
+    || (candidate.role !== "business_owner" && candidate.role !== "agency_admin" && candidate.role !== "agency_user")
   ) {
     throw new ApiError("The server returned an invalid session.", 502, "INVALID_SESSION");
   }
@@ -184,7 +184,7 @@ function normalizeWorkspace(payload: unknown): WorkspacePayload {
   }
 
   return {
-    session: unwrapSession(candidate.session),
+    session: parseAuthenticatedSession(candidate.session),
     businesses: candidate.businesses as BusinessAccount[],
     requestsByBusiness: isRecord(candidate.requestsByBusiness)
       ? candidate.requestsByBusiness as Record<string, RequestRecord[]>
@@ -222,7 +222,7 @@ export const platformApi = {
   },
 
   async getSession() {
-    return unwrapSession(await request<unknown>("/api/v1/session"));
+    return parseAuthenticatedSession(await request<unknown>("/api/v1/session"));
   },
 
   async getWorkspace(businessId?: string, locationId?: string) {

@@ -3,7 +3,9 @@ begin;
 alter type public.agency_role add value if not exists 'operator';
 alter type public.business_role add value if not exists 'approver';
 
-create or replace function app_private.resolve_auth_session_with_role(p_token_hash bytea)
+drop function app_private.resolve_auth_session_with_role(bytea);
+
+create function app_private.resolve_auth_session_with_role(p_token_hash bytea)
 returns table (
   session_id uuid,
   user_id uuid,

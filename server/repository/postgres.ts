@@ -78,6 +78,10 @@ function asKnownRole<T extends string>(value: unknown, allowed: ReadonlySet<T>):
   return typeof value === "string" && allowed.has(value as T) ? value as T : undefined;
 }
 
+function isUnknownNonNullRole(value: unknown, parsed: string | undefined) {
+  return value !== null && value !== undefined && !parsed;
+}
+
 function projectBusinessProductRole(role: BusinessRole | undefined): ProductRole | undefined {
   if (role === "owner" || role === "admin") return "owner";
   if (role === "operator") return "staff";
@@ -196,6 +200,11 @@ export class PostgresRepository implements PlatformRepository {
     const agencyRole = asKnownRole(row.agency_role, AGENCY_ROLES);
     const businessRole = asKnownRole(row.business_role, BUSINESS_ROLES);
     const productRole = asKnownRole(row.product_role, PRODUCT_ROLES);
+    if (
+      isUnknownNonNullRole(row.agency_role, agencyRole)
+      || isUnknownNonNullRole(row.business_role, businessRole)
+      || isUnknownNonNullRole(row.product_role, productRole)
+    ) return null;
     return {
       userId: row.user_id,
       userName: row.display_name,

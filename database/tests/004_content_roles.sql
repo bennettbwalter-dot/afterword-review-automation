@@ -37,7 +37,8 @@ select * from app_private.resolve_auth_session_with_role(decode(repeat('33', 32)
 select 1 / (case when :'agency_operator_platform_role' = 'agency_user' and :'agency_operator_product_role' = 'staff' then 1 else 0 end);
 select * from app_private.resolve_auth_session_with_role(decode(repeat('44', 32), 'hex')) \gset business_approver_
 select 1 / (case when :'business_approver_platform_role' = 'business_owner' and :'business_approver_product_role' = 'client_approver' then 1 else 0 end);
-select * from app_private.resolve_auth_session_with_role(decode(repeat('55', 32), 'hex')) \gset business_billing_
+select coalesce(product_role::text, '') as product_role
+from app_private.resolve_auth_session_with_role(decode(repeat('55', 32), 'hex')) \gset business_billing_
 select 1 / (case when :'business_billing_product_role' = '' then 1 else 0 end);
 
 reset role;

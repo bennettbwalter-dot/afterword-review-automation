@@ -58,7 +58,9 @@ test("content-role migration is forward-only and keeps role projections fail clo
   assert.match(schema, /alter\s+type\s+public\.agency_role\s+add\s+value\s+if\s+not\s+exists\s+'operator'/i);
   assert.match(schema, /alter\s+type\s+public\.business_role\s+add\s+value\s+if\s+not\s+exists\s+'approver'/i);
   assert.doesNotMatch(schema, /drop\s+type\s+public\.(?:agency_role|business_role)/i);
-  assert.match(schema, /create\s+or\s+replace\s+function\s+app_private\.resolve_auth_session_with_role\(p_token_hash\s+bytea\)/i);
+  assert.match(schema, /drop\s+function\s+app_private\.resolve_auth_session_with_role\(bytea\)\s*;/i);
+  assert.match(schema, /create\s+function\s+app_private\.resolve_auth_session_with_role\(p_token_hash\s+bytea\)/i);
+  assert.doesNotMatch(schema, /create\s+or\s+replace\s+function\s+app_private\.resolve_auth_session_with_role/i);
   assert.match(schema, /membership\.role::text\s+in\s*\('owner',\s*'admin',\s*'operator',\s*'support'\)/i);
   assert.match(schema, /when\s+agency_membership\.role::text\s*=\s*'operator'\s+then\s+'agency_user'/i);
   assert.match(schema, /when\s+business_membership\.role::text\s*=\s*'approver'\s+then\s+'client_approver'/i);
@@ -70,6 +72,7 @@ test("content-role migration is forward-only and keeps role projections fail clo
   assert.match(schema, /v_agency_role::text\s+not\s+in\s*\('owner',\s*'admin',\s*'support'\)/i);
   assert.match(databaseTest, /agency operator/i);
   assert.match(databaseTest, /business approver/i);
+  assert.match(databaseTest, /coalesce\(product_role::text,\s*''\)\s+as\s+product_role/i);
 });
 
 test("SMS billing migration is forward-only, tenant-isolated and worker-fenced", async () => {
