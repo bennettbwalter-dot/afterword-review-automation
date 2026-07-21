@@ -204,11 +204,17 @@ end $$;
 create or replace function app_private.list_agency_client_claim_locations(p_token_hash bytea)
 returns table (business_id uuid,business_name text,location_id uuid,location_name text,permissions text[])
 language sql stable security definer set search_path=pg_catalog as $$
+ select business.id,business.name,location.id,location.name,grant.permissions from app_private.agency_client_access_claims claim
+ join public.agency_client_grants grant on grant.id=claim.selected_grant_id
+ join public.businesses business on business.id=grant.business_id
+ join public.locations location on location.id=grant.location_id
+ where claim.token_hash=p_token_hash and claim.consumed_by_user_id=app_private.current_user_id() and claim.selected_grant_id is not null
+ union all
  select business.id,business.name,location.id,location.name,claim.permissions from app_private.agency_client_access_claims claim
  join public.business_memberships membership on membership.user_id=app_private.current_user_id() and membership.status='active' and membership.role::text in ('owner','admin')
  join public.businesses business on business.id=membership.business_id and business.archived_at is null
  join public.locations location on location.business_id=business.id and location.archived_at is null
- where claim.token_hash=p_token_hash and claim.consumed_by_user_id=app_private.current_user_id() and claim.expires_at>statement_timestamp() and app_private.current_support_session_id() is null
+ where claim.token_hash=p_token_hash and claim.consumed_by_user_id=app_private.current_user_id() and claim.selected_grant_id is null and claim.expires_at>statement_timestamp() and app_private.current_support_session_id() is null
  order by business.name,location.name
 $$;
 
