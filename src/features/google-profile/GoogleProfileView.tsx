@@ -9,6 +9,16 @@ const tabs: Array<{ id: GoogleProfileTab; label: string }> = [
   { id: "posts-media", label: "Posts & media" },
 ];
 
+const capabilityLabels: Array<[keyof GoogleProfileSnapshot["capabilities"], string]> = [
+  ["profileFields", "Profile fields"],
+  ["services", "Services"],
+  ["attributes", "Attributes"],
+  ["reviewReplies", "Review replies"],
+  ["posts", "Local posts"],
+  ["images", "Location images"],
+  ["videos", "Location videos"],
+];
+
 export function GoogleProfileView({ businessId, locationId, tab, onTabChange, children }: { businessId: string; locationId?: string; tab: GoogleProfileTab; onTabChange: (tab: GoogleProfileTab) => void; children: ReactNode }) {
   const [snapshot, setSnapshot] = useState<GoogleProfileSnapshot | null>(null);
   const [snapshotError, setSnapshotError] = useState("");
@@ -33,5 +43,5 @@ export function GoogleProfileView({ businessId, locationId, tab, onTabChange, ch
       ? "Google connection unavailable"
       : snapshot ? "Google connection needs attention" : snapshotError || "Loading location data…";
 
-  return <div className="product-feature"><div className={`google-profile-source ${snapshot?.connection.state ? `is-${snapshot.connection.state}` : snapshotError ? "is-error" : ""}`} role="status"><span>{connectionLabel}</span>{snapshot?.connection.lastSyncedAt && <small>Last synced {snapshot.connection.lastSyncedAt}</small>}</div><nav className="product-tabs" aria-label="Google Profile sections">{tabs.map((item) => <button type="button" key={item.id} className={tab === item.id ? "is-active" : undefined} aria-current={tab === item.id ? "page" : undefined} onClick={() => onTabChange(item.id)}>{item.label}</button>)}</nav>{children}</div>;
+  return <div className="product-feature"><div className={`google-profile-source ${snapshot?.connection.state ? `is-${snapshot.connection.state}` : snapshotError ? "is-error" : ""}`} role="status"><span>{connectionLabel}</span>{snapshot?.connection.lastSyncedAt && <small>Last synced {snapshot.connection.lastSyncedAt}</small>}</div><nav className="product-tabs" aria-label="Google Profile sections">{tabs.map((item) => <button type="button" key={item.id} className={tab === item.id ? "is-active" : undefined} aria-current={tab === item.id ? "page" : undefined} onClick={() => onTabChange(item.id)}>{item.label}</button>)}</nav>{tab === "profile" && snapshot && <section className="google-capability-ledger" aria-label="Google write capabilities"><header><span>Write capabilities</span><small>Each action is enabled only after its own approval and controlled pilot.</small></header><div>{capabilityLabels.map(([key, label]) => <article key={key}><div><strong>{label}</strong><small>{snapshot.capabilities[key].reason}</small></div><span>Unavailable</span></article>)}</div></section>}{children}</div>;
 }
