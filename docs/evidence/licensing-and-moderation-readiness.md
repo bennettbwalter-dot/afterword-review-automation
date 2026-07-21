@@ -6,7 +6,9 @@
 - **Immutable revision (MobileWAN weights):** `3f5d75a27582161295dfb0b4e3d39cc7bef04fc4`.
 - **Immutable revision (Wan2.2 base):** `b8fff7315c768468a5333511427288870b2e9635`.
 - **Owner:** Legal owner for clearance; product owner for moderation, disclosure, and pricing decisions.
-- **State: blocked.** There is no legal clearance, moderation vendor account/configuration, policy threshold, escalation process, evidence-retention decision, licensed-track inventory, or approved price amount.
+- **State:** blocked
+
+There is no legal clearance, moderation vendor account/configuration, policy threshold, escalation process, evidence-retention decision, licensed-track inventory, or approved price amount.
 
 ## Verified facts and decisions pending
 

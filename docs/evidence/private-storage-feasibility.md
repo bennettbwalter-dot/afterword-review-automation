@@ -4,7 +4,9 @@
 - **Date:** 2026-07-21
 - **Immutable revision:** Not applicable: the required private Storage project, bucket configuration, and resumable-upload policy have not been supplied. This document is a dated infrastructure gate rather than a model release.
 - **Owner:** Product owner and Supabase/Storage operator.
-- **State: blocked.** No private Storage project, bucket, region, encryption setting, lifecycle policy, service-role boundary, or staging credentials are available.
+- **State:** blocked
+
+No private Storage project, bucket, region, encryption setting, lifecycle policy, service-role boundary, or staging credentials are available.
 
 ## Required proof
 

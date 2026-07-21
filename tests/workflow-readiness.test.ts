@@ -62,7 +62,7 @@ test("workspace headers describe only currently rendered product surfaces", () =
   }
 });
 
-test("external feasibility evidence records a dated owner decision and immutable revision", () => {
+test("external feasibility evidence uses anchored release-gate metadata", () => {
   const evidenceRoot = fileURLToPath(new URL("../docs/evidence", import.meta.url));
   const requiredEvidence = [
     "mobilewan-feasibility.md",
@@ -75,8 +75,16 @@ test("external feasibility evidence records a dated owner decision and immutable
     const path = join(evidenceRoot, evidenceFile);
     assert.equal(existsSync(path), true, `missing ${evidenceFile}`);
     const contents = readFileSync(path, "utf8");
-    for (const requiredField of ["Decision", "Date", "Immutable revision", "Owner", "State: blocked"]) {
-      assert.match(contents, new RegExp(requiredField, "i"), `${evidenceFile} must include ${requiredField}`);
-    }
+    assert.match(contents, /^- \*\*Decision:\*\*\s+\S.+$/mu, `${evidenceFile} must have a Decision metadata line`);
+    assert.match(contents, /^- \*\*Date:\*\*\s+\d{4}-\d{2}-\d{2}\s*$/mu, `${evidenceFile} must have an ISO Date metadata line`);
+    assert.match(contents, /^- \*\*Owner:\*\*\s+\S.+$/mu, `${evidenceFile} must have an Owner metadata line`);
+    assert.match(contents, /^- \*\*State:\*\*\s+(?:blocked|passed)\s*$/mu, `${evidenceFile} must have an exact blocked or passed State`);
+
+    const immutableMetadata = contents.match(/^- \*\*Immutable revision(?: \([^)]+\))?:\*\*\s+(.+)$/gmu) ?? [];
+    assert.ok(immutableMetadata.length > 0, `${evidenceFile} must include immutable revision metadata`);
+    assert.ok(
+      immutableMetadata.some((line) => /[a-f0-9]{40}/iu.test(line) || /(?:not applicable|n\/a)\s*[:—-]\s*.+/iu.test(line)),
+      `${evidenceFile} must pin a revision or explain why no revision applies`,
+    );
   }
 });

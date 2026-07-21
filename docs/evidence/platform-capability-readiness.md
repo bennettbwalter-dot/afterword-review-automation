@@ -4,7 +4,9 @@
 - **Date:** 2026-07-21
 - **Immutable revision:** Not applicable: platform developer approvals and OAuth configurations have not been supplied. This evidence records external capability state, not a source release.
 - **Owner:** Product owner and platform-integration operator.
-- **State: blocked.** Google, Meta, LinkedIn, and YouTube developer approvals, credentials, scopes, test destinations, and pilots are absent.
+- **State:** blocked
+
+Google, Meta, LinkedIn, and YouTube developer approvals, credentials, scopes, test destinations, and pilots are absent.
 
 ## Google capability matrix
 

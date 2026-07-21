@@ -6,7 +6,9 @@
 - **Immutable revision (MobileWAN weights):** `3f5d75a27582161295dfb0b4e3d39cc7bef04fc4` (`Qualcomm-AI-Research/mobilewan`).
 - **Immutable revision (Wan2.2 base):** `b8fff7315c768468a5333511427288870b2e9635` (`Wan-AI/Wan2.2-TI2V-5B-Diffusers`).
 - **Owner:** Product owner, with the managed-GPU operator responsible for the run and Legal responsible for commercial clearance.
-- **State: blocked.** No managed GPU account, quota, model snapshot, container registry, IAM boundary, observability plan, or approved budget has been supplied.
+- **State:** blocked
+
+No managed GPU account, quota, model snapshot, container registry, IAM boundary, observability plan, or approved budget has been supplied.
 
 ## Verified feasibility boundary
 
@@ -20,7 +22,7 @@ Official sources: [pinned source](https://github.com/qualcomm-ai-research/mobile
 
 ## Evidence still needed
 
-Run `scripts/mobilewan/benchmark.ps1` only on the owner-supplied managed GPU against the exact local snapshots. The run must use at least ten representative promotional prompts with fixed seeds and record cold/warm latency, peak VRAM, technically-valid-output rate, output checksums, retries/concurrency, and cost per technically valid clip. The wrapper does not download weights or select a provider.
+Run `scripts/mobilewan/benchmark.ps1` only on the owner-supplied managed NVIDIA A100 80 GB GPU against the exact local snapshots. Before any sample command, it requires an owner-supplied offline provenance JSON file with the two exact revisions and SHA-256 entries for snapshot files; directory names and marker files alone are not proof. The run must use at least ten representative promotional prompts with fixed integer seeds and record cold/warm latency, peak VRAM, technically-valid-output rate, output checksums, retries/concurrency, and cost per technically valid clip. The wrapper does not download weights or select a provider. A lower-VRAM or non-A100 device cannot emit a qualifying artifact.
 
 Required owner inputs are the managed GPU project/region/SKU/quota, driver compatibility, encrypted disk and registry, IAM and secret-manager boundary, egress policy, autoscaling/concurrency policy, observability, budget, local complete model snapshots plus hashes, and the ten-prompt manifest. The future operator also needs an approved container digest and dependency lock.
 
