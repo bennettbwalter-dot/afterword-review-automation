@@ -30,6 +30,7 @@ export type Permission =
   | "support.configure";
 
 export interface SessionContext {
+  agencyId?: string;
   userId: string;
   userName: string;
   role: ActorRole;
