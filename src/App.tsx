@@ -2528,7 +2528,7 @@ export default function App() {
 
   if (!IS_DEMO_MODE && location.pathname === "/app/agency-grant") {
     const claim = returnParams.get("claim") ?? "";
-    return <ThemeProvider><main className="workspace-auth-shell"><section className="workspace-auth-card"><span className="eyebrow">Client approval</span><h1>Choose an approved location</h1><p>Only locations you directly own or administer are shown.</p><ClientLocationSelector claimToken={claim} onSelect={() => navigate("/app", { replace: true })} /></section></main></ThemeProvider>;
+    return <ThemeProvider><main className="workspace-auth-shell"><section className="workspace-auth-card"><span className="eyebrow">Client approval</span><h1>Choose an approved location</h1><p>Only locations you directly own or administer are shown.</p><ClientLocationSelector claimToken={claim} onSelect={(scope) => navigate(workspaceRoute("home", { businessId: scope.businessId, locationId: scope.locationId }), { replace: true })} /></section></main></ThemeProvider>;
   }
 
   if (!IS_DEMO_MODE && location.pathname === "/signup") return <ThemeProvider><SignupView onSubmitted={(email) => navigate(`/signup/check-email?email=${encodeURIComponent(email)}`)} /></ThemeProvider>;
