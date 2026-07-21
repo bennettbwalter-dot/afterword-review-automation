@@ -29,8 +29,10 @@ export async function registerAgencyGrantRoutes(app: FastifyInstance, options: B
     requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production");
     const actor = requireActor(request);
     if (actor.supportSessionId) throw new ApiError(403, "SUPPORT_SESSION_READ_ONLY", "Support sessions cannot read agency grant controls.");
+    const { agencyId } = agencyScopeSchema.parse(request.body);
+    if (!actor.agencyId || actor.agencyId !== agencyId) throw new ApiError(403, "AGENCY_SCOPE_DENIED", "Use your current agency workspace to view grants.");
     const command = options.repository.listActiveAgencyClientGrants; if (!command) unavailable();
-    return sendData(reply, { grants: await command(actor, agencyScopeSchema.parse(request.body).agencyId) });
+    return sendData(reply, { grants: await command(actor, agencyId) });
   });
   app.post("/api/v1/agency-client-claims", async (request, reply) => {
     requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production"); const actor = requireActor(request); const body = accessClaimSchema.parse(request.body); const command = options.repository.issueAgencyClientAccessClaim; if (!command) unavailable();
