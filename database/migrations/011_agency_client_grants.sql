@@ -202,9 +202,9 @@ begin
 end $$;
 
 create or replace function app_private.list_agency_client_claim_locations(p_token_hash bytea)
-returns table (business_id uuid,business_name text,location_id uuid,location_name text)
+returns table (business_id uuid,business_name text,location_id uuid,location_name text,permissions text[])
 language sql stable security definer set search_path=pg_catalog as $$
- select business.id,business.name,location.id,location.name from app_private.agency_client_access_claims claim
+ select business.id,business.name,location.id,location.name,claim.permissions from app_private.agency_client_access_claims claim
  join public.business_memberships membership on membership.user_id=app_private.current_user_id() and membership.status='active' and membership.role::text in ('owner','admin')
  join public.businesses business on business.id=membership.business_id and business.archived_at is null
  join public.locations location on location.business_id=business.id and location.archived_at is null

@@ -126,7 +126,7 @@ export interface AgencyGrantClaimScope {
   permissions: AgencyGrantPermission[];
   expiresAt?: string;
 }
-export interface AgencyClientLocation { businessId: string; businessName: string; locationId: string; locationName: string; }
+export interface AgencyClientLocation { businessId: string; businessName: string; locationId: string; locationName: string; permissions: AgencyGrantPermission[]; }
 
 export class ApiError extends Error {
   readonly status: number;
