@@ -136,11 +136,11 @@ end $$;
 
 create or replace function app_private.accept_agency_client_grant(p_grant_id uuid, p_correlation_id uuid)
 returns public.agency_client_grants language plpgsql volatile security definer set search_path = pg_catalog as $$
-declare v_grant public.agency_client_grants%rowtype; v_actor uuid := app_private.current_user_id();
+declare v_grant public.agency_client_grants%rowtype; v_actor uuid := app_private.current_user_id(); v_found integer;
 begin
-  perform app_private.reject_agency_grant_support_mutation(); select * into v_grant from public.agency_client_grants where id=p_grant_id for update;
+  perform app_private.reject_agency_grant_support_mutation(); select * into v_grant from public.agency_client_grants where id=p_grant_id for update; get diagnostics v_found = row_count;
   perform app_private.expire_stale_agency_client_grants(100);
-  if not found or v_grant.status <> 'requested' then raise exception 'agency grant is not awaiting acceptance'; end if;
+  if v_found <> 1 or v_grant.status <> 'requested' then raise exception 'agency grant is not awaiting acceptance'; end if;
   if app_private.current_business_role(v_grant.business_id)::text not in ('owner','admin') then raise exception 'direct client owner or admin acceptance is required'; end if;
   if v_grant.expires_at is not null and v_grant.expires_at <= statement_timestamp() then raise exception 'agency grant has expired'; end if;
   update public.agency_client_grants set status='active',accepted_by_user_id=v_actor,accepted_at=statement_timestamp() where id=v_grant.id returning * into v_grant;
@@ -168,8 +168,68 @@ begin
   perform app_private.write_audit_event('user',v_grant.agency_id,v_grant.business_id,v_grant.location_id,null,'agency.grant.revoke','agency_client_grant',v_grant.id::text,'completed',null,p_correlation_id,array['status'],'{}'::jsonb); return v_grant;
 end $$;
 
+create table app_private.agency_client_access_claims (
+  id uuid primary key default gen_random_uuid(), token_hash bytea not null unique check (length(token_hash)=32),
+  agency_id uuid not null references public.agencies(id), email text not null check (email=lower(btrim(email))),
+  permissions text[] not null check (permissions <@ array['content.create','content.submit','content.approve','content.self_approve','content.schedule','content.publish','video.spend']::text[]),
+  self_approver_user_id uuid references public.users(id), video_soft_monthly_cap integer, video_hard_monthly_cap integer,
+  grant_expires_at timestamptz, expires_at timestamptz not null, consumed_by_user_id uuid references public.users(id), consumed_at timestamptz, selected_grant_id uuid references public.agency_client_grants(id), created_at timestamptz not null default statement_timestamp(),
+  check ((('content.self_approve'=any(permissions)))=(self_approver_user_id is not null))
+);
+
+create or replace function app_private.issue_agency_client_access_claim(p_email text,p_permissions text[],p_self_approver_user_id uuid,p_video_soft_monthly_cap integer,p_video_hard_monthly_cap integer,p_grant_expires_at timestamptz,p_token_hash bytea,p_expires_at timestamptz,p_correlation_id uuid)
+returns void language plpgsql volatile security definer set search_path=pg_catalog as $$
+declare v_agency uuid; v_email text:=lower(btrim(p_email));
+begin
+ perform app_private.reject_agency_grant_support_mutation();
+ select membership.agency_id into v_agency from public.agency_memberships membership where membership.user_id=app_private.current_user_id() and membership.status='active' and membership.role::text in ('owner','admin','operator') order by membership.created_at limit 1;
+ if v_agency is null or p_token_hash is null or length(p_token_hash)<>32 or v_email='' or coalesce(array_length(p_permissions,1),0)=0 or p_expires_at<=statement_timestamp() or p_expires_at>statement_timestamp()+interval '7 days' then raise exception 'invalid agency client claim'; end if;
+ if ('content.self_approve'=any(p_permissions))<>(p_self_approver_user_id is not null) then raise exception 'self approval requires a named user'; end if;
+ insert into app_private.agency_client_access_claims(token_hash,agency_id,email,permissions,self_approver_user_id,video_soft_monthly_cap,video_hard_monthly_cap,grant_expires_at,expires_at) values(p_token_hash,v_agency,v_email,p_permissions,p_self_approver_user_id,p_video_soft_monthly_cap,p_video_hard_monthly_cap,p_grant_expires_at,p_expires_at);
+end $$;
+
+create or replace function app_private.consume_agency_client_access_claim(p_token_hash bytea)
+returns boolean language plpgsql volatile security definer set search_path=pg_catalog as $$
+declare v_email text; v_claim app_private.agency_client_access_claims%rowtype;
+begin
+ if p_token_hash is null or length(p_token_hash)<>32 or app_private.current_support_session_id() is not null or not app_private.current_user_enabled() then return false; end if;
+ select lower(btrim(email)) into v_email from public.users where id=app_private.current_user_id() and disabled_at is null;
+ select * into v_claim from app_private.agency_client_access_claims claim where claim.token_hash=p_token_hash and claim.expires_at>statement_timestamp() for update;
+ if not found or v_claim.email<>v_email then return false; end if;
+ if v_claim.consumed_by_user_id is not null and v_claim.consumed_by_user_id<>app_private.current_user_id() then return false; end if;
+ update app_private.agency_client_access_claims set consumed_by_user_id=app_private.current_user_id(),consumed_at=coalesce(consumed_at,statement_timestamp()) where id=v_claim.id;
+ return true;
+end $$;
+
+create or replace function app_private.list_agency_client_claim_locations(p_token_hash bytea)
+returns table (business_id uuid,business_name text,location_id uuid,location_name text)
+language sql stable security definer set search_path=pg_catalog as $$
+ select business.id,business.name,location.id,location.name from app_private.agency_client_access_claims claim
+ join public.business_memberships membership on membership.user_id=app_private.current_user_id() and membership.status='active' and membership.role::text in ('owner','admin')
+ join public.businesses business on business.id=membership.business_id and business.archived_at is null
+ join public.locations location on location.business_id=business.id and location.archived_at is null
+ where claim.token_hash=p_token_hash and claim.consumed_by_user_id=app_private.current_user_id() and claim.expires_at>statement_timestamp() and app_private.current_support_session_id() is null
+ order by business.name,location.name
+$$;
+
+create or replace function app_private.select_agency_client_claim_location(p_token_hash bytea,p_location_id uuid,p_correlation_id uuid)
+returns public.agency_client_grants language plpgsql volatile security definer set search_path=pg_catalog as $$
+declare v_claim app_private.agency_client_access_claims%rowtype; v_grant public.agency_client_grants%rowtype; v_business uuid; v_found integer;
+begin
+ perform app_private.reject_agency_grant_support_mutation();
+ select * into v_claim from app_private.agency_client_access_claims claim where claim.token_hash=p_token_hash and claim.consumed_by_user_id=app_private.current_user_id() and claim.expires_at>statement_timestamp() for update; get diagnostics v_found = row_count;
+ if v_found<>1 then raise exception 'client claim is unavailable'; end if;
+ if v_claim.selected_grant_id is not null then select * into v_grant from public.agency_client_grants where id=v_claim.selected_grant_id; return v_grant; end if;
+ select membership.business_id into v_business from public.business_memberships membership join public.locations location on location.business_id=membership.business_id and location.id=p_location_id and location.archived_at is null where membership.user_id=app_private.current_user_id() and membership.status='active' and membership.role::text in ('owner','admin'); get diagnostics v_found = row_count;
+ if v_found<>1 then raise exception 'selected location is not a direct client location'; end if;
+ insert into public.agency_client_grants(agency_id,business_id,location_id,status,permissions,self_approver_user_id,video_soft_monthly_cap,video_hard_monthly_cap,requested_by_user_id,expires_at) values(v_claim.agency_id,v_business,p_location_id,'requested',v_claim.permissions,v_claim.self_approver_user_id,v_claim.video_soft_monthly_cap,v_claim.video_hard_monthly_cap,app_private.current_user_id(),v_claim.grant_expires_at) returning * into v_grant;
+ update app_private.agency_client_access_claims set selected_grant_id=v_grant.id where id=v_claim.id;
+ return v_grant;
+end $$;
+
 revoke all on table public.agency_client_grants from public, afterword_auth, afterword_runtime, afterword_ingress, afterword_worker;
 revoke all on table app_private.agency_grant_email_claims from public, afterword_auth, afterword_runtime, afterword_ingress, afterword_worker;
+revoke all on table app_private.agency_client_access_claims from public, afterword_auth, afterword_runtime, afterword_ingress, afterword_worker;
 revoke all on function app_private.reject_agency_grant_support_mutation() from public;
 revoke all on function app_private.expire_stale_agency_client_grants(integer) from public;
 revoke all on function app_private.issue_agency_client_grant_claim(uuid,text,bytea,timestamptz,uuid) from public;
@@ -189,4 +249,8 @@ grant execute on function app_private.request_agency_client_grant(uuid,uuid,uuid
 grant execute on function app_private.accept_agency_client_grant(uuid,uuid) to afterword_runtime;
 grant execute on function app_private.reject_agency_client_grant(uuid,uuid) to afterword_runtime;
 grant execute on function app_private.revoke_agency_client_grant(uuid,uuid) to afterword_runtime;
+grant execute on function app_private.issue_agency_client_access_claim(text,text[],uuid,integer,integer,timestamptz,bytea,timestamptz,uuid) to afterword_runtime;
+grant execute on function app_private.consume_agency_client_access_claim(bytea) to afterword_runtime;
+grant execute on function app_private.list_agency_client_claim_locations(bytea) to afterword_runtime;
+grant execute on function app_private.select_agency_client_claim_location(bytea,uuid,uuid) to afterword_runtime;
 commit;

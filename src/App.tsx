@@ -56,6 +56,7 @@ import {
 import { LivePublicReviewFlow, PublicReviewFlow, QrCodesView } from "./platform/QrCodesView";
 import GrowthSuite from "./growth/GrowthSuite";
 import { AgencyView } from "./features/agency/AgencyView";
+import { ClientLocationSelector } from "./features/agency/ClientLocationSelector";
 import { ContentView } from "./features/content/ContentView";
 import { GoogleProfileView } from "./features/google-profile/GoogleProfileView";
 import { HomeView } from "./features/home/HomeView";
@@ -2524,6 +2525,11 @@ export default function App() {
   const billingReturn = !IS_DEMO_MODE && (returnParams.has("checkout") || returnParams.has("billing"));
   const publicToken = location.pathname.match(/^\/r\/([a-z0-9-]+)\/?$/i)?.[1];
   const publicQrCode = IS_DEMO_MODE && publicToken ? getQrCodeByToken(publicToken) : undefined;
+
+  if (!IS_DEMO_MODE && location.pathname === "/app/agency-grant") {
+    const claim = returnParams.get("claim") ?? "";
+    return <ThemeProvider><main className="workspace-auth-shell"><section className="workspace-auth-card"><span className="eyebrow">Client approval</span><h1>Choose an approved location</h1><p>Only locations you directly own or administer are shown.</p><ClientLocationSelector claimToken={claim} onSelect={() => navigate("/app", { replace: true })} /></section></main></ThemeProvider>;
+  }
 
   if (!IS_DEMO_MODE && location.pathname === "/signup") return <ThemeProvider><SignupView onSubmitted={(email) => navigate(`/signup/check-email?email=${encodeURIComponent(email)}`)} /></ThemeProvider>;
   if (!IS_DEMO_MODE && location.pathname === "/signup/check-email") return <ThemeProvider><CheckEmailView email={returnParams.get("email")} /></ThemeProvider>;

@@ -51,3 +51,16 @@ test("agency permission checks deny support sessions and grant claims are opaque
   assert.match(databaseTest, /support-session permission denial/i);
   assert.match(databaseTest, /sibling location/i);
 });
+
+test("claim approval lets only the direct client discover and select a named location, with replay-safe consumption", async () => {
+  const schema = await readFile(path.resolve("database", "migrations", "011_agency_client_grants.sql"), "utf8");
+  const app = await readFile(path.resolve("src", "App.tsx"), "utf8");
+  const runner = await readFile(path.resolve("scripts", "test-database-isolation.ts"), "utf8");
+  assert.match(schema, /function\s+app_private\.list_agency_client_claim_locations[\s\S]+business_memberships/i);
+  assert.match(schema, /function\s+app_private\.select_agency_client_claim_location[\s\S]+membership\.user_id\s*=\s*app_private\.current_user_id\(\)/i);
+  assert.match(schema, /select\s+lower\(btrim\(email\)\)/i);
+  assert.match(schema, /get diagnostics v_found = row_count/i);
+  assert.match(app, /ClientLocationSelector/);
+  assert.match(app, /agency-grant/);
+  assert.match(runner, /\\assert/);
+});

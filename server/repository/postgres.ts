@@ -212,6 +212,10 @@ export class PostgresRepository implements PlatformRepository {
   async issueAgencyClientGrantClaim(actor: ActorContext, grantId: string, email: string, tokenHash: Buffer, expiresAt: Date, correlationId: string) { await new AgencyGrantPostgres(this.runtime()).issueClaim(actor, grantId, email, tokenHash, expiresAt, correlationId); }
   async consumeAgencyClientGrantClaim(actor: ActorContext, tokenHash: Buffer) { return new AgencyGrantPostgres(this.runtime()).consumeClaim(actor, tokenHash); }
   async listAgencyClientGrantClaimLocations(actor: ActorContext, tokenHash: Buffer) { return new AgencyGrantPostgres(this.runtime()).listClaimLocations(actor, tokenHash); }
+  async issueAgencyClientAccessClaim(actor: ActorContext, email: string, permissions: import("../agency/types.js").AgencyGrantPermission[], tokenHash: Buffer, expiresAt: Date, correlationId: string) { await new AgencyGrantPostgres(this.runtime()).issueAccessClaim(actor, email, permissions, tokenHash, expiresAt, correlationId); }
+  async consumeAgencyClientAccessClaim(actor: ActorContext, tokenHash: Buffer) { return new AgencyGrantPostgres(this.runtime()).consumeAccessClaim(actor, tokenHash); }
+  async listAgencyClientAccessLocations(actor: ActorContext, tokenHash: Buffer) { return new AgencyGrantPostgres(this.runtime()).listAccessLocations(actor, tokenHash); }
+  async selectAgencyClientAccessLocation(actor: ActorContext, tokenHash: Buffer, locationId: string, correlationId: string) { return new AgencyGrantPostgres(this.runtime()).selectAccessLocation(actor, tokenHash, locationId, correlationId); }
 
   async recordLoginResult(email: string, succeeded: boolean) {
     await this.auth().query("select app_private.record_login_result($1,$2)", [email, succeeded]);

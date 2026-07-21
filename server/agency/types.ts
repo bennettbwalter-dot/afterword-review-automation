@@ -34,6 +34,7 @@ export interface AgencyGrantClaimScope {
   permissions: AgencyGrantPermission[];
   expiresAt?: string;
 }
+export interface AgencyClientClaimLocation { businessId: string; businessName: string; locationId: string; locationName: string; }
 
 export function hasAgencyGrantPermission(
   grant: AgencyGrant,

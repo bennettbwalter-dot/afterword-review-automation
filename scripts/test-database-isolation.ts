@@ -40,13 +40,16 @@ async function runPsqlCompatibleScript(client: pg.Client, source: string) {
     },
   );
 
-  const execute = async (prefix?: string) => {
+  const execute = async (prefix?: string, assertResult = false) => {
     const query = renderVariables(segment.join("\n")).trim();
     segment = [];
     if (!query) return;
     const result = await client.query(query);
-    if (prefix === undefined) return;
     const finalResult = Array.isArray(result) ? result.at(-1) : result;
+    if (assertResult) {
+      if (!finalResult || finalResult.rows.length !== 1 || Object.values(finalResult.rows[0]).some((value) => value !== true)) throw new Error(`\\assert expected one all-true row but received ${JSON.stringify(finalResult?.rows ?? [])}.`);
+    }
+    if (prefix === undefined) return;
     if (!finalResult || finalResult.rows.length !== 1) {
       throw new Error(`\\gset expected one row but received ${finalResult?.rows.length ?? 0}.`);
     }
@@ -58,6 +61,7 @@ async function runPsqlCompatibleScript(client: pg.Client, source: string) {
   for (const line of sqlLines) {
     if (line.trimStart().startsWith("\\set ")) continue;
     const marker = line.match(/\\gset(?:[ \t]+([A-Za-z_][A-Za-z0-9_]*))?[ \t]*$/);
+    if (line.trim() === "\\assert") { await execute(undefined, true); continue; }
     if (!marker) {
       segment.push(line);
       continue;

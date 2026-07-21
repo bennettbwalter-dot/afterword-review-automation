@@ -208,6 +208,10 @@ export interface PlatformRepository {
   issueAgencyClientGrantClaim?(actor: ActorContext, grantId: string, email: string, tokenHash: Buffer, expiresAt: Date, correlationId: string): Promise<void>;
   consumeAgencyClientGrantClaim?(actor: ActorContext, tokenHash: Buffer): Promise<import("./agency/types.js").AgencyGrantClaimScope | null>;
   listAgencyClientGrantClaimLocations?(actor: ActorContext, tokenHash: Buffer): Promise<import("./agency/types.js").AgencyGrantClaimScope[]>;
+  issueAgencyClientAccessClaim?(actor: ActorContext, email: string, permissions: import("./agency/types.js").AgencyGrantPermission[], tokenHash: Buffer, expiresAt: Date, correlationId: string): Promise<void>;
+  consumeAgencyClientAccessClaim?(actor: ActorContext, tokenHash: Buffer): Promise<boolean>;
+  listAgencyClientAccessLocations?(actor: ActorContext, tokenHash: Buffer): Promise<import("./agency/types.js").AgencyClientClaimLocation[]>;
+  selectAgencyClientAccessLocation?(actor: ActorContext, tokenHash: Buffer, locationId: string, correlationId: string): Promise<import("./agency/types.js").AgencyGrant>;
   createSignupIntent?(input: import("./onboarding/types.js").SignupIntentInput): Promise<{ accepted: boolean; shouldSendEmail: boolean }>;
   consumeSignupIntent?(tokenHash: Buffer): Promise<import("./onboarding/types.js").VerifiedSignup | null>;
   registerVerifiedSignup?(input: import("./onboarding/types.js").RegistrationInput): Promise<import("./onboarding/types.js").RegistrationResult>;
