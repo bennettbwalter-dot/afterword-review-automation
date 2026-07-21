@@ -31,7 +31,7 @@ create table public.account_onboarding (
   completed_at timestamptz,
   created_at timestamptz not null default statement_timestamp(),
   updated_at timestamptz not null default statement_timestamp(),
-  check ((business_id is null) = (current_step = 'agency_setup' or current_step = 'complete'))
+  check ((business_id is not null and current_step in ('business', 'location', 'google_connection', 'complete')) or (business_id is null and current_step in ('agency_setup', 'complete')))
 );
 alter table public.account_onboarding enable row level security;
 alter table public.account_onboarding force row level security;
@@ -43,12 +43,44 @@ returns table (accepted boolean, should_send_email boolean)
 language plpgsql volatile security definer set search_path = pg_catalog as $$
 declare v_email text := lower(btrim(p_email)); v_existing boolean;
 begin
+  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(v_email, 10));
   if p_token_hash is null or length(p_token_hash) <> 32 or p_account_type not in ('business','agency') or p_expires_at <= statement_timestamp() or p_expires_at > statement_timestamp() + interval '30 minutes' then raise exception 'invalid signup intent'; end if;
   select exists(select 1 from public.users where lower(email) = v_email) into v_existing;
   if v_existing then return query select true, false; return; end if;
   if (select count(*) from app_private.signup_intents where email = v_email and issued_at > statement_timestamp() - interval '15 minutes') >= 4 then return query select true, false; return; end if;
   insert into app_private.signup_intents(email, display_name, account_type, token_hash, expires_at) values (v_email, btrim(p_display_name), p_account_type, p_token_hash, p_expires_at);
   return query select true, true;
+end $$;
+
+drop function app_private.resolve_auth_session_with_role(bytea);
+create function app_private.resolve_auth_session_with_role(p_token_hash bytea)
+returns table (session_id uuid, user_id uuid, email text, display_name text, agency_id uuid, agency_role public.agency_role, business_id uuid, business_role public.business_role, platform_role text, product_role text, mfa_verified_at timestamptz, step_up_verified_at timestamptz)
+language plpgsql volatile security definer set search_path = pg_catalog as $$
+declare v_session app_private.auth_sessions%rowtype;
+begin
+  select session.* into v_session from app_private.auth_sessions session join public.users app_user on app_user.id=session.user_id and app_user.disabled_at is null where session.token_hash=p_token_hash and session.revoked_at is null and session.idle_expires_at > statement_timestamp() and session.absolute_expires_at > statement_timestamp() for update of session;
+  if not found then return; end if;
+  if v_session.last_seen_at < statement_timestamp() - interval '5 minutes' then update app_private.auth_sessions set last_seen_at=statement_timestamp(), idle_expires_at=least(absolute_expires_at,statement_timestamp()+interval '12 hours') where id=v_session.id; end if;
+  return query
+  select v_session.id, app_user.id, app_user.email, app_user.display_name, agency_membership.agency_id, agency_membership.role, business_membership.business_id, business_membership.role,
+    case when agency.customer_kind = 'direct_container' and business_membership.role is not null then 'business_owner'
+         when agency_membership.role::text in ('owner','admin') then 'agency_admin'
+         when agency_membership.role::text in ('operator','support') then 'agency_user'
+         when business_membership.role is not null then 'business_owner' else null end,
+    case when agency.customer_kind = 'direct_container' and business_membership.role::text in ('owner','admin') then 'owner'
+         when agency.customer_kind = 'direct_container' and business_membership.role::text = 'operator' then 'staff'
+         when agency.customer_kind = 'direct_container' and business_membership.role::text = 'approver' then 'client_approver'
+         when agency_membership.role::text in ('owner','admin') then 'owner'
+         when agency_membership.role::text = 'operator' then 'staff'
+         when business_membership.role::text in ('owner','admin') then 'owner'
+         when business_membership.role::text = 'operator' then 'staff'
+         when business_membership.role::text = 'approver' then 'client_approver' else null end,
+    v_session.mfa_verified_at, v_session.step_up_verified_at
+  from public.users app_user
+  left join lateral (select membership.agency_id,membership.user_id,membership.role from public.agency_memberships membership where membership.user_id=app_user.id and membership.status='active' order by membership.created_at,membership.agency_id limit 1) agency_membership on true
+  left join public.agencies agency on agency.id=agency_membership.agency_id
+  left join lateral (select membership.business_id,membership.user_id,membership.role from public.business_memberships membership where membership.user_id=app_user.id and membership.status='active' and not exists(select 1 from public.business_memberships other_membership where other_membership.user_id=app_user.id and other_membership.status='active' and other_membership.business_id<>membership.business_id) order by membership.created_at,membership.business_id limit 1) business_membership on true
+  where app_user.id=v_session.user_id and (agency_membership.user_id is not null or business_membership.user_id is not null);
 end $$;
 
 create or replace function app_private.consume_signup_intent(p_token_hash bytea)

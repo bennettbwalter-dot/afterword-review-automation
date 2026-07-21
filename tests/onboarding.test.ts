@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 import { buildApp } from "../server/app.js";
 import { loadConfig } from "../server/config.js";
@@ -88,4 +90,21 @@ test("registration requires a verified cookie, hashes its scrypt credential and 
 
 test("password hashing remains scrypt-compatible for registration", async () => {
   assert.match(await hashPassword("correct horse battery staple"), /^scrypt\$/);
+});
+
+test("signup intent returns the same generic response when transactional email delivery fails", async () => {
+  const repo = repository();
+  const app = await buildApp({ config, repository: repo, transactionalEmail: { async sendAccountVerification() { throw new Error("provider unavailable"); } } });
+  try {
+    const response = await app.inject({ method: "POST", url: "/api/v1/auth/signup-intents", headers: { origin }, payload: { email: "new@example.com", displayName: "New owner", accountType: "business" } });
+    assert.equal(response.statusCode, 202);
+    assert.equal(response.json().data.accepted, true);
+  } finally { await app.close(); }
+});
+
+test("onboarding migration projects a direct-container owner as a business owner before agency roles", async () => {
+  const schema = await readFile(path.resolve("database", "migrations", "010_signup_onboarding.sql"), "utf8");
+  assert.match(schema, /drop\s+function\s+app_private\.resolve_auth_session_with_role\(bytea\)/i);
+  assert.match(schema, /agency\.customer_kind\s*=\s*'direct_container'[\s\S]+then\s+'business_owner'/i);
+  assert.doesNotMatch(schema, /when\s+agency_membership\.role::text\s+in\s*\('owner',\s*'admin'\)\s+then\s+'agency_admin'[\s\S]{0,120}direct_container/i);
 });

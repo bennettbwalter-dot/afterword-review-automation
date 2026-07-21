@@ -37,7 +37,11 @@ export async function registerOnboardingRoutes(app: FastifyInstance, options: Bu
     if (!created) throw new ApiError(503, "SIGNUP_UNAVAILABLE", "Signup is not available.");
     if (created.shouldSendEmail) {
       const url = new URL("/signup/verify", options.config.APP_ORIGIN); url.searchParams.set("token", token);
-      await email.sendAccountVerification({ to: body.email, displayName: body.displayName, verificationUrl: url.toString(), expiresAt });
+      try {
+        await email.sendAccountVerification({ to: body.email, displayName: body.displayName, verificationUrl: url.toString(), expiresAt });
+      } catch (error) {
+        request.log.error({ err: error, requestId: request.id }, "signup verification email delivery failed");
+      }
     }
     reply.header("cache-control", "no-store");
     return sendData(reply, options.config.NODE_ENV === "test" ? { ...genericResponse, debugToken: token } : genericResponse, 202);
