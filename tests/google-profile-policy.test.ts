@@ -1,0 +1,25 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import test from "node:test";
+
+test("Google review bodies remain inside the Google Profile review view", async () => {
+  const app = await readFile(path.resolve("src", "App.tsx"), "utf8");
+  const reportsStart = app.indexOf("function ReportsView(");
+  const reviewsStart = app.indexOf("function ReviewsView(");
+  const reportsSource = app.slice(reportsStart, app.indexOf("function GoogleProfileSelectionDialog(", reportsStart));
+
+  assert.ok(reviewsStart >= 0, "Google review rendering must stay explicit");
+  assert.match(app.slice(reviewsStart, reportsStart), /review\.body/);
+  assert.doesNotMatch(reportsSource, /review\.body/);
+  assert.match(reportsSource, /Review detection is not exact job-level attribution/);
+});
+
+test("Content does not offer Google reviews as a creation source and write capabilities fail closed", async () => {
+  const content = await readFile(path.resolve("src", "features", "content", "ContentView.tsx"), "utf8");
+  const profileRoute = await readFile(path.resolve("server", "routes", "google-profile.ts"), "utf8");
+
+  assert.doesNotMatch(content, /review source|Google review/i);
+  assert.match(profileRoute, /available: false as const/);
+  assert.match(profileRoute, /Unavailable until the Google capability is approved and proven in a controlled pilot/);
+});
