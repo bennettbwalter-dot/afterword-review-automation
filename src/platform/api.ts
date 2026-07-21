@@ -236,11 +236,6 @@ export const platformApi = {
     if (!isRecord(payload) || typeof payload.id !== "string") throw new ApiError("The server returned an invalid agency grant.", 502, "INVALID_AGENCY_GRANT");
     return payload;
   },
-  async revokeAgencyGrant(grantId: string) {
-    const payload = unwrapData(await request<unknown>(`/api/v1/agency-grants/${encodeURIComponent(grantId)}/revoke`, { method: "POST" }));
-    if (!isRecord(payload) || typeof payload.id !== "string") throw new ApiError("The server returned an invalid agency grant.", 502, "INVALID_AGENCY_GRANT");
-    return payload;
-  },
   async revokeAgencyGrantInCurrentAgency(grantId: string, agencyId: string) {
     const payload = unwrapData(await request<unknown>(`/api/v1/agency-grants/${encodeURIComponent(grantId)}/revoke-in-agency`, { method: "POST", body: JSON.stringify({ agencyId }) }));
     if (!isRecord(payload) || typeof payload.id !== "string") throw new ApiError("The server returned an invalid agency grant.", 502, "INVALID_AGENCY_GRANT");

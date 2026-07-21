@@ -28,7 +28,6 @@ export class AgencyGrantPostgres {
   }
   async accept(actor: ActorContext, grantId: string, correlationId: string) { return this.transition(actor, "accept_agency_client_grant", grantId, correlationId); }
   async reject(actor: ActorContext, grantId: string, correlationId: string) { return this.transition(actor, "reject_agency_client_grant", grantId, correlationId); }
-  async revoke(actor: ActorContext, grantId: string, correlationId: string) { return this.transition(actor, "revoke_agency_client_grant", grantId, correlationId); }
   async revokeInAgency(actor: ActorContext, grantId: string, agencyId: string, correlationId: string) {
     return withActorTransaction(this.runtimePool, actor, async (client) => grant((await client.query("select * from app_private.revoke_current_agency_client_grant($1,$2,$3)", [grantId, agencyId, correlationId])).rows[0] as Record<string, unknown>));
   }
@@ -56,7 +55,7 @@ export class AgencyGrantPostgres {
   async consumeAccessClaim(actor: ActorContext, tokenHash: Buffer) { return withActorTransaction(this.runtimePool, actor, async (client) => Boolean((await client.query("select app_private.consume_agency_client_access_claim($1) as consumed", [tokenHash])).rows[0]?.consumed)); }
   async listAccessLocations(actor: ActorContext, tokenHash: Buffer): Promise<AgencyClientClaimLocation[]> { return withActorTransaction(this.runtimePool, actor, async (client) => (await client.query("select * from app_private.list_agency_client_claim_locations($1)", [tokenHash])).rows.map((row) => ({ businessId: String(row.business_id), businessName: String(row.business_name), locationId: String(row.location_id), locationName: String(row.location_name), permissions: row.permissions as AgencyGrantPermission[] }))); }
   async selectAccessLocation(actor: ActorContext, tokenHash: Buffer, locationId: string, correlationId: string) { return withActorTransaction(this.runtimePool, actor, async (client) => grant((await client.query("select * from app_private.select_agency_client_claim_location($1,$2,$3)", [tokenHash, locationId, correlationId])).rows[0] as Record<string, unknown>)); }
-  private async transition(actor: ActorContext, command: "accept_agency_client_grant" | "reject_agency_client_grant" | "revoke_agency_client_grant", grantId: string, correlationId: string) {
+  private async transition(actor: ActorContext, command: "accept_agency_client_grant" | "reject_agency_client_grant", grantId: string, correlationId: string) {
     return withActorTransaction(this.runtimePool, actor, async (client) => grant((await client.query(`select * from app_private.${command}($1,$2)`, [grantId, correlationId])).rows[0] as Record<string, unknown>));
   }
 }

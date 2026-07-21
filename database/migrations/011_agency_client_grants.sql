@@ -157,17 +157,6 @@ begin
   perform app_private.write_audit_event('user',v_grant.agency_id,v_grant.business_id,v_grant.location_id,null,'agency.grant.reject','agency_client_grant',v_grant.id::text,'completed',null,p_correlation_id,array['status'],'{}'::jsonb); return v_grant;
 end $$;
 
-create or replace function app_private.revoke_agency_client_grant(p_grant_id uuid, p_correlation_id uuid)
-returns public.agency_client_grants language plpgsql volatile security definer set search_path = pg_catalog as $$
-declare v_grant public.agency_client_grants%rowtype;
-begin
-  perform app_private.reject_agency_grant_support_mutation(); select * into v_grant from public.agency_client_grants where id=p_grant_id for update;
-  if not found or v_grant.status not in ('requested','active') then raise exception 'agency grant cannot be revoked'; end if;
-  if app_private.current_business_role(v_grant.business_id)::text not in ('owner','admin') and app_private.current_agency_role(v_grant.agency_id)::text not in ('owner','admin') then raise exception 'grant revocation is not permitted'; end if;
-  update public.agency_client_grants set status='revoked',revoked_at=statement_timestamp() where id=v_grant.id returning * into v_grant;
-  perform app_private.write_audit_event('user',v_grant.agency_id,v_grant.business_id,v_grant.location_id,null,'agency.grant.revoke','agency_client_grant',v_grant.id::text,'completed',null,p_correlation_id,array['status'],'{}'::jsonb); return v_grant;
-end $$;
-
 create table app_private.agency_client_access_claims (
   id uuid primary key default gen_random_uuid(), token_hash bytea not null unique check (length(token_hash)=32),
   agency_id uuid not null references public.agencies(id), email text not null check (email=lower(btrim(email))),
@@ -246,7 +235,6 @@ revoke all on function app_private.has_agency_client_permission(uuid,uuid,text,u
 revoke all on function app_private.request_agency_client_grant(uuid,uuid,uuid,text[],uuid,integer,integer,timestamptz,uuid) from public;
 revoke all on function app_private.accept_agency_client_grant(uuid,uuid) from public;
 revoke all on function app_private.reject_agency_client_grant(uuid,uuid) from public;
-revoke all on function app_private.revoke_agency_client_grant(uuid,uuid) from public;
 revoke all on function app_private.issue_agency_client_access_claim(uuid,text,text[],uuid,integer,integer,timestamptz,bytea,timestamptz,uuid) from public;
 revoke all on function app_private.consume_agency_client_access_claim(bytea) from public;
 revoke all on function app_private.list_agency_client_claim_locations(bytea) from public;
@@ -259,7 +247,6 @@ grant execute on function app_private.list_agency_client_grant_claim_locations(b
 grant execute on function app_private.request_agency_client_grant(uuid,uuid,uuid,text[],uuid,integer,integer,timestamptz,uuid) to afterword_runtime;
 grant execute on function app_private.accept_agency_client_grant(uuid,uuid) to afterword_runtime;
 grant execute on function app_private.reject_agency_client_grant(uuid,uuid) to afterword_runtime;
-grant execute on function app_private.revoke_agency_client_grant(uuid,uuid) to afterword_runtime;
 grant execute on function app_private.issue_agency_client_access_claim(uuid,text,text[],uuid,integer,integer,timestamptz,bytea,timestamptz,uuid) to afterword_runtime;
 grant execute on function app_private.consume_agency_client_access_claim(bytea) to afterword_runtime;
 grant execute on function app_private.list_agency_client_claim_locations(bytea) to afterword_runtime;

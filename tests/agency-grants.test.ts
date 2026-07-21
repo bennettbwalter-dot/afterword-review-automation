@@ -29,7 +29,7 @@ test("inactive, expired and un-named self-approval grants fail closed", () => {
 
 test("grant migration uses named, actor-bound commands and denies support mutations", async () => {
   const schema = await readFile(path.resolve("database", "migrations", "011_agency_client_grants.sql"), "utf8");
-  for (const command of ["request_agency_client_grant", "accept_agency_client_grant", "reject_agency_client_grant", "revoke_agency_client_grant", "has_agency_client_permission"]) {
+  for (const command of ["request_agency_client_grant", "accept_agency_client_grant", "reject_agency_client_grant", "revoke_current_agency_client_grant", "revoke_current_client_agency_grant", "has_agency_client_permission"]) {
     assert.match(schema, new RegExp(`function\\s+app_private\\.${command}\\s*\\(`, "i"));
   }
   assert.match(schema, /current_support_session_id\(\)\s+is\s+not\s+null[\s\S]{0,160}raise exception 'support sessions cannot mutate agency grants'/i);
@@ -124,4 +124,13 @@ test("single-location claims stage consent and replay refuses revoked or expired
   assert.match(selector, /scopes\.length === 1\) \{ setSelected\(scopes\[0\]!\.locationId\); setPending\(scopes\[0\]!\); \}/);
   assert.match(schema, /claim\.selected_grant_id is not null and grant\.status='active'/i);
   assert.match(schema, /selected agency grant is no longer active/i);
+});
+
+test("the generic revoke surface is removed in favour of scoped agency and client commands", async () => {
+  const schema = await readFile(path.resolve("database", "migrations", "011_agency_client_grants.sql"), "utf8");
+  const api = await readFile(path.resolve("src", "platform", "api.ts"), "utf8");
+  assert.doesNotMatch(schema, /function\s+app_private\.revoke_agency_client_grant\s*\(/i);
+  assert.doesNotMatch(api, /async revokeAgencyGrant\(grantId/);
+  assert.match(schema, /revoke_current_agency_client_grant/i);
+  assert.match(schema, /revoke_current_client_agency_grant/i);
 });
