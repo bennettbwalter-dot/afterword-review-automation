@@ -48,7 +48,7 @@ export async function registerAgencyGrantRoutes(app: FastifyInstance, options: B
     const body = requestSchema.parse(request.body); const command = options.repository.requestAgencyClientGrant; if (!command) unavailable();
     return sendData(reply, await command(actor, { ...body, permissions: [...new Set(body.permissions)] as AgencyGrantPermission[], correlationId: correlationId(request) }), 201);
   });
-  for (const [path, method] of [["accept", "acceptAgencyClientGrant"], ["reject", "rejectAgencyClientGrant"], ["revoke", "revokeAgencyClientGrant"]] as const) {
+  for (const [path, method] of [["accept", "acceptAgencyClientGrant"], ["reject", "rejectAgencyClientGrant"]] as const) {
     app.post(`/api/v1/agency-grants/:id/${path}`, async (request, reply) => {
       requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production");
       const actor = requireActor(request); if (actor.supportSessionId) throw new ApiError(403, "SUPPORT_SESSION_READ_ONLY", "Support sessions cannot change agency grants.");
