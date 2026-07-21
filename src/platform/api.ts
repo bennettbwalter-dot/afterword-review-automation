@@ -230,7 +230,7 @@ export const platformApi = {
   async issueAgencyClientAccessClaim(agencyId: string, email: string, permissions: AgencyGrantPermission[]) { const payload=unwrapData(await request<unknown>("/api/v1/agency-client-claims",{method:"POST",body:JSON.stringify({agencyId,email,permissions})})); if(!isRecord(payload)||typeof payload.claimUrl!=="string") throw new ApiError("Invalid agency client claim.",502); return payload.claimUrl; },
   async consumeAgencyClientAccessClaim(token: string) { await request<unknown>("/api/v1/agency-client-claims/consume", { method: "POST", body: JSON.stringify({ token }) }); },
   async listAgencyClientAccessLocations(token: string) { const payload=unwrapData(await request<unknown>("/api/v1/agency-client-claims/locations", { method:"POST", body:JSON.stringify({token}) })); if(!isRecord(payload)||!Array.isArray(payload.locations)) throw new ApiError("Invalid client locations.",502); return payload.locations as AgencyClientLocation[]; },
-  async selectAgencyClientAccessLocation(token: string, locationId: string) { await request<unknown>("/api/v1/agency-client-claims/select", { method:"POST", body:JSON.stringify({token,locationId}) }); },
+  async selectAgencyClientAccessLocation(token: string, locationId: string) { const payload=unwrapData(await request<unknown>("/api/v1/agency-client-claims/select", { method:"POST", body:JSON.stringify({token,locationId}) })); if(!isRecord(payload)||typeof payload.id!=="string"||typeof payload.businessId!=="string"||typeof payload.locationId!=="string") throw new ApiError("Invalid activated agency grant.",502); return payload as { id: string; businessId: string; locationId: string }; },
   async acceptAgencyGrant(grantId: string) {
     const payload = unwrapData(await request<unknown>(`/api/v1/agency-grants/${encodeURIComponent(grantId)}/accept`, { method: "POST" }));
     if (!isRecord(payload) || typeof payload.id !== "string") throw new ApiError("The server returned an invalid agency grant.", 502, "INVALID_AGENCY_GRANT");
@@ -243,6 +243,11 @@ export const platformApi = {
   },
   async revokeAgencyGrantInCurrentAgency(grantId: string, agencyId: string) {
     const payload = unwrapData(await request<unknown>(`/api/v1/agency-grants/${encodeURIComponent(grantId)}/revoke-in-agency`, { method: "POST", body: JSON.stringify({ agencyId }) }));
+    if (!isRecord(payload) || typeof payload.id !== "string") throw new ApiError("The server returned an invalid agency grant.", 502, "INVALID_AGENCY_GRANT");
+    return payload;
+  },
+  async revokeAgencyGrantAsCurrentClient(grantId: string, businessId: string) {
+    const payload = unwrapData(await request<unknown>(`/api/v1/agency-grants/${encodeURIComponent(grantId)}/revoke-as-client`, { method: "POST", body: JSON.stringify({ businessId }) }));
     if (!isRecord(payload) || typeof payload.id !== "string") throw new ApiError("The server returned an invalid agency grant.", 502, "INVALID_AGENCY_GRANT");
     return payload;
   },

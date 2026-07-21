@@ -32,6 +32,9 @@ export class AgencyGrantPostgres {
   async revokeInAgency(actor: ActorContext, grantId: string, agencyId: string, correlationId: string) {
     return withActorTransaction(this.runtimePool, actor, async (client) => grant((await client.query("select * from app_private.revoke_current_agency_client_grant($1,$2,$3)", [grantId, agencyId, correlationId])).rows[0] as Record<string, unknown>));
   }
+  async revokeAsClient(actor: ActorContext, grantId: string, businessId: string, correlationId: string) {
+    return withActorTransaction(this.runtimePool, actor, async (client) => grant((await client.query("select * from app_private.revoke_current_client_agency_grant($1,$2,$3)", [grantId, businessId, correlationId])).rows[0] as Record<string, unknown>));
+  }
   async listActive(actor: ActorContext, agencyId: string): Promise<AgencyGrant[]> {
     return withActorTransaction(this.runtimePool, actor, async (client) =>
       (await client.query("select * from app_private.list_active_agency_client_grants($1)", [agencyId])).rows.map((row) => grant({ ...row, agency_id: agencyId, status: "active" } as Record<string, unknown>)),

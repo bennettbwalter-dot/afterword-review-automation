@@ -99,3 +99,11 @@ test("agency workspace exposes persistent active-grant selection and immediate s
   assert.match(controls, /canRevoke && <button/);
   assert.match(api, /agency-grants\/\$\{encodeURIComponent\(grantId\)\}\/revoke-in-agency/);
 });
+
+test("clients can immediately revoke their own selected business grant", async () => {
+  const selector = await readFile(path.resolve("src", "features", "agency", "ClientLocationSelector.tsx"), "utf8");
+  const routes = await readFile(path.resolve("server", "routes", "agency-grants.ts"), "utf8");
+  assert.match(selector, /revokeAgencyGrantAsCurrentClient\(activeGrant\.id, activeGrant\.businessId\)/);
+  assert.match(selector, /Revoke agency access/);
+  assert.match(routes, /revoke-as-client[\s\S]+actor\.businessId !== businessId/i);
+});

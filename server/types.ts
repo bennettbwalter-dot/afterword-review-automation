@@ -206,6 +206,7 @@ export interface PlatformRepository {
   rejectAgencyClientGrant?(actor: ActorContext, grantId: string, correlationId: string): Promise<import("./agency/types.js").AgencyGrant>;
   revokeAgencyClientGrant?(actor: ActorContext, grantId: string, correlationId: string): Promise<import("./agency/types.js").AgencyGrant>;
   revokeCurrentAgencyClientGrant?(actor: ActorContext, grantId: string, agencyId: string, correlationId: string): Promise<import("./agency/types.js").AgencyGrant>;
+  revokeCurrentClientAgencyGrant?(actor: ActorContext, grantId: string, businessId: string, correlationId: string): Promise<import("./agency/types.js").AgencyGrant>;
   listActiveAgencyClientGrants?(actor: ActorContext, agencyId: string): Promise<import("./agency/types.js").AgencyGrant[]>;
   issueAgencyClientGrantClaim?(actor: ActorContext, grantId: string, email: string, tokenHash: Buffer, expiresAt: Date, correlationId: string): Promise<void>;
   consumeAgencyClientGrantClaim?(actor: ActorContext, tokenHash: Buffer): Promise<import("./agency/types.js").AgencyGrantClaimScope | null>;

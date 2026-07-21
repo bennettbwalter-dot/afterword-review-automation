@@ -281,4 +281,17 @@ begin
 end $$;
 revoke all on function app_private.revoke_current_agency_client_grant(uuid,uuid,uuid) from public;
 grant execute on function app_private.revoke_current_agency_client_grant(uuid,uuid,uuid) to afterword_runtime;
+create or replace function app_private.revoke_current_client_agency_grant(p_grant_id uuid,p_business_id uuid,p_correlation_id uuid)
+returns public.agency_client_grants language plpgsql volatile security definer set search_path=pg_catalog as $$
+declare v_grant public.agency_client_grants%rowtype;
+begin
+  perform app_private.reject_agency_grant_support_mutation();
+  select * into v_grant from public.agency_client_grants where id=p_grant_id and business_id=p_business_id for update;
+  if not found or v_grant.status not in ('requested','active') or app_private.current_business_role(p_business_id)::text not in ('owner','admin') then raise exception 'current client owner or admin revocation is required'; end if;
+  update public.agency_client_grants set status='revoked',revoked_at=statement_timestamp() where id=v_grant.id returning * into v_grant;
+  perform app_private.write_audit_event('user',v_grant.agency_id,v_grant.business_id,v_grant.location_id,null,'agency.grant.client_revoke','agency_client_grant',v_grant.id::text,'completed',null,p_correlation_id,array['status'],'{}'::jsonb);
+  return v_grant;
+end $$;
+revoke all on function app_private.revoke_current_client_agency_grant(uuid,uuid,uuid) from public;
+grant execute on function app_private.revoke_current_client_agency_grant(uuid,uuid,uuid) to afterword_runtime;
 commit;
