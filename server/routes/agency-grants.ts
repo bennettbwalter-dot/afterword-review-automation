@@ -15,7 +15,7 @@ const idSchema = z.object({ id: z.string().uuid() }).strict();
 const agencyScopeSchema = z.object({ agencyId: z.string().uuid() }).strict();
 const claimIssueSchema = z.object({ email: z.string().trim().email().max(320).transform((value) => value.toLowerCase()), expiresInMinutes: z.number().int().min(10).max(10_080).default(1_440) }).strict();
 const claimTokenSchema = z.object({ token: z.string().regex(/^[A-Za-z0-9_-]{32,128}$/) }).strict();
-const accessClaimSchema = z.object({ agencyId: z.string().uuid(), email: z.string().trim().email().max(320), permissions: z.array(permission).min(1) }).strict();
+const accessClaimSchema = z.object({ agencyId: z.string().uuid(), email: z.string().trim().email().max(320), permissions: z.array(permission).min(1), selfApproverUserId: z.string().uuid().optional() }).strict().superRefine((value, context) => { if (value.permissions.includes("content.self_approve") !== Boolean(value.selfApproverUserId)) context.addIssue({ code: "custom", path: ["selfApproverUserId"], message: "Self approval requires one named agency user." }); });
 const accessSelectSchema = claimTokenSchema.extend({ locationId: z.string().uuid() }).strict();
 
 function correlationId(request: { headers: Record<string, string | string[] | undefined> }) {
@@ -36,7 +36,7 @@ export async function registerAgencyGrantRoutes(app: FastifyInstance, options: B
   });
   app.post("/api/v1/agency-client-claims", async (request, reply) => {
     requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production"); const actor = requireActor(request); const body = accessClaimSchema.parse(request.body); const command = options.repository.issueAgencyClientAccessClaim; if (!command) unavailable();
-    const token = createSessionToken(); const expiresAt = new Date(Date.now() + 24 * 60 * 60_000); await command(actor, body.agencyId, body.email, body.permissions, hashOpaqueToken(token, options.config.SESSION_PEPPER), expiresAt, correlationId(request));
+    const token = createSessionToken(); const expiresAt = new Date(Date.now() + 24 * 60 * 60_000); await command(actor, body.agencyId, body.email, body.permissions, body.selfApproverUserId, hashOpaqueToken(token, options.config.SESSION_PEPPER), expiresAt, correlationId(request));
     const url = new URL("/app/agency-grant", options.config.APP_ORIGIN); url.searchParams.set("claim", token); reply.header("cache-control", "no-store"); return sendData(reply, { claimUrl: url.toString(), expiresAt: expiresAt.toISOString() }, 201);
   });
   app.post("/api/v1/agency-client-claims/consume", async (request, reply) => { requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production"); const actor=requireActor(request); const command=options.repository.consumeAgencyClientAccessClaim; if(!command) unavailable(); if(!await command(actor,hashOpaqueToken(claimTokenSchema.parse(request.body).token,options.config.SESSION_PEPPER))) throw new ApiError(404,"AGENCY_CLAIM_UNAVAILABLE","This claim is unavailable."); return sendData(reply,{consumed:true}); });

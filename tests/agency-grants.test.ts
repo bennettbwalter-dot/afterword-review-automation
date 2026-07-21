@@ -73,6 +73,16 @@ test("agency issuance requires named least-privilege choices and an explicit rev
   assert.doesNotMatch(dialog, /const permissions: AgencyGrantPermission\[\] =/);
 });
 
+test("self approval requires a named agency approver through the UI and API contract", async () => {
+  const dialog = await readFile(path.resolve("src", "features", "agency", "AgencyGrantDialog.tsx"), "utf8");
+  const routes = await readFile(path.resolve("server", "routes", "agency-grants.ts"), "utf8");
+  const repository = await readFile(path.resolve("server", "agency", "postgres.ts"), "utf8");
+  assert.match(dialog, /content\.self_approve/);
+  assert.match(dialog, /Named self-approver user ID/);
+  assert.match(routes, /Self approval requires one named agency user/i);
+  assert.match(repository, /selfApproverUserId \?\? null/);
+});
+
 test("client location choice is pending until an explicit permission confirmation", async () => {
   const selector = await readFile(path.resolve("src", "features", "agency", "ClientLocationSelector.tsx"), "utf8");
   assert.match(selector, /setPending\(scope\)/);
