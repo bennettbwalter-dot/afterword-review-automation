@@ -64,3 +64,11 @@ test("claim approval lets only the direct client discover and select a named loc
   assert.match(app, /agency-grant/);
   assert.match(runner, /\\assert/);
 });
+
+test("agency issuance requires named least-privilege choices and an explicit review confirmation", async () => {
+  const dialog = await readFile(path.resolve("src", "features", "agency", "AgencyGrantDialog.tsx"), "utf8");
+  assert.match(dialog, /useState<AgencyGrantPermission\[\]>/);
+  assert.match(dialog, /Review requested permissions/);
+  assert.match(dialog, /Confirm and create client approval link/);
+  assert.doesNotMatch(dialog, /const permissions: AgencyGrantPermission\[\] =/);
+});
