@@ -15,6 +15,7 @@ import { registerAgencyGrantRoutes } from "./routes/agency-grants.js";
 import { registerOnboardingRoutes } from "./routes/onboarding.js";
 import { registerBillingRoutes } from "./routes/billing.js";
 import { registerGoogleRoutes } from "./routes/google.js";
+import { registerGoogleProfileRoutes } from "./routes/google-profile.js";
 import { registerPublicReviewRoutes } from "./routes/public-review.js";
 import { registerServiceStatusRoutes } from "./routes/service-status.js";
 import { registerSupportRoutes } from "./routes/support.js";
@@ -135,6 +136,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     await registerBillingRoutes(app, options);
     await registerWorkspaceRoutes(app, options);
     await registerGoogleRoutes(app, options);
+    await registerGoogleProfileRoutes(app, options);
     await registerServiceStatusRoutes(app, options);
     await registerSupportRoutes(app, options);
   }
