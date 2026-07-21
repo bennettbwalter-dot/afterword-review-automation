@@ -72,3 +72,11 @@ test("agency issuance requires named least-privilege choices and an explicit rev
   assert.match(dialog, /Confirm and create client approval link/);
   assert.doesNotMatch(dialog, /const permissions: AgencyGrantPermission\[\] =/);
 });
+
+test("client location choice is pending until an explicit permission confirmation", async () => {
+  const selector = await readFile(path.resolve("src", "features", "agency", "ClientLocationSelector.tsx"), "utf8");
+  assert.match(selector, /setPending\(scope\)/);
+  assert.match(selector, /Confirm agency permissions/);
+  assert.match(selector, /pending\.permissions\.map/);
+  assert.match(selector, /Confirm agency access/);
+});
