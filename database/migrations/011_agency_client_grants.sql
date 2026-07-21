@@ -267,4 +267,18 @@ grant execute on function app_private.select_agency_client_claim_location(bytea,
 create or replace function app_private.list_active_agency_client_grants(p_agency_id uuid) returns table (id uuid,business_id uuid,location_id uuid,permissions text[],expires_at timestamptz,video_soft_monthly_cap integer,video_hard_monthly_cap integer) language sql stable security definer set search_path=pg_catalog as $$ select grant.id,grant.business_id,grant.location_id,grant.permissions,grant.expires_at,grant.video_soft_monthly_cap,grant.video_hard_monthly_cap from public.agency_client_grants grant where grant.agency_id=p_agency_id and grant.status='active' and (grant.expires_at is null or grant.expires_at>statement_timestamp()) and app_private.current_support_session_id() is null and app_private.current_agency_role(p_agency_id)::text in ('owner','admin','operator') $$;
 revoke all on function app_private.list_active_agency_client_grants(uuid) from public;
 grant execute on function app_private.list_active_agency_client_grants(uuid) to afterword_runtime;
+create or replace function app_private.revoke_current_agency_client_grant(p_grant_id uuid,p_agency_id uuid,p_correlation_id uuid)
+returns public.agency_client_grants language plpgsql volatile security definer set search_path=pg_catalog as $$
+declare v_grant public.agency_client_grants%rowtype;
+begin
+  perform app_private.reject_agency_grant_support_mutation();
+  if app_private.current_agency_role(p_agency_id)::text not in ('owner','admin') then raise exception 'current agency owner or admin revocation is required'; end if;
+  select * into v_grant from public.agency_client_grants where id=p_grant_id and agency_id=p_agency_id for update;
+  if not found or v_grant.status not in ('requested','active') then raise exception 'agency grant cannot be revoked'; end if;
+  update public.agency_client_grants set status='revoked',revoked_at=statement_timestamp() where id=v_grant.id returning * into v_grant;
+  perform app_private.write_audit_event('user',v_grant.agency_id,v_grant.business_id,v_grant.location_id,null,'agency.grant.revoke','agency_client_grant',v_grant.id::text,'completed',null,p_correlation_id,array['status'],'{}'::jsonb);
+  return v_grant;
+end $$;
+revoke all on function app_private.revoke_current_agency_client_grant(uuid,uuid,uuid) from public;
+grant execute on function app_private.revoke_current_agency_client_grant(uuid,uuid,uuid) to afterword_runtime;
 commit;

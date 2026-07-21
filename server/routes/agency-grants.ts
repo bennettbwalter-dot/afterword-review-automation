@@ -56,6 +56,14 @@ export async function registerAgencyGrantRoutes(app: FastifyInstance, options: B
       return sendData(reply, await command(actor, idSchema.parse(request.params).id, correlationId(request)));
     });
   }
+  app.post("/api/v1/agency-grants/:id/revoke-in-agency", async (request, reply) => {
+    requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production");
+    const actor = requireActor(request); if (actor.supportSessionId) throw new ApiError(403, "SUPPORT_SESSION_READ_ONLY", "Support sessions cannot change agency grants.");
+    const { agencyId } = agencyScopeSchema.parse(request.body);
+    if (!actor.agencyId || actor.agencyId !== agencyId) throw new ApiError(403, "AGENCY_SCOPE_DENIED", "Use your current agency workspace to revoke access.");
+    const command = options.repository.revokeCurrentAgencyClientGrant; if (!command) unavailable();
+    return sendData(reply, await command(actor, idSchema.parse(request.params).id, agencyId, correlationId(request)));
+  });
   app.post("/api/v1/agency-grants/:id/claims", async (request, reply) => {
     requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production");
     const actor = requireActor(request); if (actor.supportSessionId) throw new ApiError(403, "SUPPORT_SESSION_READ_ONLY", "Support sessions cannot change agency grants.");

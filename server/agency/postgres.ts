@@ -29,6 +29,9 @@ export class AgencyGrantPostgres {
   async accept(actor: ActorContext, grantId: string, correlationId: string) { return this.transition(actor, "accept_agency_client_grant", grantId, correlationId); }
   async reject(actor: ActorContext, grantId: string, correlationId: string) { return this.transition(actor, "reject_agency_client_grant", grantId, correlationId); }
   async revoke(actor: ActorContext, grantId: string, correlationId: string) { return this.transition(actor, "revoke_agency_client_grant", grantId, correlationId); }
+  async revokeInAgency(actor: ActorContext, grantId: string, agencyId: string, correlationId: string) {
+    return withActorTransaction(this.runtimePool, actor, async (client) => grant((await client.query("select * from app_private.revoke_current_agency_client_grant($1,$2,$3)", [grantId, agencyId, correlationId])).rows[0] as Record<string, unknown>));
+  }
   async listActive(actor: ActorContext, agencyId: string): Promise<AgencyGrant[]> {
     return withActorTransaction(this.runtimePool, actor, async (client) =>
       (await client.query("select * from app_private.list_active_agency_client_grants($1)", [agencyId])).rows.map((row) => grant({ ...row, agency_id: agencyId, status: "active" } as Record<string, unknown>)),

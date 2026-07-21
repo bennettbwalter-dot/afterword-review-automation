@@ -94,6 +94,6 @@ test("agency workspace exposes persistent active-grant selection and immediate s
   const api = await readFile(path.resolve("src", "platform", "api.ts"), "utf8");
   assert.match(controls, /listActiveAgencyClientGrants\(agencyId\)/);
   assert.match(controls, /Revoke access/);
-  assert.match(controls, /await platformApi\.revokeAgencyGrant\(selected\.id\); await load\(\)/);
-  assert.match(api, /agency-grants\/\$\{encodeURIComponent\(grantId\)\}\/revoke/);
+  assert.match(controls, /await platformApi\.revokeAgencyGrantInCurrentAgency\(selected\.id, agencyId\); await load\(\)/);
+  assert.match(api, /agency-grants\/\$\{encodeURIComponent\(grantId\)\}\/revoke-in-agency/);
 });

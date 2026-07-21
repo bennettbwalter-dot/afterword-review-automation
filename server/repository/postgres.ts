@@ -209,6 +209,10 @@ export class PostgresRepository implements PlatformRepository {
     return new AgencyGrantPostgres(this.runtime()).revoke(actor, grantId, correlationId);
   }
 
+  async revokeCurrentAgencyClientGrant(actor: ActorContext, grantId: string, agencyId: string, correlationId: string) {
+    return new AgencyGrantPostgres(this.runtime()).revokeInAgency(actor, grantId, agencyId, correlationId);
+  }
+
   async listActiveAgencyClientGrants(actor: ActorContext, agencyId: string) {
     return new AgencyGrantPostgres(this.runtime()).listActive(actor, agencyId);
   }

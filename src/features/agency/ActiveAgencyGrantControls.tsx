@@ -21,14 +21,14 @@ export function ActiveAgencyGrantControls({ agencyId }: { agencyId: string }) {
     try {
       const active = await platformApi.listActiveAgencyClientGrants(agencyId);
       setGrants(active); setSelectedId((current) => active.some((grant) => grant.id === current) ? current : active[0]?.id ?? "");
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to load active client access."); }
+    } catch (caught) { setGrants([]); setSelectedId(""); setError(caught instanceof Error ? caught.message : "Unable to load active client access."); }
     finally { setLoading(false); }
   };
   useEffect(() => { void load(); }, [agencyId]);
   const selected = grants.find((grant) => grant.id === selectedId);
   const revoke = async () => {
     if (!selected || !window.confirm("Revoke this agency access now? The agency will immediately lose this location scope.")) return;
-    try { await platformApi.revokeAgencyGrant(selected.id); await load(); }
+    try { await platformApi.revokeAgencyGrantInCurrentAgency(selected.id, agencyId); await load(); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to revoke client access."); }
   };
   return <section className="panel agency-grant-controls" aria-label="Active client access">
