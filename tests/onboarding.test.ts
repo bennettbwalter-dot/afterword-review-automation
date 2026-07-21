@@ -108,3 +108,7 @@ test("onboarding migration projects a direct-container owner as a business owner
   assert.match(schema, /agency\.customer_kind\s*=\s*'direct_container'[\s\S]+then\s+'business_owner'/i);
   assert.doesNotMatch(schema, /when\s+agency_membership\.role::text\s+in\s*\('owner',\s*'admin'\)\s+then\s+'agency_admin'[\s\S]{0,120}direct_container/i);
 });
+
+test("production signup email capability fails closed when SendGrid credentials are absent", () => {
+  assert.throws(() => loadConfig({ NODE_ENV: "production", AUTH_DATABASE_URL: "postgresql://auth:a@db.example.com/x", RUNTIME_DATABASE_URL: "postgresql://runtime:a@db.example.com/x", INGRESS_DATABASE_URL: "postgresql://ingress:a@db.example.com/x", WORKER_DATABASE_URL: "postgresql://worker:a@db.example.com/x", APP_ORIGIN: "https://app.example.com", SESSION_PEPPER: "test-session-pepper-that-is-longer-than-32-characters", FIELD_ENCRYPTION_KEY: randomBytes(32).toString("base64url") }), /SENDGRID_API_KEY/i);
+});

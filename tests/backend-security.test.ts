@@ -361,6 +361,7 @@ test("production configuration requires four distinct database login identities"
     APP_ORIGIN: "https://app.example.com",
     SESSION_PEPPER: sessionPepper,
     FIELD_ENCRYPTION_KEY: encryptionKey,
+    SIGNUP_EMAIL_ENABLED: "false",
   }));
 });
 
@@ -370,6 +371,7 @@ test("each production process can start without credentials for other capabiliti
     APP_ORIGIN: "https://app.example.com",
     SESSION_PEPPER: sessionPepper,
     FIELD_ENCRYPTION_KEY: encryptionKey,
+    SIGNUP_EMAIL_ENABLED: "false",
   } as const;
   assert.doesNotThrow(() => loadConfig({
     ...common,
@@ -400,6 +402,7 @@ test("blank optional provider values are treated as unset while their capability
     GOOGLE_REDIRECT_URI: "",
     GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL: "",
     SENDGRID_ASM_GROUP_ID: "",
+    SIGNUP_EMAIL_ENABLED: "false",
   }, ["auth", "runtime", "stripeCheckout"]));
 });
 
