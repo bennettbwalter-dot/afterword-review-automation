@@ -92,6 +92,7 @@ Legacy routes redirect to their new destinations so bookmarks do not break.
 - Immediate and scheduled publishing to Google Business Profile, Facebook Pages, Instagram professional accounts, LinkedIn organisations, and YouTube channels.
 - Paid MobileWAN video generation through a managed NVIDIA GPU worker.
 - Captions, descriptions, hashtags, calls to action, and destination-specific copy.
+- A small service-curated set of fully licensed music choices, including a silent option; no open music marketplace.
 - Immutable approval, retry, failure, and publication history.
 - Monthly outcome reporting and completed-action history.
 - Direct-business and agency workflows.
@@ -126,7 +127,7 @@ Legacy routes redirect to their new destinations so bookmarks do not break.
 - Automatic geotagging and metadata tricks.
 - Image dripping.
 - Google Drive and webhook media imports.
-- A professional video editor, timeline, layers, keyframes, colour grading, effects marketplace, multi-clip campaign builder, and music catalogue.
+- A professional video editor, timeline, layers, keyframes, colour grading, effects marketplace, multi-clip campaign builder, and large music catalogue or marketplace.
 - Unlimited users and a custom permission builder.
 - Zapier, CompanyCam, GBP audit-lead webhooks, and instant AI answers.
 - Person-level claims that a specific review resulted from a specific request.
@@ -294,6 +295,7 @@ MobileWAN-specific imports remain inside one adapter/worker package. PostgreSQL 
 - Choose a focal crop/pad template.
 - Edit caption and CTA.
 - Choose a thumbnail frame or uploaded thumbnail.
+- Mute the clip or replace its soundtrack with one currently licensed service-curated track.
 - Regenerate the clip.
 
 Every change creates a new immutable revision. Regeneration spends another unit unless the provider definitively failed before creating a valid preview.
@@ -426,8 +428,10 @@ Add:
 | Table | Purpose |
 |---|---|
 | `agency_client_grants` | Client-approved agency/location/action access and revocation. |
+| `commercial_accounts` | The business or agency payer, visible content plan, Stripe subscription projection, allowance period, and entitlement version. Existing `billing_accounts` remains the legacy review/SMS authority. |
 | `social_destinations` | Exact Page, professional account, organisation, channel, or GBP location. |
 | `media_assets` | Immutable original/derived object metadata, hash, status, and retention. Variants use `parent_asset_id`. |
+| `licensed_audio_tracks` | Service-owned track metadata, object reference, territories, licence evidence, and validity window. |
 | `content_items` | Source facts, caption, current immutable revision hash, creator, and state. |
 | `content_targets` | Destination, format, schedule, publication lease/state, and remote resource ID. |
 | `content_approvals` | Revision/target hash, approver, decision, note, and timestamp. |
@@ -505,6 +509,7 @@ Approval and project state are projections of immutable revisions and child jobs
 - Uploader attests ownership/permission for assets and identifiable people.
 - No customer media is used for training without a separate explicit opt-in.
 - MobileWAN code, weights, Wan2.2 dependencies, FFmpeg/codecs, and commercial output use require licence review.
+- A track is selectable only while its commercial licence evidence and territory/date window are valid; an expired track blocks new renders but does not alter already published media.
 
 ### Retention defaults
 
@@ -652,6 +657,7 @@ The paid generated-video product does not launch until all are true:
 - Current Google implementation reads profiles/reviews but has no profile, reply, post, offer, image, or video mutations.
 - Current agency support sessions are not durable client delegation.
 - Current Stripe model is business/SMS-specific and has no video allowance or agency payer.
+- New content/video entitlements use `commercial_accounts`; the current business-only `billing_accounts` table remains authoritative for legacy review/SMS charges and is not stretched into an agency payer model.
 - Current worker is review-message oriented and must not execute long media work.
 - No private Storage, media schema, generation provider, approval, schedule, or social adapter exists.
 - Cloudflare Pages remains a secret-free static demo and never receives media, provider, Stripe, or social secrets.
