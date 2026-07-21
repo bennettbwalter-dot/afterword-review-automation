@@ -41,6 +41,7 @@ test("grant migration uses named, actor-bound commands and denies support mutati
 test("agency permission checks deny support sessions and grant claims are opaque, single-use and scope bound", async () => {
   const schema = await readFile(path.resolve("database", "migrations", "011_agency_client_grants.sql"), "utf8");
   const databaseTest = await readFile(path.resolve("database", "tests", "006_agency_grants.sql"), "utf8");
+  const workflow = await readFile(path.resolve(".github", "workflows", "database-security.yml"), "utf8");
   assert.match(schema, /function\s+app_private\.has_agency_client_permission[\s\S]{0,900}current_support_session_id\(\)\s+is\s+null/is);
   for (const command of ["issue_agency_client_grant_claim", "consume_agency_client_grant_claim", "list_agency_client_grant_claim_locations", "expire_stale_agency_client_grants"]) {
     assert.match(schema, new RegExp(`function\\s+app_private\\.${command}\\s*\\(`, "i"));
@@ -55,12 +56,25 @@ test("agency permission checks deny support sessions and grant claims are opaque
   assert.match(databaseTest, /accept_agency_client_grant/i);
   assert.match(databaseTest, /revoke_current_client_agency_grant/i);
   assert.match(databaseTest, /revoked_grant_loses_permission_immediately/i);
+  assert.match(databaseTest, /support_session_denies_all_agency_permissions/i);
+  assert.match(databaseTest, /permissions_are_independent_named_and_location_bound/i);
+  assert.match(databaseTest, /agency_membership_alone_exposes_nothing/i);
+  assert.match(databaseTest, /expired_active_grant_loses_permission_immediately/i);
+  assert.match(databaseTest, /limited_grant_cannot_gain_ungranted_permissions/i);
+  assert.match(databaseTest, /support session accepted an agency grant/i);
+  assert.match(workflow, /npm run db:test:isolation/i);
+  assert.doesNotMatch(workflow, /--file database\/tests\/003_tenant_isolation\.sql/i);
+  assert.match(databaseTest, /Grant Client Admin/i);
+  for (const block of databaseTest.match(/do \$\$[\s\S]*?end \$\$;/gi) ?? []) {
+    assert.doesNotMatch(block, /:'[A-Za-z_][A-Za-z0-9_]*'/);
+  }
 });
 
 test("the release evidence requires a zero-row live integrity query before migration 012", async () => {
   const readiness = await readFile(path.resolve("docs", "evidence", "platform-capability-readiness.md"), "utf8");
   assert.match(readiness, /Agency-grant integrity gate \(before migration 012\)/i);
   assert.match(readiness, /It must return \*\*zero rows\*\*/i);
+  assert.match(readiness, /expected_legacy_scopes/i);
   assert.match(readiness, /accepting_member\.role::text in \('owner', 'admin'\)/i);
   assert.match(readiness, /forward-only migration/i);
 });

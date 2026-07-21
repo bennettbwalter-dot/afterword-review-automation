@@ -45,6 +45,12 @@ jobs:
       PGPASSWORD: postgres
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install application dependencies
+        run: npm ci
       - name: Install PostgreSQL client
         run: sudo apt-get update && sudo apt-get install --yes postgresql-client
       - name: Create least-privilege group roles and database
@@ -65,5 +71,7 @@ jobs:
               --command "set role afterword_migration_owner" \
               --file "$migration"
           done
-      - name: Prove session binding, tenant RLS, dispatch fencing and webhook dedupe
-        run: psql --dbname afterword_test --set ON_ERROR_STOP=1 --file database/tests/003_tenant_isolation.sql
+      - name: Prove every database-security contract
+        env:
+          MIGRATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/afterword_test
+        run: npm run db:test:isolation

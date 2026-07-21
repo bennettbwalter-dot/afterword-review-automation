@@ -37,33 +37,45 @@ Migration 012 remains paused. On the migration database, after migration 011 is 
 Before deploying the current source revision, first check whether migration 011 has ever been recorded in the target environment. This revision removes a function from migration 011 itself. If 011 is already applied, do **not** alter its recorded checksum or rerun it: create a new forward-only migration that revokes and drops the retired generic function instead.
 
 ```sql
-select
-  grant.id,
-  grant.agency_id,
-  grant.business_id,
-  grant.location_id,
-  grant.accepted_by_user_id,
-  grant.expires_at
-from public.agency_client_grants as grant
-left join public.businesses as business
-  on business.id = grant.business_id
-left join public.locations as location
-  on location.id = grant.location_id
- and location.business_id = grant.business_id
-left join public.business_memberships as accepting_member
-  on accepting_member.business_id = grant.business_id
- and accepting_member.user_id = grant.accepted_by_user_id
- and accepting_member.status = 'active'
- and accepting_member.role::text in ('owner', 'admin')
-where grant.status = 'active'
-  and (
-    business.id is null
-    or business.archived_at is not null
-    or location.id is null
-    or location.archived_at is not null
-    or accepting_member.user_id is null
-    or (grant.expires_at is not null and grant.expires_at <= statement_timestamp())
-  );
+select migration_id, checksum_sha256, applied_at
+from public.schema_migrations
+where migration_id = '011_agency_client_grants.sql';
+```
+
+No row means the revised 011 can be applied through the normal migrator. One row means it must remain immutable and the forward-only cleanup path is required. Treat an unavailable ledger or an unexpected result as a stop condition.
+
+```sql
+with expected_legacy_scopes as (
+  select business.agency_id, business.id as business_id, location.id as location_id
+  from public.businesses as business
+  join public.locations as location
+    on location.business_id = business.id
+   and location.archived_at is null
+  where business.archived_at is null
+    and exists (
+      select 1
+      from public.agency_memberships as agency_member
+      where agency_member.agency_id = business.agency_id
+        and agency_member.status = 'active'
+    )
+), valid_active_grants as (
+  select grant.agency_id, grant.business_id, grant.location_id
+  from public.agency_client_grants as grant
+  join public.business_memberships as accepting_member
+    on accepting_member.business_id = grant.business_id
+   and accepting_member.user_id = grant.accepted_by_user_id
+   and accepting_member.status = 'active'
+   and accepting_member.role::text in ('owner', 'admin')
+  where grant.status = 'active'
+    and (grant.expires_at is null or grant.expires_at > statement_timestamp())
+)
+select expected.agency_id, expected.business_id, expected.location_id
+from expected_legacy_scopes as expected
+left join valid_active_grants as grant
+  on grant.agency_id = expected.agency_id
+ and grant.business_id = expected.business_id
+ and grant.location_id = expected.location_id
+where grant.location_id is null;
 ```
 
 The local suite includes an actor-behaviour probe for the same boundaries, but it cannot establish this live database result without `MIGRATION_DATABASE_URL` and the ability to assume `afterword_migration_owner`.
