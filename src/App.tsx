@@ -20,7 +20,6 @@ import {
   Menu,
   MessageSquareText,
   Moon,
-  Plug,
   Plus,
   Printer,
   QrCode,
@@ -31,7 +30,6 @@ import {
   Sparkles,
   Star,
   Sun,
-  UsersRound,
   Webhook,
   X,
   type LucideIcon,
@@ -57,6 +55,14 @@ import {
 } from "./platform/AgencyViews";
 import { LivePublicReviewFlow, PublicReviewFlow, QrCodesView } from "./platform/QrCodesView";
 import GrowthSuite from "./growth/GrowthSuite";
+import { AgencyView } from "./features/agency/AgencyView";
+import { ContentView } from "./features/content/ContentView";
+import { GoogleProfileView } from "./features/google-profile/GoogleProfileView";
+import { HomeView } from "./features/home/HomeView";
+import { ReportsView as ProductReportsView } from "./features/reports/ReportsView";
+import { SettingsBillingView } from "./features/settings/SettingsBillingView";
+import { LegacyRouteRedirect } from "./features/shared/LegacyRouteRedirect";
+import { WorkspaceContextBar } from "./features/shared/WorkspaceContextBar";
 import {
   ApiError,
   IS_DEMO_MODE,
@@ -98,9 +104,9 @@ import {
   type SupportSession,
 } from "./platform/domain";
 import {
-  appViewFromPath,
   defaultAppView,
   isAppViewAllowed,
+  parseWorkspaceRoute,
   workspaceBusinessForSession,
   workspaceContextFromSearch,
   workspaceLocationForBusiness,
@@ -199,22 +205,15 @@ const PRICING_OFFERS: PricingOffer[] = [
 ];
 
 const CLIENT_NAV: Array<{ id: AppView; label: string; icon: LucideIcon }> = [
-  { id: "growth", label: "Growth dashboard", icon: Sparkles },
-  { id: "reviews", label: "Review Anchor", icon: Star },
-  { id: "requests", label: "Customer requests", icon: UsersRound },
-  { id: "automation", label: "Review workflow", icon: Activity },
-  { id: "qr-codes", label: "QR codes", icon: QrCode },
+  { id: "home", label: "Home", icon: Sparkles },
+  { id: "google-profile", label: "Google Profile", icon: Star },
+  { id: "content", label: "Content", icon: Activity },
   { id: "reports", label: "Reports", icon: FileText },
-  { id: "integrations", label: "Integrations", icon: Plug },
-  { id: "team-billing", label: "Team & billing", icon: Building2 },
+  { id: "settings-billing", label: "Settings & billing", icon: Building2 },
 ];
 
 const AGENCY_NAV: Array<{ id: AppView; label: string; icon: LucideIcon }> = [
-  { id: "agency-overview", label: "Portfolio", icon: Gauge },
-  { id: "clients", label: "Clients", icon: Building2 },
-  { id: "exceptions", label: "Exceptions", icon: AlertTriangle },
-  { id: "audit", label: "Audit log", icon: ClipboardCheck },
-  { id: "growth", label: "Growth dashboard", icon: Sparkles },
+  { id: "agency", label: "Agency", icon: Gauge },
 ];
 
 const STATUS_TONES: Record<RequestStatus, string> = {
@@ -1565,8 +1564,13 @@ function GoogleProfileSelectionDialog({
 function AppShell() {
   const location = useLocation();
   const navigate = useNavigate();
-  const routeContext = useMemo(() => workspaceContextFromSearch(location.search), [location.search]);
-  const requestedView = appViewFromPath(location.pathname) ?? "growth";
+  const parsedRoute = useMemo(() => parseWorkspaceRoute(location.pathname, location.search), [location.pathname, location.search]);
+  const searchContext = useMemo(() => workspaceContextFromSearch(location.search), [location.search]);
+  const routeContext = parsedRoute ?? searchContext;
+  const requestedView = parsedRoute?.view ?? "home";
+  const googleProfileTab = parsedRoute?.googleProfileTab ?? "profile";
+  const contentTab = parsedRoute?.contentTab ?? "create";
+  const settingsBillingTab = parsedRoute?.settingsBillingTab ?? "connections";
   const compactViewport = useMediaQuery("(max-width: 59.999rem)");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [addJobOpen, setAddJobOpen] = useState(false);
@@ -1613,10 +1617,10 @@ function AppShell() {
 
   const navigateToView = (
     nextView: AppView,
-    context: { businessId?: string; locationId?: string; replace?: boolean } = {},
+    context: { businessId?: string; locationId?: string; googleProfileTab?: "profile" | "reviews" | "requests-qr" | "posts-media"; contentTab?: "create" | "uploads" | "approvals" | "scheduled" | "published" | "failed"; settingsBillingTab?: "connections" | "billing"; replace?: boolean } = {},
   ) => {
     if (session?.role === "agency_admin" && !supportSession) {
-      navigate(workspaceRoute(nextView), { replace: context.replace });
+      navigate(workspaceRoute(nextView, context, location.search), { replace: context.replace });
       return;
     }
     const currentBusinessId = supportSession?.businessId ?? session?.businessId ?? routeContext.businessId ?? selectedBusinessId;
@@ -1628,7 +1632,7 @@ function AppShell() {
       context.locationId,
       selectedBusiness?.locationId ?? selectedBusiness?.locationReports?.[0]?.id,
     );
-    navigate(workspaceRoute(nextView, { businessId, locationId }), { replace: context.replace });
+    navigate(workspaceRoute(nextView, { ...context, businessId, locationId }, location.search), { replace: context.replace });
   };
 
   useEffect(() => {
@@ -1639,8 +1643,8 @@ function AppShell() {
     const ownerBusinessId = OWNER_SESSION.businessId ?? BUSINESSES[0]?.id;
     const ownerBusiness = BUSINESSES.find((candidate) => candidate.id === ownerBusinessId);
     const targetRoute = session.role === "agency_admin"
-      ? workspaceRoute("agency-overview")
-      : workspaceRoute("growth", {
+      ? workspaceRoute("agency")
+      : workspaceRoute("home", {
         businessId: ownerBusinessId,
         locationId: ownerBusiness?.locationId,
       });
@@ -1801,7 +1805,7 @@ function AppShell() {
           return;
         }
         if (caught instanceof ApiError && caught.code === "LOCATION_NOT_FOUND" && routeContext.locationId) {
-          navigate(workspaceRoute(requestedView, { businessId: routeContext.businessId }), { replace: true });
+          navigate(workspaceRoute(requestedView, { ...routeContext, businessId: routeContext.businessId }, location.search), { replace: true });
           return;
         }
         setWorkspaceError(caught instanceof Error ? caught.message : "The workspace could not be loaded.");
@@ -1837,7 +1841,7 @@ function AppShell() {
       ? requestedView
       : defaultAppView(session.role, Boolean(supportSession), session.businessRole);
     if (agencyPortfolioOnly) {
-      const canonicalRoute = workspaceRoute(resolvedView);
+      const canonicalRoute = workspaceRoute(resolvedView, routeContext, location.search);
       if (`${location.pathname}${location.search}` !== canonicalRoute) {
         navigate(canonicalRoute, { replace: true });
       }
@@ -1853,7 +1857,7 @@ function AppShell() {
     const locationId = routeLocationBelongsToBusiness
       ? routeContext.locationId
       : selectedBusiness.locationId ?? selectedBusiness.locationReports?.[0]?.id;
-    const canonicalRoute = workspaceRoute(resolvedView, { businessId, locationId });
+    const canonicalRoute = workspaceRoute(resolvedView, { ...routeContext, businessId, locationId }, location.search);
     if (`${location.pathname}${location.search}` !== canonicalRoute) {
       navigate(canonicalRoute, { replace: true });
     }
@@ -1895,7 +1899,7 @@ function AppShell() {
       if (IS_DEMO_MODE) platformApi.clearSupportSession();
       else void platformApi.endSupportSession(expiredSession.id, "Support session expired automatically").catch(() => platformApi.clearSupportSession());
       setAddJobOpen(false);
-      navigate(workspaceRoute("agency-overview"));
+      navigate(workspaceRoute("agency"));
     };
     if (remaining <= 0) {
       expire();
@@ -2027,7 +2031,7 @@ function AppShell() {
     const params = new URLSearchParams(location.search);
     const businessId = params.get("business") ?? undefined;
     const locationId = params.get("location") ?? undefined;
-    navigate(workspaceRoute("integrations", { businessId, locationId }), { replace: true });
+    navigate(workspaceRoute("settings-billing", { businessId, locationId, settingsBillingTab: "connections" }), { replace: true });
     setGoogleProfileSelection(null);
     setGoogleSelectionError("");
     setGoogleSelectionLoading(false);
@@ -2045,7 +2049,7 @@ function AppShell() {
       setGoogleProfileSelection(null);
       setGoogleSelectionLoading(false);
       setWorkspaceNotice({ tone: "success", message: "Google Business Profile was connected to this location." });
-      navigate(workspaceRoute("integrations", { businessId: googleProfileSelection.businessId, locationId: googleProfileSelection.locationId }), { replace: true });
+      navigate(workspaceRoute("settings-billing", { businessId: googleProfileSelection.businessId, locationId: googleProfileSelection.locationId, settingsBillingTab: "connections" }), { replace: true });
     } catch (caught) {
       setGoogleSelectionError(caught instanceof Error ? caught.message : "The Google location could not be connected.");
     } finally {
@@ -2062,7 +2066,7 @@ function AppShell() {
     if (workspaceState !== "authenticated" || !session) return;
     if (isAppViewAllowed(requestedView, session.role, Boolean(supportSession), session.businessRole)) return;
     const fallback = defaultAppView(session.role, Boolean(supportSession), session.businessRole);
-    if (fallback === "agency-overview") {
+    if (fallback === "agency") {
       navigate(workspaceRoute(fallback), { replace: true });
     } else {
       navigateToView(fallback, { replace: true });
@@ -2169,18 +2173,14 @@ function AppShell() {
   ));
   const page = [...CLIENT_NAV, ...AGENCY_NAV].find((item) => item.id === view) ?? navItems[0];
   const descriptions: Record<AppView, string> = {
-    requests: "Every completed job, message event and suppression state.",
-    automation: "A neutral review journey with fewer moving parts.",
-    reviews: "New Google reviews and owner-reply status.",
-    "qr-codes": "Permanent client QR artwork, scan tracking and Google conversion signals.",
+    home: "Action inbox, connection health, recent results, and allowance summary.",
+    "google-profile": "Profile updates, Google reviews, requests, QR codes, and media.",
+    content: "Create, approve, and track publishing work in one place.",
     reports: IS_DEMO_MODE ? "A simple monthly proof-of-value report." : "Current durable metrics and integration status for this tenant.",
-    integrations: "Google, messaging and completed-job sources.",
-    "team-billing": "Tenant-scoped members, roles, subscription and usage.",
-    "agency-overview": "Portfolio health, protected failures and client impact.",
-    clients: "Managed businesses, integrations and scoped controls.",
-    exceptions: "Operational failures with impact and safe resolution paths.",
-    audit: "Append-only evidence for administrative and support actions.",
-    growth: "Your connected reputation-growth dashboard, using the same account and tenant data as Review Anchor.",
+    "settings-billing": "Connections, workspace settings, users, and billing.",
+    agency: "Portfolio readiness, approvals, failures, and client allowance use.",
+    "operations-exceptions": "Operational failures with impact and safe resolution paths.",
+    "operations-audit": "Append-only evidence for administrative and support actions.",
   };
 
   const recordAudit = (event: Omit<AuditEvent, "id" | "correlationId">) => {
@@ -2210,7 +2210,7 @@ function AppShell() {
       setSupportSession(null);
       setSupportAccessObservedAt(null);
       setAddJobOpen(false);
-      navigate(workspaceRoute("agency-overview"));
+      navigate(workspaceRoute("agency"));
     } catch (caught) {
       setWorkspaceError(caught instanceof Error ? caught.message : "The support session could not be ended.");
     } finally {
@@ -2287,7 +2287,7 @@ function AppShell() {
         setSupportDialogBusiness(null);
         const refreshedBusiness = refreshed.businesses.find((candidate) => candidate.id === target.id);
         const refreshedLocationId = refreshedBusiness?.locationId ?? refreshedBusiness?.locationReports?.[0]?.id;
-        navigateToView("growth", { businessId: target.id, locationId: refreshedLocationId });
+    navigateToView("home", { businessId: target.id, locationId: refreshedLocationId });
       } catch (caught) {
         setSupportSession(null);
         try {
@@ -2320,7 +2320,7 @@ function AppShell() {
     setSupportSession(created);
     setSelectedBusinessId(supportDialogBusiness.id);
     setSupportDialogBusiness(null);
-    navigateToView("growth", { businessId: supportDialogBusiness.id, locationId: supportDialogBusiness.locationId });
+    navigateToView("home", { businessId: supportDialogBusiness.id, locationId: supportDialogBusiness.locationId });
   };
 
   const saveSmsOveragePolicy = async (policy: SmsOveragePolicy) => {
@@ -2358,7 +2358,7 @@ function AppShell() {
       await platformApi.createCompletedJob(business.id, draft);
       const refreshed = await platformApi.getWorkspace(business.id, draft.locationId);
       applyWorkspace(refreshed);
-      navigateToView("requests", { businessId: business.id, locationId: draft.locationId });
+      navigateToView("google-profile", { businessId: business.id, locationId: draft.locationId, googleProfileTab: "requests-qr" });
       return;
     }
 
@@ -2391,7 +2391,7 @@ function AppShell() {
       supportSessionId: supportSession?.id,
       reason: request.status === "Blocked" ? "Required consent evidence missing" : `${request.consentBasis} · ${request.consentReference}`,
     });
-    navigateToView("requests", { businessId: business.id, locationId: draft.locationId });
+    navigateToView("google-profile", { businessId: business.id, locationId: draft.locationId, googleProfileTab: "requests-qr" });
   };
 
   const beginGoogleConnection = async () => {
@@ -2430,9 +2430,9 @@ function AppShell() {
 
   const headerActions = agencyMode
     ? undefined
-    : view === "growth" && canConfigure
+    : view === "home" && canConfigure
       ? <Button onClick={() => setAddJobOpen(true)}><Plus size={16} /> Add job</Button>
-      : view === "integrations" && !IS_DEMO_MODE
+      : view === "settings-billing" && settingsBillingTab === "connections" && !IS_DEMO_MODE
         ? <Button disabled={!canConfigure || !googleConnectAvailable} onClick={() => void beginGoogleConnection()}><Link2 size={16} /> {supportSession ? "Owner sign-in required" : googleConnectAvailable ? "Connect Google" : "Google unavailable"}</Button>
         : undefined;
 
@@ -2465,22 +2465,17 @@ function AppShell() {
         <div className="app-content">
           {workspaceNotice && <div className={cx("workspace-inline-notice", `workspace-inline-notice--${workspaceNotice.tone}`)} role={workspaceNotice.tone === "error" ? "alert" : "status"}><span>{workspaceNotice.message}</span><button type="button" onClick={() => setWorkspaceNotice(null)} aria-label="Dismiss notification"><X size={16} /></button></div>}
           {workspaceError && <div className="workspace-inline-error" role="alert"><AlertTriangle size={17} /><span>{workspaceError}</span><button type="button" onClick={() => setWorkspaceError("")} aria-label="Dismiss message"><X size={16} /></button></div>}
-          {servicesError && (view === "integrations" || view === "team-billing") && <div className="workspace-inline-error" role="alert"><AlertTriangle size={17} /><span>{servicesError}</span><button type="button" onClick={() => setServicesVersion((value) => value + 1)}>Retry status</button></div>}
-          {agencyMode && view === "agency-overview" && <AgencyOverviewView businesses={businesses} exceptions={platformExceptions} onView={(nextView) => navigateToView(nextView === "overview" ? "growth" : nextView)} onStartSupport={setSupportDialogBusiness} supportAvailable={supportAvailable} />}
-          {agencyMode && view === "clients" && <ClientsView businesses={businesses} onStartSupport={setSupportDialogBusiness} supportAvailable={supportAvailable} />}
-          {agencyMode && view === "exceptions" && <ExceptionsView businesses={businesses} exceptions={platformExceptions} onStartSupport={setSupportDialogBusiness} supportAvailable={supportAvailable} />}
-          {agencyMode && view === "audit" && <AuditLogView businesses={businesses} events={auditEvents} />}
-          {!agencyMode && !canReadTenant && view !== "team-billing" && <section className="panel access-expired"><ShieldCheck size={26} /><h2>Tenant access is unavailable.</h2><p>{supportSession ? "Support access expired or no longer satisfies the required security evidence." : "Your business role does not include customer or location data."}</p>{supportSession && <Button onClick={endSupportSession}>Return to portfolio</Button>}</section>}
-          {!agencyMode && view === "team-billing" && !canReadTenantBilling && <section className="panel access-expired"><ShieldCheck size={26} /><h2>Billing access is unavailable.</h2><p>{supportSession ? "Support sessions cannot open or change tenant billing." : "Your signed-in business role does not include billing access."}</p>{supportSession && <Button onClick={endSupportSession}>Return to portfolio</Button>}</section>}
-          {!agencyMode && canReadTenant && view === "requests" && <RequestsView requests={requests} onAddJob={() => setAddJobOpen(true)} canConfigure={canConfigure} />}
-          {!agencyMode && canReadTenant && view === "automation" && <AutomationView business={contextBusiness} requests={requests} workflow={selectedWorkflow} onOpenIntegrations={() => navigateToView("integrations")} />}
-          {!agencyMode && canReadTenant && view === "reviews" && <ReviewsView business={contextBusiness} reviews={reviews} />}
-          {!agencyMode && canReadTenant && view === "qr-codes" && qrCodesByBusiness[business.id]?.locationId === selectedLocationId && <QrCodesView business={contextBusiness} record={qrCodesByBusiness[business.id]} />}
-          {!agencyMode && canReadTenant && view === "qr-codes" && qrCodesByBusiness[business.id]?.locationId !== selectedLocationId && <section className="panel empty-state"><QrCode size={24} /><h2>No QR code for this location.</h2><p>Connect a verified Google review destination before generating location-specific artwork.</p><Button onClick={() => navigateToView("integrations")}>Open integrations</Button></section>}
-          {!agencyMode && canReadTenant && view === "reports" && <ReportsView business={business} selectedBusiness={contextBusiness} />}
-          {!agencyMode && canReadTenant && view === "integrations" && <IntegrationsView business={contextBusiness} onConnect={() => void beginGoogleConnection()} canConfigure={canConfigure && !supportSession} services={services} servicesLoading={servicesLoading} />}
-          {!agencyMode && canReadTenantBilling && view === "team-billing" && <TeamBillingView business={business} canConfigure={canManageTenantBilling} canManageStripe={canManageStripeBilling} canViewTeamMembers={canConfigure} onSaveSmsPolicy={saveSmsOveragePolicy} onStartCheckout={startStripeCheckout} onOpenBillingPortal={openStripeBillingPortal} stripeCheckoutEnabled={stripeCheckoutEnabled} stripePortalEnabled={stripePortalEnabled} />}
-          {(agencyMode || canReadTenant) && view === "growth" && <GrowthSuite
+          {servicesError && view === "settings-billing" && <div className="workspace-inline-error" role="alert"><AlertTriangle size={17} /><span>{servicesError}</span><button type="button" onClick={() => setServicesVersion((value) => value + 1)}>Retry status</button></div>}
+          {agencyMode && view === "agency" && <AgencyView><AgencyOverviewView businesses={businesses} exceptions={platformExceptions} onView={(nextView) => navigateToView(nextView === "exceptions" ? "operations-exceptions" : nextView === "audit" ? "operations-audit" : "agency")} onStartSupport={setSupportDialogBusiness} supportAvailable={supportAvailable} /><ClientsView businesses={businesses} onStartSupport={setSupportDialogBusiness} supportAvailable={supportAvailable} /><details className="panel"><summary>Secondary operations</summary><div className="dialog-card__actions"><Button variant="secondary" onClick={() => navigateToView("operations-exceptions")}>Exceptions</Button><Button variant="secondary" onClick={() => navigateToView("operations-audit")}>Audit log</Button></div></details></AgencyView>}
+          {agencyMode && view === "operations-exceptions" && <ExceptionsView businesses={businesses} exceptions={platformExceptions} onStartSupport={setSupportDialogBusiness} supportAvailable={supportAvailable} />}
+          {agencyMode && view === "operations-audit" && <AuditLogView businesses={businesses} events={auditEvents} />}
+          {!agencyMode && !canReadTenant && view !== "settings-billing" && <section className="panel access-expired"><ShieldCheck size={26} /><h2>Tenant access is unavailable.</h2><p>{supportSession ? "Support access expired or no longer satisfies the required security evidence." : "Your business role does not include customer or location data."}</p>{supportSession && <Button onClick={endSupportSession}>Return to portfolio</Button>}</section>}
+          {!agencyMode && view === "settings-billing" && settingsBillingTab === "billing" && !canReadTenantBilling && <section className="panel access-expired"><ShieldCheck size={26} /><h2>Billing access is unavailable.</h2><p>{supportSession ? "Support sessions cannot open or change tenant billing." : "Your signed-in business role does not include billing access."}</p>{supportSession && <Button onClick={endSupportSession}>Return to portfolio</Button>}</section>}
+          {!agencyMode && canReadTenant && view === "google-profile" && <><WorkspaceContextBar business={business} locationId={selectedLocationId} onSelectLocation={(locationId) => navigateToView("google-profile", { businessId: business.id, locationId, googleProfileTab })} /><GoogleProfileView tab={googleProfileTab} onTabChange={(tab) => navigateToView("google-profile", { googleProfileTab: tab })}>{googleProfileTab === "reviews" ? <ReviewsView business={contextBusiness} reviews={reviews} /> : googleProfileTab === "requests-qr" ? <><RequestsView requests={requests} onAddJob={() => setAddJobOpen(true)} canConfigure={canConfigure} /><AutomationView business={contextBusiness} requests={requests} workflow={selectedWorkflow} onOpenIntegrations={() => navigateToView("settings-billing", { settingsBillingTab: "connections" })} />{qrCodesByBusiness[business.id]?.locationId === selectedLocationId ? <QrCodesView business={contextBusiness} record={qrCodesByBusiness[business.id]} /> : <section className="panel empty-state"><QrCode size={24} /><h2>No QR code for this location.</h2><p>Connect a verified Google review destination before generating location-specific artwork.</p><Button onClick={() => navigateToView("settings-billing", { settingsBillingTab: "connections" })}>Open connections</Button></section>}</> : googleProfileTab === "profile" ? <IntegrationsView business={contextBusiness} onConnect={() => void beginGoogleConnection()} canConfigure={canConfigure && !supportSession} services={services} servicesLoading={servicesLoading} /> : <section className="panel empty-state"><h2>Posts and media are not enabled for this workspace.</h2><p>No publishing capability is presented until its connected destination is authorised.</p></section>}</GoogleProfileView></>}
+          {!agencyMode && canReadTenant && view === "content" && <><WorkspaceContextBar business={business} locationId={selectedLocationId} onSelectLocation={(locationId) => navigateToView("content", { businessId: business.id, locationId, contentTab })} /><ContentView tab={contentTab} onTabChange={(tab) => navigateToView("content", { contentTab: tab })} /></>}
+          {!agencyMode && canReadTenant && view === "reports" && <ProductReportsView><ReportsView business={business} selectedBusiness={contextBusiness} /></ProductReportsView>}
+          {!agencyMode && view === "settings-billing" && <SettingsBillingView tab={settingsBillingTab} onTabChange={(tab) => navigateToView("settings-billing", { settingsBillingTab: tab })}>{settingsBillingTab === "connections" && canReadTenant ? <IntegrationsView business={contextBusiness} onConnect={() => void beginGoogleConnection()} canConfigure={canConfigure && !supportSession} services={services} servicesLoading={servicesLoading} /> : settingsBillingTab === "billing" && canReadTenantBilling ? <TeamBillingView business={business} canConfigure={canManageTenantBilling} canManageStripe={canManageStripeBilling} canViewTeamMembers={canConfigure} onSaveSmsPolicy={saveSmsOveragePolicy} onStartCheckout={startStripeCheckout} onOpenBillingPortal={openStripeBillingPortal} stripeCheckoutEnabled={stripeCheckoutEnabled} stripePortalEnabled={stripePortalEnabled} /> : null}</SettingsBillingView>}
+          {!agencyMode && canReadTenant && view === "home" && <HomeView><GrowthSuite
             business={business}
             businesses={businesses}
             requests={requests}
@@ -2490,10 +2485,10 @@ function AppShell() {
             canConfigure={canConfigure}
             canManageBilling={canManageTenantBilling}
             selectedLocationId={selectedLocationId}
-            onSelectLocation={(locationId) => navigateToView("growth", { businessId: business.id, locationId })}
+            onSelectLocation={(locationId) => navigateToView("home", { businessId: business.id, locationId })}
             onNavigate={navigateToView}
             onAddJob={() => setAddJobOpen(true)}
-          />}
+          /></HomeView>}
         </div>
       </main>
       <AddJobDialog open={addJobOpen && canConfigure} onClose={() => setAddJobOpen(false)} onAdd={addRequest} locationId={selectedLocationId} demoMode={IS_DEMO_MODE} />
@@ -2520,24 +2515,23 @@ export default function App() {
   const publicQrCode = IS_DEMO_MODE && publicToken ? getQrCodeByToken(publicToken) : undefined;
 
   const startSetup = () => {
-    navigate(workspaceRoute("growth"));
+    navigate(workspaceRoute("home"));
     window.scrollTo({ top: 0, behavior: "auto" });
   };
 
   if (publicQrCode) return <ThemeProvider><PublicReviewFlow business={getBusiness(publicQrCode.businessId)} record={publicQrCode} /></ThemeProvider>;
   if (!IS_DEMO_MODE && publicToken) return <ThemeProvider><LivePublicReviewFlow publicToken={publicToken} /></ThemeProvider>;
   if (location.pathname === "/" && (oauthReturn || billingReturn)) {
-    const target = oauthReturn ? "/app/integrations" : "/app/team-billing";
+    const target = oauthReturn ? "/app/settings-billing/connections" : "/app/settings-billing/billing";
     return <Navigate to={`${target}${location.search}`} replace />;
   }
   if (location.pathname === "/") {
-    return <ThemeProvider><MarketingSite onOpenDemo={() => navigate(workspaceRoute("growth"))} onStartSetup={startSetup} /></ThemeProvider>;
+    return <ThemeProvider><MarketingSite onOpenDemo={() => navigate(workspaceRoute("home"))} onStartSetup={startSetup} /></ThemeProvider>;
   }
-  const matchedAppView = appViewFromPath(location.pathname);
+  const matchedRoute = parseWorkspaceRoute(location.pathname, location.search);
+  if (matchedRoute?.legacy) return <ThemeProvider><LegacyRouteRedirect pathname={location.pathname} search={location.search} /></ThemeProvider>;
+  const matchedAppView = matchedRoute?.view;
   const lowerPathname = location.pathname.toLowerCase();
-  if (matchedAppView && location.pathname !== workspaceRoute(matchedAppView)) {
-    return <Navigate to={`${workspaceRoute(matchedAppView)}${location.search}`} replace />;
-  }
   if (lowerPathname.startsWith("/app") && !matchedAppView) {
     return (
       <ThemeProvider>
@@ -2545,9 +2539,9 @@ export default function App() {
           <button className="workspace-auth-shell__brand" type="button" onClick={() => navigate("/")}><Brand /></button>
           <section className="workspace-auth-card">
             <span className="eyebrow">Page not found</span>
-            <h1>This Growth Suite route does not exist.</h1>
-            <p>The disconnected preview route has been removed. Open the connected dashboard to continue in the same account.</p>
-            <Button onClick={() => navigate(workspaceRoute("growth"))}>Open Growth dashboard</Button>
+            <h1>This product route does not exist.</h1>
+            <p>Open the connected workspace to continue in the same account.</p>
+            <Button onClick={() => navigate(workspaceRoute("home"))}>Open Home</Button>
           </section>
         </main>
       </ThemeProvider>

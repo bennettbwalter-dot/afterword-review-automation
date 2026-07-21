@@ -7,6 +7,9 @@ export type ConsentStatus = "Verified" | "Missing" | "Withdrawn";
 export type ClientView = "overview" | "requests" | "automation" | "reviews" | "qr-codes" | "reports" | "integrations" | "team-billing";
 export type AgencyView = "agency-overview" | "clients" | "exceptions" | "audit";
 export type WorkspaceView = ClientView | AgencyView;
+export type ProductView = "home" | "google-profile" | "content" | "reports" | "settings-billing" | "agency" | "operations-exceptions" | "operations-audit";
+export type GoogleProfileTab = "profile" | "reviews" | "requests-qr" | "posts-media";
+export type ContentTab = "create" | "uploads" | "approvals" | "scheduled" | "published" | "failed";
 export type HealthTone = "success" | "warning" | "danger" | "muted" | "accent";
 export type Permission =
   | "portfolio.read"

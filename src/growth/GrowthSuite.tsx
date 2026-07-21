@@ -48,28 +48,28 @@ type ModuleCard = {
 
 const MODULES: ModuleCard[] = [
   {
-    view: "reviews",
+    view: "google-profile",
     title: "Review Anchor",
     detail: "Monitor Google reviews and owner-reply status for this location.",
     action: "Open Reviews",
     icon: Star,
   },
   {
-    view: "requests",
+    view: "google-profile",
     title: "Customer requests",
     detail: "Track completed jobs, consent evidence, delivery and conversions.",
     action: "Open Requests",
     icon: UsersRound,
   },
   {
-    view: "automation",
+    view: "google-profile",
     title: "Review workflow",
     detail: "See the neutral request sequence and its protected sending state.",
     action: "Open Workflow",
     icon: Activity,
   },
   {
-    view: "qr-codes",
+    view: "google-profile",
     title: "Review QR codes",
     detail: "Use the permanent Google review destination and scan reporting.",
     action: "Open QR Codes",
@@ -83,14 +83,14 @@ const MODULES: ModuleCard[] = [
     icon: FileText,
   },
   {
-    view: "integrations",
+    view: "settings-billing",
     title: "Connected services",
     detail: "Manage Google, messaging and completed-job intake readiness.",
     action: "Open Integrations",
     icon: Link2,
   },
   {
-    view: "team-billing",
+    view: "settings-billing",
     title: "Account and billing",
     detail: "Use the same tenant members, plan and SMS allowance as Review Anchor.",
     action: "Open Account",
@@ -138,7 +138,7 @@ function AgencyGrowthDashboard({ businesses, session, onNavigate }: Pick<GrowthS
           <span className="growth-native-panel__icon"><ShieldCheck size={23} /></span>
           <div><h3>Tenant access stays explicit</h3><p>Choose a client, open a scoped support session, then use Review Anchor without creating a second account or copying customer data.</p></div>
         </div>
-        <button className="button" type="button" onClick={() => onNavigate("clients")}>Open Clients <ArrowRight size={16} /></button>
+        <button className="button" type="button" onClick={() => onNavigate("agency")}>Open Agency <ArrowRight size={16} /></button>
       </section>
     </div>
   );
@@ -187,14 +187,14 @@ export default function GrowthSuite(props: GrowthSuiteProps) {
     <div className="growth-suite" data-testid="growth-suite-business">
       <section className="growth-hero">
         <div>
-          <span className="eyebrow">Growth Suite · {business.name}</span>
-          <h2>Reputation growth, anchored to the customer journey.</h2>
+          <span className="eyebrow">Workspace Home · {business.name}</span>
+          <h2>Keep your Google Profile current and customer requests moving.</h2>
           <p>
-            Review Anchor is the reviews and reputation module inside this workspace. Every module below uses the same
+            Review Anchor keeps Google Profile, review requests, reports, and settings in the same workspace. Every module below uses the same
             signed-in account, tenant, business, location, billing record and protected customer data.
           </p>
           <div className="growth-hero__actions">
-            <button className="button" type="button" onClick={() => onNavigate("reviews")}>
+            <button className="button" type="button" onClick={() => onNavigate("google-profile")}>
               <Star size={16} /> Open Review Anchor
             </button>
             {canConfigure
@@ -213,7 +213,7 @@ export default function GrowthSuite(props: GrowthSuiteProps) {
           >
             {locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}
           </select>
-          <small><MapPin size={14} /> The selected location is preserved in every Growth Suite route.</small>
+          <small><MapPin size={14} /> The selected location is preserved across the workspace.</small>
         </div>
       </section>
 
@@ -227,7 +227,7 @@ export default function GrowthSuite(props: GrowthSuiteProps) {
       <section className="growth-anchor-panel">
         <header>
           <div><span className="growth-anchor-panel__mark"><Star size={21} fill="currentColor" /></span><div><small>Main reputation module</small><h3>Review Anchor</h3></div></div>
-          <button className="button button--secondary" type="button" onClick={() => onNavigate("reviews")}>View all reviews <ArrowRight size={16} /></button>
+          <button className="button button--secondary" type="button" onClick={() => onNavigate("google-profile")}>View Google Profile <ArrowRight size={16} /></button>
         </header>
         {latestReviews.length > 0 ? (
           <div className="growth-review-list">
@@ -243,7 +243,7 @@ export default function GrowthSuite(props: GrowthSuiteProps) {
           <div className="growth-empty-state">
             <MessageSquareText size={24} />
             <div><h3>No reviews for this location yet</h3><p>Connect Google or wait for the next review sync. No sample reviews are shown.</p></div>
-            <button className="button button--secondary" type="button" onClick={() => onNavigate("integrations")}>Check integrations</button>
+            <button className="button button--secondary" type="button" onClick={() => onNavigate("settings-billing")}>Check connections</button>
           </div>
         )}
       </section>
@@ -254,7 +254,7 @@ export default function GrowthSuite(props: GrowthSuiteProps) {
           {availableModules.map((module) => {
             const Icon = module.icon;
             return (
-              <article key={module.view} className={module.view === "reviews" ? "is-primary" : undefined}>
+            <article key={`${module.view}-${module.title}`} className={module.view === "google-profile" ? "is-primary" : undefined}>
                 <span className="growth-module-card__icon"><Icon size={20} /></span>
                 <h4>{module.title}</h4>
                 <p>{module.detail}</p>

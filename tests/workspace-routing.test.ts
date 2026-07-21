@@ -9,6 +9,7 @@ import {
   appViewFromPath,
   defaultAppView,
   isAppViewAllowed,
+  parseWorkspaceRoute,
   isPublicReviewPreview,
   publicReviewPreviewUrl,
   workspaceBusinessForSession,
@@ -17,19 +18,27 @@ import {
   workspaceRoute,
 } from "../src/routing.js";
 
-test("Growth Suite tabs have stable direct routes", () => {
-  assert.equal(appViewFromPath("/app"), "growth");
-  assert.equal(appViewFromPath("/app/growth/"), "growth");
-  assert.equal(appViewFromPath("/app/reviews"), "reviews");
-  assert.equal(appViewFromPath("/APP/REQUESTS"), "requests");
-  assert.equal(appViewFromPath("/app/team-billing"), "team-billing");
+test("legacy routes resolve to the simplified product destinations", () => {
+  assert.equal(appViewFromPath("/app"), "home");
+  assert.equal(appViewFromPath("/app/growth/"), "home");
+  assert.equal(appViewFromPath("/workspace"), "home");
+  assert.equal(appViewFromPath("/app/reviews"), "google-profile");
+  assert.equal(appViewFromPath("/APP/REQUESTS"), "google-profile");
+  assert.equal(appViewFromPath("/app/automation"), "google-profile");
+  assert.equal(appViewFromPath("/app/qr-codes"), "google-profile");
+  assert.equal(appViewFromPath("/app/integrations"), "settings-billing");
+  assert.equal(appViewFromPath("/app/team-billing"), "settings-billing");
+  assert.equal(appViewFromPath("/app/portfolio"), "agency");
+  assert.equal(appViewFromPath("/app/clients"), "agency");
+  assert.equal(appViewFromPath("/app/exceptions"), "operations-exceptions");
+  assert.equal(appViewFromPath("/app/audit"), "operations-audit");
   assert.equal(appViewFromPath("/app/not-a-module"), undefined);
 });
 
 test("workspace routes preserve one canonical business and location context", () => {
   assert.equal(
-    workspaceRoute("reviews", { businessId: "business-1", locationId: "location-2" }),
-    "/app/reviews?business=business-1&location=location-2",
+    workspaceRoute("google-profile", { businessId: "business-1", locationId: "location-2" }),
+    "/app/google-profile?business=business-1&location=location-2",
   );
   assert.deepEqual(
     workspaceContextFromSearch("?location=location-2&business=business-1&ignored=yes"),
@@ -70,20 +79,48 @@ test("business-owner deep links select the routed membership before the initial 
   );
 });
 
-test("role routing keeps agency portfolio and tenant modules separated", () => {
-  assert.equal(defaultAppView("business_owner"), "growth");
-  assert.equal(defaultAppView("business_owner", false, "billing"), "team-billing");
-  assert.equal(defaultAppView("agency_admin"), "agency-overview");
-  assert.equal(defaultAppView("agency_admin", true), "growth");
-  assert.equal(isAppViewAllowed("reviews", "business_owner"), true);
-  assert.equal(isAppViewAllowed("agency-overview", "business_owner"), false);
-  assert.equal(isAppViewAllowed("reviews", "agency_admin", false), false);
-  assert.equal(isAppViewAllowed("growth", "agency_admin", false), true);
-  assert.equal(isAppViewAllowed("reviews", "agency_admin", true), true);
-  assert.equal(isAppViewAllowed("agency-overview", "agency_admin", true), false);
-  assert.equal(isAppViewAllowed("team-billing", "business_owner", false, "operator"), false);
-  assert.equal(isAppViewAllowed("reviews", "business_owner", false, "billing"), false);
-  assert.equal(isAppViewAllowed("team-billing", "business_owner", false, "billing"), true);
+test("role routing keeps Agency, operations, and tenant modules separated", () => {
+  assert.equal(defaultAppView("business_owner"), "home");
+  assert.equal(defaultAppView("business_owner", false, "billing"), "settings-billing");
+  assert.equal(defaultAppView("agency_admin"), "agency");
+  assert.equal(defaultAppView("agency_admin", true), "home");
+  assert.equal(isAppViewAllowed("google-profile", "business_owner"), true);
+  assert.equal(isAppViewAllowed("agency", "business_owner"), false);
+  assert.equal(isAppViewAllowed("google-profile", "agency_admin", false), false);
+  assert.equal(isAppViewAllowed("agency", "agency_admin", false), true);
+  assert.equal(isAppViewAllowed("google-profile", "agency_admin", true), true);
+  assert.equal(isAppViewAllowed("agency", "agency_admin", true), false);
+  assert.equal(isAppViewAllowed("settings-billing", "business_owner", false, "operator"), false);
+  assert.equal(isAppViewAllowed("google-profile", "business_owner", false, "billing"), false);
+  assert.equal(isAppViewAllowed("settings-billing", "business_owner", false, "billing"), true);
+});
+
+test("legacy redirects retain context and unrelated query parameters without looping", () => {
+  const cases = [
+    ["/app/reviews", "/app/google-profile/reviews"],
+    ["/app/requests", "/app/google-profile/requests-qr"],
+    ["/app/automation", "/app/google-profile/requests-qr"],
+    ["/app/qr-codes", "/app/google-profile/requests-qr"],
+    ["/app/integrations", "/app/settings-billing/connections"],
+    ["/app/team-billing", "/app/settings-billing/billing"],
+    ["/app/portfolio", "/app/agency"],
+    ["/app/clients", "/app/agency"],
+    ["/app/exceptions", "/app/operations/exceptions"],
+    ["/app/audit", "/app/operations/audit"],
+  ] as const;
+  const search = "?business=business-1&location=location-2&source=bookmark";
+
+  for (const [legacyPath, canonicalPath] of cases) {
+    const route = parseWorkspaceRoute(legacyPath, search);
+    assert.ok(route?.legacy, `${legacyPath} should be a redirect`);
+    const canonical = workspaceRoute(route.view, route, search);
+    assert.equal(canonical, `${canonicalPath}${search}`);
+    assert.equal(parseWorkspaceRoute(canonicalPath, search)?.legacy, false, `${canonicalPath} must not redirect again`);
+  }
+
+  const redirectSource = readFileSync(new URL("../src/features/shared/LegacyRouteRedirect.tsx", import.meta.url), "utf8");
+  assert.match(redirectSource, /<Navigate[^>]*\breplace\b/u);
+  assert.equal(appViewFromPath("/r/public-review-token"), undefined);
 });
 
 test("QR test links use a non-recording preview context", () => {
