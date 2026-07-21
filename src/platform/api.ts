@@ -226,6 +226,7 @@ function normalizeWorkspace(payload: unknown): WorkspacePayload {
 }
 
 export const platformApi = {
+  async listActiveAgencyClientGrants(agencyId: string) { const payload=unwrapData(await request<unknown>("/api/v1/agency-grants/active", { method:"POST", body:JSON.stringify({ agencyId }) })); if(!isRecord(payload)||!Array.isArray(payload.grants)) throw new ApiError("Invalid active agency grants.",502); return payload.grants as unknown as Array<{ id: string; businessId: string; locationId: string; permissions: AgencyGrantPermission[]; expiresAt?: string }>; },
   async issueAgencyClientAccessClaim(agencyId: string, email: string, permissions: AgencyGrantPermission[]) { const payload=unwrapData(await request<unknown>("/api/v1/agency-client-claims",{method:"POST",body:JSON.stringify({agencyId,email,permissions})})); if(!isRecord(payload)||typeof payload.claimUrl!=="string") throw new ApiError("Invalid agency client claim.",502); return payload.claimUrl; },
   async consumeAgencyClientAccessClaim(token: string) { await request<unknown>("/api/v1/agency-client-claims/consume", { method: "POST", body: JSON.stringify({ token }) }); },
   async listAgencyClientAccessLocations(token: string) { const payload=unwrapData(await request<unknown>("/api/v1/agency-client-claims/locations", { method:"POST", body:JSON.stringify({token}) })); if(!isRecord(payload)||!Array.isArray(payload.locations)) throw new ApiError("Invalid client locations.",502); return payload.locations as AgencyClientLocation[]; },

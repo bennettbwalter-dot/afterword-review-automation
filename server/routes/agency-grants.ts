@@ -12,6 +12,7 @@ const requestSchema = z.object({ agencyId: z.string().uuid(), businessId: z.stri
   if (value.videoHardMonthlyCap !== undefined && value.videoSoftMonthlyCap !== undefined && value.videoHardMonthlyCap < value.videoSoftMonthlyCap) context.addIssue({ code: "custom", path: ["videoHardMonthlyCap"], message: "The hard cap must not be below the soft cap." });
 });
 const idSchema = z.object({ id: z.string().uuid() }).strict();
+const agencyScopeSchema = z.object({ agencyId: z.string().uuid() }).strict();
 const claimIssueSchema = z.object({ email: z.string().trim().email().max(320).transform((value) => value.toLowerCase()), expiresInMinutes: z.number().int().min(10).max(10_080).default(1_440) }).strict();
 const claimTokenSchema = z.object({ token: z.string().regex(/^[A-Za-z0-9_-]{32,128}$/) }).strict();
 const accessClaimSchema = z.object({ agencyId: z.string().uuid(), email: z.string().trim().email().max(320), permissions: z.array(permission).min(1) }).strict();
@@ -24,6 +25,13 @@ function correlationId(request: { headers: Record<string, string | string[] | un
 function unavailable(): never { throw new ApiError(503, "AGENCY_GRANTS_UNAVAILABLE", "Agency grants are not available."); }
 
 export async function registerAgencyGrantRoutes(app: FastifyInstance, options: BuildAppOptions) {
+  app.post("/api/v1/agency-grants/active", async (request, reply) => {
+    requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production");
+    const actor = requireActor(request);
+    if (actor.supportSessionId) throw new ApiError(403, "SUPPORT_SESSION_READ_ONLY", "Support sessions cannot read agency grant controls.");
+    const command = options.repository.listActiveAgencyClientGrants; if (!command) unavailable();
+    return sendData(reply, { grants: await command(actor, agencyScopeSchema.parse(request.body).agencyId) });
+  });
   app.post("/api/v1/agency-client-claims", async (request, reply) => {
     requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production"); const actor = requireActor(request); const body = accessClaimSchema.parse(request.body); const command = options.repository.issueAgencyClientAccessClaim; if (!command) unavailable();
     const token = createSessionToken(); const expiresAt = new Date(Date.now() + 24 * 60 * 60_000); await command(actor, body.agencyId, body.email, body.permissions, hashOpaqueToken(token, options.config.SESSION_PEPPER), expiresAt, correlationId(request));

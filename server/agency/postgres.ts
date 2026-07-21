@@ -29,6 +29,11 @@ export class AgencyGrantPostgres {
   async accept(actor: ActorContext, grantId: string, correlationId: string) { return this.transition(actor, "accept_agency_client_grant", grantId, correlationId); }
   async reject(actor: ActorContext, grantId: string, correlationId: string) { return this.transition(actor, "reject_agency_client_grant", grantId, correlationId); }
   async revoke(actor: ActorContext, grantId: string, correlationId: string) { return this.transition(actor, "revoke_agency_client_grant", grantId, correlationId); }
+  async listActive(actor: ActorContext, agencyId: string): Promise<AgencyGrant[]> {
+    return withActorTransaction(this.runtimePool, actor, async (client) =>
+      (await client.query("select * from app_private.list_active_agency_client_grants($1)", [agencyId])).rows.map((row) => grant({ ...row, agency_id: agencyId, status: "active" } as Record<string, unknown>)),
+    );
+  }
   async issueClaim(actor: ActorContext, grantId: string, email: string, tokenHash: Buffer, expiresAt: Date, correlationId: string) {
     await withActorTransaction(this.runtimePool, actor, (client) => client.query("select app_private.issue_agency_client_grant_claim($1,$2,$3,$4,$5)", [grantId, email, tokenHash, expiresAt, correlationId]).then(() => undefined));
   }

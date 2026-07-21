@@ -80,3 +80,11 @@ test("client location choice is pending until an explicit permission confirmatio
   assert.match(selector, /pending\.permissions\.map/);
   assert.match(selector, /Confirm agency access/);
 });
+
+test("active grant listing is actor-bound, excludes support sessions, and returns only active unexpired scopes", async () => {
+  const schema = await readFile(path.resolve("database", "migrations", "011_agency_client_grants.sql"), "utf8");
+  const routes = await readFile(path.resolve("server", "routes", "agency-grants.ts"), "utf8");
+  assert.match(schema, /function\s+app_private\.list_active_agency_client_grants[\s\S]+grant\.status='active'[\s\S]+current_support_session_id\(\) is null/i);
+  assert.match(schema, /revoke all on function app_private\.list_active_agency_client_grants\(uuid\) from public/i);
+  assert.match(routes, /agency-grants\/active[\s\S]+requireSameOrigin[\s\S]+SUPPORT_SESSION_READ_ONLY/i);
+});
