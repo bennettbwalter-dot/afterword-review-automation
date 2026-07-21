@@ -5532,6 +5532,38 @@ textarea[aria-invalid="true"] {
   min-width: 0;
 }
 
+.google-profile-source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-xs) var(--space-md);
+  padding: var(--space-xs) var(--space-sm);
+  border-left: 3px solid var(--color-muted);
+  color: var(--color-neutral);
+  font-size: var(--text-sm);
+}
+
+.google-profile-source small {
+  color: var(--color-muted);
+}
+
+.google-profile-source.is-connected {
+  border-left-color: var(--color-success);
+  color: var(--color-success);
+}
+
+.google-profile-source.is-attention,
+.google-profile-source.is-error {
+  border-left-color: var(--color-warning);
+  color: var(--color-warning);
+}
+
+.google-profile-source.is-disconnected {
+  border-left-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
 .workspace-context-bar,
 .product-tabs {
   display: flex;

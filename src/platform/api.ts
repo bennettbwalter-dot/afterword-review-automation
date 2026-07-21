@@ -118,6 +118,18 @@ export interface GoogleProfileSelectionPayload {
   }>;
 }
 
+export interface GoogleProfileSnapshot {
+  businessId: string;
+  locationId: string;
+  connection: { state: "connected" | "attention" | "disconnected"; lastSyncedAt?: string };
+  profile: null;
+  reviews: ReviewRecord[];
+  requests: RequestRecord[];
+  qr: QrCodeRecord | null;
+  workflow: LocationWorkflowSummary | null;
+  capabilities: Record<string, { available: false; reason: string }>;
+}
+
 export interface AgencyGrantClaimScope {
   grantId: string;
   businessId: string;
@@ -226,6 +238,13 @@ function normalizeWorkspace(payload: unknown): WorkspacePayload {
 }
 
 export const platformApi = {
+  async getGoogleProfileSnapshot(businessId: string, locationId: string) {
+    const payload = unwrapData(await request<unknown>(`/api/v1/businesses/${encodeURIComponent(businessId)}/locations/${encodeURIComponent(locationId)}/google-profile`));
+    if (!isRecord(payload) || payload.businessId !== businessId || payload.locationId !== locationId || !Array.isArray(payload.reviews) || !Array.isArray(payload.requests)) {
+      throw new ApiError("The server returned an invalid Google Profile snapshot.", 502, "INVALID_GOOGLE_PROFILE");
+    }
+    return payload as unknown as GoogleProfileSnapshot;
+  },
   async listActiveAgencyClientGrants(agencyId: string) { const payload=unwrapData(await request<unknown>("/api/v1/agency-grants/active", { method:"POST", body:JSON.stringify({ agencyId }) })); if(!isRecord(payload)||!Array.isArray(payload.grants)) throw new ApiError("Invalid active agency grants.",502); return payload.grants as unknown as Array<{ id: string; businessId: string; locationId: string; permissions: AgencyGrantPermission[]; expiresAt?: string }>; },
   async issueAgencyClientAccessClaim(agencyId: string, email: string, permissions: AgencyGrantPermission[], selfApproverUserId?: string) { const payload=unwrapData(await request<unknown>("/api/v1/agency-client-claims",{method:"POST",body:JSON.stringify({agencyId,email,permissions,selfApproverUserId})})); if(!isRecord(payload)||typeof payload.claimUrl!=="string") throw new ApiError("Invalid agency client claim.",502); return payload.claimUrl; },
   async consumeAgencyClientAccessClaim(token: string) { await request<unknown>("/api/v1/agency-client-claims/consume", { method: "POST", body: JSON.stringify({ token }) }); },
