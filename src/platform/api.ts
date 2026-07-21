@@ -10,6 +10,7 @@ import type {
   ReviewRecord,
   SessionContext,
   SmsOveragePolicy,
+  AgencyGrantPermission,
 } from "./domain";
 
 export const IS_DEMO_MODE = import.meta.env?.VITE_DEMO_MODE === "true";
@@ -117,6 +118,15 @@ export interface GoogleProfileSelectionPayload {
   }>;
 }
 
+export interface AgencyGrantClaimScope {
+  grantId: string;
+  businessId: string;
+  locationId: string;
+  status: "requested" | "active";
+  permissions: AgencyGrantPermission[];
+  expiresAt?: string;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code?: string;
@@ -215,6 +225,21 @@ function normalizeWorkspace(payload: unknown): WorkspacePayload {
 }
 
 export const platformApi = {
+  async issueAgencyGrantClaim(grantId: string, email: string, expiresInMinutes = 1_440) {
+    const payload = unwrapData(await request<unknown>(`/api/v1/agency-grants/${encodeURIComponent(grantId)}/claims`, { method: "POST", body: JSON.stringify({ email, expiresInMinutes }) }));
+    if (!isRecord(payload) || typeof payload.claimUrl !== "string" || typeof payload.expiresAt !== "string") throw new ApiError("The server returned an invalid agency claim.", 502, "INVALID_AGENCY_CLAIM");
+    return payload as { claimUrl: string; expiresAt: string };
+  },
+  async consumeAgencyGrantClaim(token: string) {
+    const payload = unwrapData(await request<unknown>("/api/v1/agency-grant-claims/consume", { method: "POST", body: JSON.stringify({ token }) }));
+    if (!isRecord(payload) || !isRecord(payload.scope) || typeof payload.scope.grantId !== "string" || typeof payload.scope.businessId !== "string" || typeof payload.scope.locationId !== "string" || !Array.isArray(payload.scope.permissions)) throw new ApiError("The server returned an invalid agency claim scope.", 502, "INVALID_AGENCY_CLAIM_SCOPE");
+    return payload.scope as unknown as AgencyGrantClaimScope;
+  },
+  async listAgencyGrantClaimLocations(token: string) {
+    const payload = unwrapData(await request<unknown>("/api/v1/agency-grant-claims/locations", { method: "POST", body: JSON.stringify({ token }) }));
+    if (!isRecord(payload) || !Array.isArray(payload.scopes)) throw new ApiError("The server returned invalid agency claim locations.", 502, "INVALID_AGENCY_CLAIM_LOCATIONS");
+    return payload.scopes as AgencyGrantClaimScope[];
+  },
   async startSignup(email: string, displayName: string, accountType: "business" | "agency") {
     await request<unknown>("/api/v1/auth/signup-intents", { method: "POST", body: JSON.stringify({ email, displayName, accountType }) });
   },

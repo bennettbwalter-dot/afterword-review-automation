@@ -26,6 +26,15 @@ export interface AgencyGrantRequest extends Omit<AgencyGrant, "id" | "status"> {
   correlationId: string;
 }
 
+export interface AgencyGrantClaimScope {
+  grantId: string;
+  businessId: string;
+  locationId: string;
+  status: Extract<AgencyGrantStatus, "requested" | "active">;
+  permissions: AgencyGrantPermission[];
+  expiresAt?: string;
+}
+
 export function hasAgencyGrantPermission(
   grant: AgencyGrant,
   permission: AgencyGrantPermission,

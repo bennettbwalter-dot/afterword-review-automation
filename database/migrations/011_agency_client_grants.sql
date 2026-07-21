@@ -33,6 +33,7 @@ create table app_private.agency_grant_email_claims (
   email text not null check (email = lower(btrim(email))),
   expires_at timestamptz not null,
   consumed_at timestamptz,
+  consumed_by_user_id uuid references public.users(id),
   created_at timestamptz not null default statement_timestamp()
 );
 
@@ -44,7 +45,7 @@ end $$;
 
 create or replace function app_private.has_agency_client_permission(p_business_id uuid, p_location_id uuid, p_permission text, p_self_approver_user_id uuid default null)
 returns boolean language sql stable security definer set search_path = pg_catalog as $$
-  select app_private.current_user_enabled() and exists (
+  select app_private.current_user_enabled() and app_private.current_support_session_id() is null and exists (
     select 1 from public.agency_client_grants grant
     join public.businesses business on business.id = grant.business_id and business.archived_at is null
     join public.locations location on location.id = grant.location_id and location.business_id = grant.business_id and location.archived_at is null
@@ -56,11 +57,70 @@ returns boolean language sql stable security definer set search_path = pg_catalo
   )
 $$;
 
+create or replace function app_private.expire_stale_agency_client_grants(p_limit integer default 100)
+returns integer language plpgsql volatile security definer set search_path = pg_catalog as $$
+declare v_count integer := 0;
+begin
+  if p_limit is null or p_limit < 1 or p_limit > 1000 then raise exception 'invalid agency grant expiry limit'; end if;
+  if app_private.current_support_session_id() is not null then raise exception 'support sessions cannot mutate agency grants'; end if;
+  with candidates as (
+    select grant.id from public.agency_client_grants grant
+    where grant.status in ('requested','active') and grant.expires_at <= statement_timestamp()
+    order by grant.expires_at, grant.id for update skip locked limit p_limit
+  ), expired as (
+    update public.agency_client_grants grant set status='revoked', revoked_at=statement_timestamp()
+    from candidates where grant.id=candidates.id returning grant.id
+  ) select count(*)::integer into v_count from expired;
+  return v_count;
+end $$;
+
+create or replace function app_private.issue_agency_client_grant_claim(p_grant_id uuid, p_email text, p_token_hash bytea, p_expires_at timestamptz, p_correlation_id uuid)
+returns void language plpgsql volatile security definer set search_path = pg_catalog as $$
+declare v_grant public.agency_client_grants%rowtype; v_email text := lower(btrim(p_email));
+begin
+  perform app_private.reject_agency_grant_support_mutation();
+  if p_token_hash is null or length(p_token_hash) <> 32 or v_email = '' or p_expires_at <= statement_timestamp() or p_expires_at > statement_timestamp() + interval '7 days' then raise exception 'invalid agency grant claim'; end if;
+  select * into v_grant from public.agency_client_grants where id=p_grant_id for update;
+  if not found or v_grant.status not in ('requested','active') or app_private.current_agency_role(v_grant.agency_id)::text not in ('owner','admin','operator') then raise exception 'agency grant claim issuance is not permitted'; end if;
+  perform app_private.expire_stale_agency_client_grants(100);
+  if v_grant.expires_at is not null and v_grant.expires_at <= statement_timestamp() then raise exception 'agency grant has expired'; end if;
+  insert into app_private.agency_grant_email_claims(token_hash,grant_id,email,expires_at) values(p_token_hash,v_grant.id,v_email,p_expires_at);
+  perform app_private.write_audit_event('user',v_grant.agency_id,v_grant.business_id,v_grant.location_id,null,'agency.grant.claim.issue','agency_client_grant',v_grant.id::text,'completed',null,p_correlation_id,array['email_claim'],'{}'::jsonb);
+end $$;
+
+create or replace function app_private.consume_agency_client_grant_claim(p_token_hash bytea)
+returns table (grant_id uuid, business_id uuid, location_id uuid, status text, permissions text[], expires_at timestamptz)
+language plpgsql volatile security definer set search_path = pg_catalog as $$
+declare v_claim app_private.agency_grant_email_claims%rowtype; v_grant public.agency_client_grants%rowtype; v_email text;
+begin
+  if p_token_hash is null or length(p_token_hash) <> 32 or not app_private.current_user_enabled() or app_private.current_support_session_id() is not null then return; end if;
+  select lower(email) into v_email from public.users where id=app_private.current_user_id() and disabled_at is null;
+  select * into v_claim from app_private.agency_grant_email_claims claim where claim.token_hash=p_token_hash and claim.consumed_at is null and claim.expires_at > statement_timestamp() for update;
+  if not found or v_claim.email <> v_email then return; end if;
+  select * into v_grant from public.agency_client_grants where id=v_claim.grant_id for update;
+  if not found or v_grant.status not in ('requested','active') or (v_grant.expires_at is not null and v_grant.expires_at <= statement_timestamp()) then return; end if;
+  update app_private.agency_grant_email_claims set consumed_at=statement_timestamp(), consumed_by_user_id=app_private.current_user_id() where token_hash=v_claim.token_hash;
+  return query select v_grant.id, v_grant.business_id, v_grant.location_id, v_grant.status, v_grant.permissions, v_grant.expires_at;
+end $$;
+
+create or replace function app_private.list_agency_client_grant_claim_locations(p_claim_token_hash bytea)
+returns table (grant_id uuid, business_id uuid, location_id uuid, status text, permissions text[], expires_at timestamptz)
+language sql stable security definer set search_path = pg_catalog as $$
+  select grant.id, grant.business_id, grant.location_id, grant.status, grant.permissions, grant.expires_at
+  from app_private.agency_grant_email_claims claim
+  join public.agency_client_grants grant on grant.id=claim.grant_id
+  join public.locations location on location.id=grant.location_id and location.business_id=grant.business_id and location.archived_at is null
+  where claim.token_hash=p_claim_token_hash and claim.consumed_by_user_id=app_private.current_user_id()
+    and claim.expires_at > statement_timestamp() and grant.status in ('requested','active')
+    and (grant.expires_at is null or grant.expires_at > statement_timestamp()) and app_private.current_support_session_id() is null
+$$;
+
 create or replace function app_private.request_agency_client_grant(p_agency_id uuid, p_business_id uuid, p_location_id uuid, p_permissions text[], p_self_approver_user_id uuid, p_video_soft_monthly_cap integer, p_video_hard_monthly_cap integer, p_expires_at timestamptz, p_correlation_id uuid)
 returns public.agency_client_grants language plpgsql volatile security definer set search_path = pg_catalog as $$
 declare v_grant public.agency_client_grants%rowtype; v_actor uuid := app_private.current_user_id();
 begin
   perform app_private.reject_agency_grant_support_mutation();
+  perform app_private.expire_stale_agency_client_grants(100);
   if not app_private.current_user_enabled() or app_private.current_agency_role(p_agency_id)::text not in ('owner','admin','operator') then raise exception 'active agency membership is required'; end if;
   if not exists (select 1 from public.businesses where id = p_business_id and archived_at is null)
      or not exists (select 1 from public.locations where id = p_location_id and business_id = p_business_id and archived_at is null) then raise exception 'business location scope is invalid'; end if;
@@ -79,6 +139,7 @@ returns public.agency_client_grants language plpgsql volatile security definer s
 declare v_grant public.agency_client_grants%rowtype; v_actor uuid := app_private.current_user_id();
 begin
   perform app_private.reject_agency_grant_support_mutation(); select * into v_grant from public.agency_client_grants where id=p_grant_id for update;
+  perform app_private.expire_stale_agency_client_grants(100);
   if not found or v_grant.status <> 'requested' then raise exception 'agency grant is not awaiting acceptance'; end if;
   if app_private.current_business_role(v_grant.business_id)::text not in ('owner','admin') then raise exception 'direct client owner or admin acceptance is required'; end if;
   if v_grant.expires_at is not null and v_grant.expires_at <= statement_timestamp() then raise exception 'agency grant has expired'; end if;
@@ -110,12 +171,20 @@ end $$;
 revoke all on table public.agency_client_grants from public, afterword_auth, afterword_runtime, afterword_ingress, afterword_worker;
 revoke all on table app_private.agency_grant_email_claims from public, afterword_auth, afterword_runtime, afterword_ingress, afterword_worker;
 revoke all on function app_private.reject_agency_grant_support_mutation() from public;
+revoke all on function app_private.expire_stale_agency_client_grants(integer) from public;
+revoke all on function app_private.issue_agency_client_grant_claim(uuid,text,bytea,timestamptz,uuid) from public;
+revoke all on function app_private.consume_agency_client_grant_claim(bytea) from public;
+revoke all on function app_private.list_agency_client_grant_claim_locations(bytea) from public;
 revoke all on function app_private.has_agency_client_permission(uuid,uuid,text,uuid) from public;
 revoke all on function app_private.request_agency_client_grant(uuid,uuid,uuid,text[],uuid,integer,integer,timestamptz,uuid) from public;
 revoke all on function app_private.accept_agency_client_grant(uuid,uuid) from public;
 revoke all on function app_private.reject_agency_client_grant(uuid,uuid) from public;
 revoke all on function app_private.revoke_agency_client_grant(uuid,uuid) from public;
 grant execute on function app_private.has_agency_client_permission(uuid,uuid,text,uuid) to afterword_runtime;
+grant execute on function app_private.expire_stale_agency_client_grants(integer) to afterword_runtime, afterword_worker;
+grant execute on function app_private.issue_agency_client_grant_claim(uuid,text,bytea,timestamptz,uuid) to afterword_runtime;
+grant execute on function app_private.consume_agency_client_grant_claim(bytea) to afterword_runtime;
+grant execute on function app_private.list_agency_client_grant_claim_locations(bytea) to afterword_runtime;
 grant execute on function app_private.request_agency_client_grant(uuid,uuid,uuid,text[],uuid,integer,integer,timestamptz,uuid) to afterword_runtime;
 grant execute on function app_private.accept_agency_client_grant(uuid,uuid) to afterword_runtime;
 grant execute on function app_private.reject_agency_client_grant(uuid,uuid) to afterword_runtime;

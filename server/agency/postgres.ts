@@ -1,7 +1,7 @@
 import type { Pool } from "pg";
 import { withActorTransaction } from "../db.js";
 import type { ActorContext } from "../types.js";
-import type { AgencyGrant, AgencyGrantPermission, AgencyGrantRequest } from "./types.js";
+import type { AgencyGrant, AgencyGrantClaimScope, AgencyGrantPermission, AgencyGrantRequest } from "./types.js";
 
 function grant(row: Record<string, unknown>): AgencyGrant {
   return {
@@ -12,6 +12,10 @@ function grant(row: Record<string, unknown>): AgencyGrant {
     videoSoftMonthlyCap: row.video_soft_monthly_cap === null ? undefined : Number(row.video_soft_monthly_cap),
     videoHardMonthlyCap: row.video_hard_monthly_cap === null ? undefined : Number(row.video_hard_monthly_cap),
   };
+}
+
+function claimScope(row: Record<string, unknown>): AgencyGrantClaimScope {
+  return { grantId: String(row.grant_id), businessId: String(row.business_id), locationId: String(row.location_id), status: row.status as AgencyGrantClaimScope["status"], permissions: row.permissions as AgencyGrantPermission[], expiresAt: row.expires_at ? new Date(String(row.expires_at)).toISOString() : undefined };
 }
 
 export class AgencyGrantPostgres {
@@ -25,6 +29,18 @@ export class AgencyGrantPostgres {
   async accept(actor: ActorContext, grantId: string, correlationId: string) { return this.transition(actor, "accept_agency_client_grant", grantId, correlationId); }
   async reject(actor: ActorContext, grantId: string, correlationId: string) { return this.transition(actor, "reject_agency_client_grant", grantId, correlationId); }
   async revoke(actor: ActorContext, grantId: string, correlationId: string) { return this.transition(actor, "revoke_agency_client_grant", grantId, correlationId); }
+  async issueClaim(actor: ActorContext, grantId: string, email: string, tokenHash: Buffer, expiresAt: Date, correlationId: string) {
+    await withActorTransaction(this.runtimePool, actor, (client) => client.query("select app_private.issue_agency_client_grant_claim($1,$2,$3,$4,$5)", [grantId, email, tokenHash, expiresAt, correlationId]).then(() => undefined));
+  }
+  async consumeClaim(actor: ActorContext, tokenHash: Buffer): Promise<AgencyGrantClaimScope | null> {
+    return withActorTransaction(this.runtimePool, actor, async (client) => {
+      const row = (await client.query("select * from app_private.consume_agency_client_grant_claim($1)", [tokenHash])).rows[0];
+      return row ? claimScope(row as Record<string, unknown>) : null;
+    });
+  }
+  async listClaimLocations(actor: ActorContext, tokenHash: Buffer): Promise<AgencyGrantClaimScope[]> {
+    return withActorTransaction(this.runtimePool, actor, async (client) => (await client.query("select * from app_private.list_agency_client_grant_claim_locations($1)", [tokenHash])).rows.map((row) => claimScope(row as Record<string, unknown>)));
+  }
   private async transition(actor: ActorContext, command: "accept_agency_client_grant" | "reject_agency_client_grant" | "revoke_agency_client_grant", grantId: string, correlationId: string) {
     return withActorTransaction(this.runtimePool, actor, async (client) => grant((await client.query(`select * from app_private.${command}($1,$2)`, [grantId, correlationId])).rows[0] as Record<string, unknown>));
   }

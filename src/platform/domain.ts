@@ -5,6 +5,7 @@ export type ProductRole = "owner" | "staff" | "client_approver";
 export type AgencyRole = "owner" | "admin" | "operator" | "support";
 export type BusinessRole = "owner" | "admin" | "operator" | "approver" | "viewer" | "billing";
 export type SupportScope = "view" | "configuration";
+export type AgencyGrantPermission = "content.create" | "content.submit" | "content.approve" | "content.self_approve" | "content.schedule" | "content.publish" | "video.spend";
 export type Channel = "SMS" | "Email";
 export type RequestStatus = "Queued" | "Delivered" | "Clicked" | "Reviewed" | "Opted out" | "Blocked";
 export type ConsentStatus = "Verified" | "Missing" | "Withdrawn";

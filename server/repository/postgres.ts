@@ -209,6 +209,10 @@ export class PostgresRepository implements PlatformRepository {
     return new AgencyGrantPostgres(this.runtime()).revoke(actor, grantId, correlationId);
   }
 
+  async issueAgencyClientGrantClaim(actor: ActorContext, grantId: string, email: string, tokenHash: Buffer, expiresAt: Date, correlationId: string) { await new AgencyGrantPostgres(this.runtime()).issueClaim(actor, grantId, email, tokenHash, expiresAt, correlationId); }
+  async consumeAgencyClientGrantClaim(actor: ActorContext, tokenHash: Buffer) { return new AgencyGrantPostgres(this.runtime()).consumeClaim(actor, tokenHash); }
+  async listAgencyClientGrantClaimLocations(actor: ActorContext, tokenHash: Buffer) { return new AgencyGrantPostgres(this.runtime()).listClaimLocations(actor, tokenHash); }
+
   async recordLoginResult(email: string, succeeded: boolean) {
     await this.auth().query("select app_private.record_login_result($1,$2)", [email, succeeded]);
   }

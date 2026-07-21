@@ -37,3 +37,17 @@ test("grant migration uses named, actor-bound commands and denies support mutati
   assert.match(schema, /set search_path\s*=\s*pg_catalog/gi);
   assert.match(schema, /revoke all on function app_private\.request_agency_client_grant[\s\S]+from public/i);
 });
+
+test("agency permission checks deny support sessions and grant claims are opaque, single-use and scope bound", async () => {
+  const schema = await readFile(path.resolve("database", "migrations", "011_agency_client_grants.sql"), "utf8");
+  const databaseTest = await readFile(path.resolve("database", "tests", "006_agency_grants.sql"), "utf8");
+  assert.match(schema, /function\s+app_private\.has_agency_client_permission[\s\S]{0,900}current_support_session_id\(\)\s+is\s+null/is);
+  for (const command of ["issue_agency_client_grant_claim", "consume_agency_client_grant_claim", "list_agency_client_grant_claim_locations", "expire_stale_agency_client_grants"]) {
+    assert.match(schema, new RegExp(`function\\s+app_private\\.${command}\\s*\\(`, "i"));
+  }
+  assert.match(schema, /token_hash bytea primary key check \(length\(token_hash\) = 32\)/i);
+  assert.match(schema, /for update skip locked/i);
+  assert.match(schema, /consumed_at is null and claim\.expires_at > statement_timestamp\(\)/i);
+  assert.match(databaseTest, /support-session permission denial/i);
+  assert.match(databaseTest, /sibling location/i);
+});

@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import pg from "pg";
 import { databaseTlsOptions } from "../server/database-tls.js";
@@ -11,8 +11,9 @@ if (!connectionString) {
   throw new Error("MIGRATION_DATABASE_URL is required and must be able to SET ROLE afterword_migration_owner.");
 }
 
-const sqlLines = (await readFile(path.resolve("database", "tests", "003_tenant_isolation.sql"), "utf8"))
-  .split(/\r?\n/);
+const databaseTests = (await readdir(path.resolve("database", "tests")))
+  .filter((file) => /^\d{3}_.+\.sql$/.test(file))
+  .sort();
 
 function quoteLiteral(value: string) {
   return `'${value.replaceAll("'", "''")}'`;
@@ -25,7 +26,8 @@ function psqlText(value: unknown) {
   return String(value);
 }
 
-async function runPsqlCompatibleScript(client: pg.Client) {
+async function runPsqlCompatibleScript(client: pg.Client, source: string) {
+  const sqlLines = source.split(/\r?\n/);
   const variables = new Map<string, string>();
   let segment: string[] = [];
 
@@ -70,8 +72,10 @@ const ssl = databaseTlsOptions(process.env.DATABASE_SSL === "require");
 const client = new pg.Client({ connectionString, ssl, application_name: "afterword-isolation-test" });
 await client.connect();
 try {
-  await runPsqlCompatibleScript(client);
-  process.stdout.write("PostgreSQL tenant-isolation suite passed.\n");
+  for (const file of databaseTests) {
+    await runPsqlCompatibleScript(client, await readFile(path.resolve("database", "tests", file), "utf8"));
+  }
+  process.stdout.write(`PostgreSQL database-isolation suite passed (${databaseTests.length} scripts).\n`);
 } catch (error) {
   await client.query("rollback").catch(() => undefined);
   throw error;

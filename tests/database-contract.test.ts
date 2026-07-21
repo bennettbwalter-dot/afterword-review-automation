@@ -4,7 +4,10 @@ import path from "node:path";
 import test from "node:test";
 
 test("every PostgreSQL command used by the repository exists in the forward migrations", async () => {
-  const repository = await readFile(path.resolve("server", "repository", "postgres.ts"), "utf8");
+  const postgresModules = (await readdir(path.resolve("server"), { recursive: true }))
+    .map((entry) => String(entry).replaceAll("\\", "/"))
+    .filter((entry) => /(?:^|\/)postgres\.ts$/.test(entry));
+  const repositories = await Promise.all(postgresModules.map((entry) => readFile(path.resolve("server", entry), "utf8")));
   const migrationDirectory = path.resolve("database", "migrations");
   const migrations = await Promise.all(
     (await readdir(migrationDirectory))
@@ -13,7 +16,7 @@ test("every PostgreSQL command used by the repository exists in the forward migr
   );
   const schema = migrations.join("\n");
   const commandNames = new Set(
-    [...repository.matchAll(/app_private\.([a-z][a-z0-9_]*)/g)].map((match) => match[1]),
+    [...repositories.join("\n").matchAll(/app_private\.([a-z][a-z0-9_]*)/g)].map((match) => match[1]),
   );
 
   assert.ok(commandNames.size > 20, "The repository command scan unexpectedly found too few database commands.");
