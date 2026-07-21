@@ -1919,6 +1919,11 @@ textarea[aria-invalid="true"] {
 }
 
 .page-header h1 {
+  /* Keep multi-word workspace titles readable when header controls constrain
+     the available inline space. Global anywhere-wrapping is useful for
+     untrusted content, but it turns “Google Business Profile” into a column. */
+  overflow-wrap: normal;
+  word-break: normal;
   font-size: var(--text-xl);
   font-weight: 680;
   line-height: 1.15;
