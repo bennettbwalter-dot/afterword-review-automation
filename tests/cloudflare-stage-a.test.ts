@@ -859,19 +859,13 @@ test("only one concurrent claimant can reclaim an interrupted dead recovery clai
   const lock = await writePreparationLock(paths);
   const stalePid = process.pid === 4343 ? 4344 : 4343;
   await writeRecoveryClaim(paths, { pid: stalePid });
-  let staleClaimChecks = 0;
-  let releaseClaimChecks!: () => void;
-  const bothCheckedClaim = new Promise<void>((resolve) => { releaseClaimChecks = resolve; });
   let releaseWinner!: () => void;
+  let enterWinner!: () => void;
   const holdWinner = new Promise<void>((resolve) => { releaseWinner = resolve; });
+  const winnerReady = new Promise<void>((resolve) => { enterWinner = resolve; });
   let winnerEntered = false;
   const isProcessAlive = async (pid: number) => {
-    if (pid === stalePid) {
-      staleClaimChecks += 1;
-      if (staleClaimChecks === 2) releaseClaimChecks();
-      await bothCheckedClaim;
-      return false;
-    }
+    if (pid === stalePid) return false;
     return pid === process.pid;
   };
   const run = (byte: number) => prepareStagingFiles({
@@ -881,6 +875,7 @@ test("only one concurrent claimant can reclaim an interrupted dead recovery clai
       beforeReplace: async (index) => {
         if (index !== 0) return;
         winnerEntered = true;
+        enterWinner();
         await holdWinner;
       },
     },
@@ -889,10 +884,13 @@ test("only one concurrent claimant can reclaim an interrupted dead recovery clai
     (error: unknown) => ({ status: "rejected" as const, message: error instanceof Error ? error.message : String(error) }),
   );
 
-  const runs = [run(1), run(9)];
-  await Promise.race(runs);
+  const winner = run(1);
+  await winnerReady;
+  const loser = run(9);
+  const loserResult = await loser;
+  assert.equal(loserResult.status, "rejected");
   releaseWinner();
-  const results = await Promise.all(runs);
+  const results = [await winner, loserResult];
   assert.equal(winnerEntered, true, JSON.stringify(results));
   assert.equal(results.filter(({ status }) => status === "fulfilled").length, 1);
   const rejected = results.filter(({ status }) => status === "rejected");
@@ -1050,6 +1048,64 @@ async function terminatePrepareAtRecoveryHook(
   }
 }
 
+async function runPrepareChildWithPersistentCasFailure(
+  paths: PreparationPaths,
+  resultPath: string,
+) {
+  const provisionUrl = new URL("../scripts/cloudflare/provision.ts", import.meta.url).href;
+  const childSource = `
+    import { writeFile } from "node:fs/promises";
+    import { prepareStagingFiles } from ${JSON.stringify(provisionUrl)};
+    const paths = ${JSON.stringify(paths)};
+    let byte = 1;
+    let attempts = 0;
+    let result;
+    try {
+      await prepareStagingFiles({
+        paths,
+        confirmations: {
+          application: "https://review-anchor-staging.review-anchor-staging-test.workers.dev",
+          ingress: "https://review-anchor-staging-ingress.review-anchor-staging-test.workers.dev",
+        },
+        randomBytes: (size) => Buffer.alloc(size, byte++),
+        rotate: false,
+        confirmedEmptyStagingData: false,
+        preparationLock: {
+          isProcessAlive: async (pid) => pid === process.pid,
+          beforeRecoveryCleanupJournalCasUnlink: (_filePath, role) => {
+            if (role !== "prior") return;
+            attempts += 1;
+            throw Object.assign(new Error("synthetic persistent CAS sharing violation"), { code: "EBUSY" });
+          },
+        },
+      });
+      result = { fulfilled: true, attempts };
+    } catch (error) {
+      result = { fulfilled: false, attempts, message: error instanceof Error ? error.message : String(error) };
+    }
+    await writeFile(${JSON.stringify(resultPath)}, JSON.stringify(result), { flag: "wx" });
+  `;
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", childSource], {
+    cwd: path.resolve("."),
+    env: {
+      NODE_NO_WARNINGS: "1",
+      PATH: process.env.PATH,
+      SystemRoot: process.env.SystemRoot,
+      TEMP: process.env.TEMP,
+      TMP: process.env.TMP,
+    },
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  await once(child, "exit");
+  assert.equal(child.exitCode, 0);
+  return JSON.parse(await readFile(resultPath, "utf8")) as {
+    attempts: number;
+    fulfilled: boolean;
+    message?: string;
+  };
+}
+
 test("prepare recovers after a real subprocess is terminated immediately after quarantine hard-link creation", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-quarantine-process-crash-"));
   const paths = await writePreparationFixture(root);
@@ -1160,20 +1216,10 @@ test("concurrent stale-quarantine cleanup elects one winner and a delayed loser 
     JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
   );
 
-  let validatedCount = 0;
-  let releaseValidated!: () => void;
-  const bothValidated = new Promise<void>((resolve) => { releaseValidated = resolve; });
-  const afterValidation = async () => {
-    validatedCount += 1;
-    if (validatedCount === 2) releaseValidated();
-    await bothValidated;
-  };
   let releaseWinner!: () => void;
   const holdWinner = new Promise<void>((resolve) => { releaseWinner = resolve; });
   let signalReplacementReady!: () => void;
   const replacementReady = new Promise<void>((resolve) => { signalReplacementReady = resolve; });
-  let releaseDelayedLoser!: () => void;
-  const holdDelayedLoser = new Promise<void>((resolve) => { releaseDelayedLoser = resolve; });
   const settle = (promise: Promise<void>) => promise.then(
     () => ({ status: "fulfilled" as const, message: "" }),
     (error: unknown) => ({ status: "rejected" as const, message: error instanceof Error ? error.message : String(error) }),
@@ -1184,25 +1230,17 @@ test("concurrent stale-quarantine cleanup elects one winner and a delayed loser 
     ...prepareOptions(paths, 1),
     preparationLock: {
       isProcessAlive,
-      beforeExistingRecoveryQuarantineCleanup: afterValidation,
       afterRecoveryClaimQuarantined: async () => {
         signalReplacementReady();
         await holdWinner;
       },
     },
   }));
+  await replacementReady;
   const delayedLoser = settle(prepareStagingFiles({
     ...prepareOptions(paths, 9),
-    preparationLock: {
-      isProcessAlive,
-      beforeExistingRecoveryQuarantineCleanup: async () => {
-        await afterValidation();
-        await holdDelayedLoser;
-      },
-    },
+    preparationLock: { isProcessAlive },
   }));
-
-  await replacementReady;
   const [quarantineBefore, transitionBefore, cleanupBefore, transitionMetadataBefore, cleanupMetadataBefore] = await Promise.all([
     stat(lock.recoveryQuarantineFile),
     stat(lock.recoveryQuarantineOwnerFile),
@@ -1210,9 +1248,9 @@ test("concurrent stale-quarantine cleanup elects one winner and a delayed loser 
     readFile(lock.recoveryQuarantineOwnerFile, "utf8"),
     readFile(lock.recoveryCleanupOwnerFile, "utf8"),
   ]);
-  releaseDelayedLoser();
   const loserResult = await delayedLoser;
   assert.equal(loserResult.status, "rejected");
+  assert.match(loserResult.message, /live staging preparation lock recovery handoff|handoff.*active/i);
   const [quarantineAfter, transitionAfter, cleanupAfter, transitionMetadataAfter, cleanupMetadataAfter] = await Promise.all([
     stat(lock.recoveryQuarantineFile),
     stat(lock.recoveryQuarantineOwnerFile),
@@ -1780,6 +1818,69 @@ test("journal CAS refuses to remove a same-content next-path replacement after i
   assert.equal(await readFile(replacementPath, "utf8"), replacementBytes);
 });
 
+test("an exhausted CAS prior unlink retains the election and the next prepare recovers", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-cas-prior-unlink-retry-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+  await writeFile(
+    lock.recoveryQuarantineOwnerFile,
+    JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+  );
+  const childResult = await runPrepareChildWithPersistentCasFailure(paths, path.join(root, "cas-failure.json"));
+  assert.equal(childResult.fulfilled, false);
+  assert.match(childResult.message ?? "", /cleanup failed safely|CAS|sharing violation/i);
+  assert.equal(childResult.attempts, 5);
+  assert.equal(await pathExists(lock.recoveryCleanupOwnerFile), true);
+  assert.ok((await readdir(lock.lockDirectory)).some((name) => name.endsWith(".prior")));
+
+  await prepareStagingFiles({
+    ...prepareOptions(paths, 9),
+    preparationLock: { isProcessAlive: async (pid) => pid === process.pid },
+  });
+  assert.equal(await pathExists(lock.lockDirectory), false);
+});
+
+test("post-install election replacement preserves the CAS next path and fails closed", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-cas-election-replacement-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+  await writeFile(
+    lock.recoveryQuarantineOwnerFile,
+    JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+  );
+  let replacementBytes = "";
+  let replacementBefore!: Awaited<ReturnType<typeof stat>>;
+
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(paths),
+      preparationLock: {
+        isProcessAlive: async () => false,
+        afterRecoveryCleanupJournalCasInstalled: async () => {
+          if (replacementBytes) return;
+          replacementBytes = await readFile(lock.recoveryCleanupOwnerFile, "utf8");
+          await unlink(lock.recoveryCleanupOwnerFile);
+          await writeFile(lock.recoveryCleanupOwnerFile, replacementBytes, { flag: "wx" });
+          replacementBefore = await stat(lock.recoveryCleanupOwnerFile);
+        },
+      },
+    }),
+    /election|ownership|replaced|ambiguous|cleanup failed safely/i,
+  );
+  const nextPath = (await readdir(lock.lockDirectory))
+    .map((name) => path.join(lock.lockDirectory, name))
+    .find((filePath) => filePath.endsWith(".next"));
+  assert.ok(nextPath);
+  const replacementAfter = await stat(lock.recoveryCleanupOwnerFile);
+  assert.equal(replacementAfter.dev, replacementBefore.dev);
+  assert.equal(replacementAfter.ino, replacementBefore.ino);
+  assert.equal(await readFile(lock.recoveryCleanupOwnerFile, "utf8"), replacementBytes);
+});
+
 test("a real crash with a complete handle and successor quarantine is recoverable", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-successor-quarantine-crash-"));
   const paths = await writePreparationFixture(root);
@@ -1806,6 +1907,69 @@ test("a real crash with a complete handle and successor quarantine is recoverabl
     ...prepareOptions(paths, 9),
     preparationLock: { isProcessAlive: async (pid) => pid === process.pid },
   });
+  assert.equal(await pathExists(lock.lockDirectory), false);
+});
+
+test("a real crash after election release leaves a finalizing journal that the next prepare completes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-finalization-crash-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  await link(lock.recoveryOwnerFile, lock.recoveryQuarantineFile);
+  await writeFile(
+    lock.recoveryQuarantineOwnerFile,
+    JSON.stringify(syntheticLockOwner(4444, "90000000-0000-4000-8000-000000000024")),
+  );
+  const signalPath = path.join(root, "election-released.signal");
+
+  await terminatePrepareAtRecoveryHook(paths, "afterRecoveryCleanupElectionReleased", signalPath);
+  assert.equal(await pathExists(lock.recoveryCleanupOwnerFile), false);
+  const retained = JSON.parse(await readFile(lock.recoveryCleanupJournalFile, "utf8")) as { phase: string };
+  assert.equal(retained.phase, "finalizing");
+
+  await prepareStagingFiles({
+    ...prepareOptions(paths, 9),
+    preparationLock: { isProcessAlive: async (pid) => pid === process.pid },
+  });
+  assert.equal(await pathExists(lock.lockDirectory), false);
+});
+
+test("a live handoff gate blocks a competitor during the recovery-claim pathname gap", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "review-anchor-stage-a-claim-handoff-race-"));
+  const paths = await writePreparationFixture(root);
+  const lock = await writePreparationLock(paths);
+  await writeRecoveryClaim(paths);
+  let entered!: () => void;
+  let release!: () => void;
+  const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const original = prepareStagingFiles({
+    ...prepareOptions(paths),
+    preparationLock: {
+      isProcessAlive: async (pid) => pid === process.pid,
+      afterRecoveryClaimUnlinkedBeforeSuccessor: async () => {
+        entered();
+        await held;
+      },
+    },
+  });
+  await Promise.race([
+    enteredPromise,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("handoff hook was not reached")), 1_000)),
+  ]);
+  assert.equal(await pathExists(lock.recoveryOwnerFile), false);
+  assert.ok((await readdir(lock.lockDirectory)).some((name) => name.endsWith(".handoff-owner.json")));
+
+  await assert.rejects(
+    prepareStagingFiles({
+      ...prepareOptions(paths, 9),
+      preparationLock: { isProcessAlive: async (pid) => pid === process.pid },
+    }),
+    /live staging preparation lock recovery handoff|handoff.*active/i,
+  );
+  assert.equal(await pathExists(lock.recoveryOwnerFile), false);
+  release();
+  await original;
   assert.equal(await pathExists(lock.lockDirectory), false);
 });
 

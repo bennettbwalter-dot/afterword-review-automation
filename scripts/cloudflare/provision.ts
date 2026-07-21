@@ -134,6 +134,7 @@ export interface PrepareStagingOptions {
   preparationLock?: {
     afterRecoveryCleanupElectionCandidateLinked?: (candidatePath: string, ownerPath: string) => Promise<void> | void;
     afterRecoveryCleanupElection?: (ownerPath: string, claimantOwnerId: string) => Promise<void> | void;
+    afterRecoveryCleanupElectionReleased?: (journalPath: string) => Promise<void> | void;
     afterRecoveryCleanupJournalCandidateLinked?: (candidatePath: string, journalPath: string) => Promise<void> | void;
     afterRecoveryCleanupJournalCasInstalled?: (journalPath: string, nextPath: string) => Promise<void> | void;
     afterRecoveryCleanupJournalCasNextCreated?: (nextPath: string, journalPath: string) => Promise<void> | void;
@@ -153,10 +154,16 @@ export interface PrepareStagingOptions {
     ) => Promise<void> | void;
     afterRecoveryClaimAcquired?: () => Promise<void> | void;
     afterRecoveryClaimQuarantined?: (quarantinePath: string) => Promise<void> | void;
+    afterRecoveryClaimUnlinkedBeforeSuccessor?: (recoveryClaim: string) => Promise<void> | void;
     afterRecoveryTransitionCandidateLinked?: (candidatePath: string, ownerPath: string) => Promise<void> | void;
     beforeExistingRecoveryQuarantineCleanup?: (quarantinePath: string) => Promise<void> | void;
     beforeRecoveryArtifactClaimUnlink?: (filePath: string, attempt: number) => Promise<void> | void;
     beforeRecoveryCleanupElectionUnlink?: (filePath: string, attempt: number) => Promise<void> | void;
+    beforeRecoveryCleanupJournalCasUnlink?: (
+      filePath: string,
+      role: "current" | "prior" | "next" | "journal",
+      attempt: number,
+    ) => Promise<void> | void;
     beforeRecoveryClaimCleanup?: (
       filePath: string,
       artifact: "quarantine" | "transition",
@@ -1169,7 +1176,8 @@ type RecoveryCleanupPhase =
   | "removing_claims"
   | "complete"
   | "installing_successor"
-  | "successor_quarantined";
+  | "successor_quarantined"
+  | "finalizing";
 
 interface RecoveryCleanupPendingEntry {
   identity: StoredRecoveryArtifactIdentity;
@@ -1296,6 +1304,7 @@ function validateRecoveryCleanupJournalRecord(
         || value.phase === "complete"
         || value.phase === "installing_successor"
         || value.phase === "successor_quarantined"
+        || value.phase === "finalizing"
       )
       && typeof value.staleOwnerId === "string"
       && PREPARATION_OWNER_ID_PATTERN.test(value.staleOwnerId),
@@ -1327,18 +1336,19 @@ function validateRecoveryCleanupJournalRecord(
     `${description} phase and pending artifacts are inconsistent.`,
   );
   assertSafe(
-    !["complete", "installing_successor", "successor_quarantined"].includes(record.phase)
+    !["complete", "installing_successor", "successor_quarantined", "finalizing"].includes(record.phase)
       || (record.pendingArtifacts.length === 0 && record.pendingClaims.length === 0),
     `${description} completed cleanup phase still has pending work.`,
   );
   assertSafe(
-    record.phase !== "successor_quarantined"
+    !["successor_quarantined", "finalizing"].includes(record.phase)
       || Boolean(record.successorQuarantine && record.successorTransition),
     `${description} successor quarantine phase is incomplete.`,
   );
   assertSafe(
     record.phase === "installing_successor"
       || record.phase === "successor_quarantined"
+      || record.phase === "finalizing"
       || (!record.successorQuarantine && !record.successorTransition),
     `${description} successor evidence appears outside its phase.`,
   );
@@ -1460,9 +1470,26 @@ function assertValidRecoveryCleanupJournalTransition(
       && next.phase === "successor_quarantined"
       && (!prior.successorTransition
         || sameStoredRecoveryArtifactIdentity(prior.successorTransition, next.successorTransition));
+    const aborted = next.phase === "complete"
+      && next.pendingArtifacts.length === 0
+      && next.pendingClaims.length === 0
+      && !next.successorTransition
+      && !next.successorQuarantine;
     valid = next.pendingArtifacts.length === 0
       && next.pendingClaims.length === 0
-      && (transitionInstalled || quarantineInstalled);
+      && (transitionInstalled || quarantineInstalled || aborted);
+  } else if (prior.phase === "successor_quarantined") {
+    const finalizing = next.phase === "finalizing"
+      && next.pendingArtifacts.length === 0
+      && next.pendingClaims.length === 0
+      && sameStoredRecoveryArtifactIdentity(prior.successorTransition, next.successorTransition)
+      && sameStoredRecoveryArtifactIdentity(prior.successorQuarantine, next.successorQuarantine);
+    const aborted = next.phase === "complete"
+      && next.pendingArtifacts.length === 0
+      && next.pendingClaims.length === 0
+      && !next.successorTransition
+      && !next.successorQuarantine;
+    valid = finalizing || aborted;
   }
   assertSafe(valid, "Staging preparation lock recovery cleanup journal transition is invalid or ambiguous.");
 }
@@ -1552,6 +1579,7 @@ async function updateRecoveryCleanupJournal(
   record: RecoveryCleanupJournalRecord,
   options: PrepareStagingOptions["preparationLock"],
   validateContext?: (current: RecoveryCleanupJournal) => Promise<void>,
+  validateInstalledContext?: (installed: RecoveryCleanupJournal) => Promise<void>,
 ) {
   assertValidRecoveryCleanupJournalTransition(journal.record, record);
   let current = await assertRecoveryCleanupJournal(journal);
@@ -1607,7 +1635,9 @@ async function updateRecoveryCleanupJournal(
       && sameRecoveryCleanupJournalRecord(current.record, journal.record),
     "Staging preparation lock recovery cleanup journal changed immediately before CAS.",
   );
-  await removeRecoveryCleanupJournal(current);
+  await removeRecoveryCleanupJournal(current, options, "current", async () => {
+    await validateContext?.(current);
+  });
   try {
     await link(nextPath, journal.path);
   } catch (error) {
@@ -1626,7 +1656,11 @@ async function updateRecoveryCleanupJournal(
   const expectedInstalled = installed;
   const expectedInstalledNext = next;
   prior = await readRecoveryCleanupJournal(priorPath, "Staging preparation lock recovery cleanup journal CAS prior");
-  await removeRecoveryCleanupJournal(prior);
+  await removeRecoveryCleanupJournal(prior, options, "prior", async () => {
+    await assertRecoveryCleanupJournal(expectedInstalled);
+    await assertRecoveryCleanupJournal(expectedInstalledNext);
+    await validateInstalledContext?.(expectedInstalled);
+  });
   await options?.afterRecoveryCleanupJournalCasInstalled?.(journal.path, nextPath);
   installed = await assertRecoveryCleanupJournal(expectedInstalled);
   next = await assertRecoveryCleanupJournal(expectedInstalledNext);
@@ -1635,14 +1669,30 @@ async function updateRecoveryCleanupJournal(
       && sameRecoveryCleanupJournalRecord(installed.record, next.record),
     "Staging preparation lock recovery cleanup journal CAS installed paths changed during cleanup.",
   );
-  await removeRecoveryCleanupJournal(next);
+  await removeRecoveryCleanupJournal(next, options, "next", async () => {
+    await assertRecoveryCleanupJournal(expectedInstalled);
+    await validateInstalledContext?.(expectedInstalled);
+  });
   installed = await readRecoveryCleanupJournal(journal.path);
   return installed;
 }
 
-async function removeRecoveryCleanupJournal(journal: RecoveryCleanupJournal) {
-  await assertRecoveryCleanupJournal(journal);
-  await unlink(journal.path);
+async function removeRecoveryCleanupJournal(
+  journal: RecoveryCleanupJournal,
+  options?: PrepareStagingOptions["preparationLock"],
+  role: "current" | "prior" | "next" | "journal" = "journal",
+  validateContext?: () => Promise<void>,
+) {
+  await retryExactRecoveryCleanupUnlink(
+    journal.path,
+    async () => {
+      await assertRecoveryCleanupJournal(journal);
+      await validateContext?.();
+    },
+    options?.beforeRecoveryCleanupJournalCasUnlink
+      ? (filePath, attempt) => options.beforeRecoveryCleanupJournalCasUnlink?.(filePath, role, attempt)
+      : undefined,
+  );
 }
 
 async function assertDeadSameHostRecoveryOwner(
@@ -1830,6 +1880,8 @@ async function deriveRecoveryCleanupJournalTransition(
       phase: "successor_quarantined",
       successorQuarantine: storedRecoveryArtifactIdentity(quarantine),
     };
+  } else if (record.phase === "successor_quarantined") {
+    next = { ...record, phase: "finalizing" };
   } else {
     throw new SafeProvisionError("Recovery journal CAS prior-only state is not recoverable.");
   }
@@ -1890,7 +1942,11 @@ async function recoverRecoveryCleanupJournalCas(
           && sameRecoveryCleanupJournalRecord(target.record, next.record),
         "Recovery journal CAS installed state changed before intermediate cleanup.",
       );
-      await removeRecoveryCleanupJournal(next);
+      await removeRecoveryCleanupJournal(next, options, "next", async () => {
+        await assertRecoveryCleanupElection(election);
+        await assertRecoveryCleanupJournal(target as RecoveryCleanupJournal);
+        await validateRecoveryCleanupJournalFilesystem(next as RecoveryCleanupJournal, election, recoveryClaim, activeClaim);
+      });
       return true;
     }
     assertSafe(
@@ -1952,7 +2008,11 @@ async function recoverRecoveryCleanupJournalCas(
           && sameRecoveryCleanupJournalRecord(target.record, prior.record),
         "Recovery journal CAS destination changed immediately before recovery.",
       );
-      await removeRecoveryCleanupJournal(target);
+      await removeRecoveryCleanupJournal(target, options, "current", async () => {
+        await assertRecoveryCleanupElection(election);
+        await assertRecoveryCleanupJournal(prior);
+        await assertRecoveryCleanupJournal(next as RecoveryCleanupJournal);
+      });
     }
     try {
       await link(nextPath as string, journalPath);
@@ -1973,12 +2033,19 @@ async function recoverRecoveryCleanupJournalCas(
   const expectedInstalled = installed;
   const expectedNext = next;
   prior = await readRecoveryCleanupJournal(priorPath as string, "Staging preparation recovery journal CAS prior");
-  await removeRecoveryCleanupJournal(prior);
+  await removeRecoveryCleanupJournal(prior, options, "prior", async () => {
+    await assertRecoveryCleanupElection(election);
+    await assertRecoveryCleanupJournal(expectedInstalled);
+    await assertRecoveryCleanupJournal(expectedNext);
+    await validateRecoveryCleanupJournalFilesystem(expectedInstalled, election, recoveryClaim, activeClaim);
+  });
   await options?.afterRecoveryCleanupJournalCasInstalled?.(journalPath, nextPath as string);
-  await assertRecoveryCleanupElection(election);
-  await assertRecoveryCleanupJournal(expectedInstalled);
   next = await assertRecoveryCleanupJournal(expectedNext);
-  await removeRecoveryCleanupJournal(next);
+  await removeRecoveryCleanupJournal(next, options, "next", async () => {
+    await assertRecoveryCleanupJournal(expectedInstalled);
+    await validateRecoveryCleanupJournalFilesystem(expectedInstalled, election, recoveryClaim, activeClaim);
+    await assertRecoveryCleanupElection(election);
+  });
   return true;
 }
 
@@ -2426,7 +2493,9 @@ async function validateRecoveryCleanupJournalFilesystem(
       kind,
     ).sourcePath;
     if (!(await exists(sourcePath))) continue;
-    const successorPhase = record.phase === "installing_successor" || record.phase === "successor_quarantined";
+    const successorPhase = record.phase === "installing_successor"
+      || record.phase === "successor_quarantined"
+      || record.phase === "finalizing";
     const recordedSuccessor = kind === "transition" ? record.successorTransition : record.successorQuarantine;
     const legitimateSuccessor = successorPhase && (
       recordedSuccessor
@@ -2453,6 +2522,26 @@ async function validateRecoveryCleanupJournalFilesystem(
           && samePreparationLockOwner(successor.owner, recordedSuccessor.owner)
         )),
       `Staging preparation lock recovery successor ${kind} ownership is replaced or ambiguous.`,
+    );
+  }
+  if (record.phase === "finalizing") {
+    const successorStaleOwnerId = (record.successorQuarantine as StoredRecoveryArtifactIdentity).owner.ownerId;
+    const { quarantinePath, transitionOwnerPath } = recoveryQuarantinePaths(recoveryClaim, successorStaleOwnerId);
+    assertSafe(!(await exists(quarantinePath)), "Staging preparation lock recovery finalization quarantine remains.");
+    const currentClaim = await readRecoveryArtifactIdentity(
+      recoveryClaim,
+      "Staging preparation lock recovery finalization ownership metadata",
+    );
+    const transition = await readRecoveryArtifactIdentity(
+      transitionOwnerPath,
+      "Staging preparation lock recovery finalization transition metadata",
+    );
+    assertSafe(
+      samePreparationLockOwner(currentClaim.owner, election.owner)
+        && Boolean(record.successorTransition)
+        && sameExactFilesystemIdentity(transition, record.successorTransition as StoredRecoveryArtifactIdentity)
+        && samePreparationLockOwner(transition.owner, election.owner),
+      "Staging preparation lock recovery finalization handoff is replaced or ambiguous.",
     );
   }
 }
@@ -2524,6 +2613,10 @@ async function executeRecoveryCleanupJournal(
     await validateRecoveryCleanupJournalFilesystem(current, election, recoveryClaim, activeClaim);
     return current;
   };
+  const validateInstalled = async (installed: RecoveryCleanupJournal) => {
+    await validateRecoveryCleanupJournalFilesystem(installed, election, recoveryClaim, activeClaim);
+    await assertRecoveryCleanupElection(election);
+  };
   journal = await validateCurrent(journal);
   while (journal.record.phase === "removing_artifacts" && journal.record.pendingArtifacts.length > 0) {
     journal = await validateCurrent(journal);
@@ -2571,7 +2664,7 @@ async function executeRecoveryCleanupJournal(
       pendingClaims,
     }, options, async () => {
       await assertRecoveryCleanupElection(election);
-    });
+    }, validateInstalled);
     await options?.afterRecoveryCleanupJournalUpdate?.("artifact", sourcePath);
   }
   if (journal.record.phase === "removing_artifacts") {
@@ -2581,7 +2674,7 @@ async function executeRecoveryCleanupJournal(
       phase: "removing_claims",
     }, options, async () => {
       await assertRecoveryCleanupElection(election);
-    });
+    }, validateInstalled);
   }
   while (journal.record.phase === "removing_claims" && journal.record.pendingClaims.length > 0) {
     journal = await validateCurrent(journal);
@@ -2616,7 +2709,7 @@ async function executeRecoveryCleanupJournal(
       pendingClaims: journal.record.pendingClaims.slice(1),
     }, options, async () => {
       await assertRecoveryCleanupElection(election);
-    });
+    }, validateInstalled);
     await options?.afterRecoveryCleanupJournalUpdate?.("claim", claimPath);
   }
   if (journal.record.phase === "removing_claims") {
@@ -2627,7 +2720,7 @@ async function executeRecoveryCleanupJournal(
       phase: "complete",
     }, options, async () => {
       await assertRecoveryCleanupElection(election);
-    });
+    }, validateInstalled);
   }
   return journal;
 }
@@ -2642,6 +2735,10 @@ async function adoptRecoveryCleanupSuccessorState(
   if (journal.record.phase !== "installing_successor") return journal;
   const { quarantinePath, transitionOwnerPath } = recoveryQuarantinePaths(recoveryClaim, election.staleOwnerId);
   let current = journal;
+  const validateInstalled = async (installed: RecoveryCleanupJournal) => {
+    await validateRecoveryCleanupJournalFilesystem(installed, election, recoveryClaim, activeClaim);
+    await assertRecoveryCleanupElection(election);
+  };
   if (!current.record.successorTransition && await exists(transitionOwnerPath)) {
     const transition = await readRecoveryArtifactIdentity(
       transitionOwnerPath,
@@ -2656,6 +2753,7 @@ async function adoptRecoveryCleanupSuccessorState(
       { ...current.record, successorTransition: storedRecoveryArtifactIdentity(transition) },
       options,
       async () => { await assertRecoveryCleanupElection(election); },
+      validateInstalled,
     );
   }
   if (await exists(quarantinePath)) {
@@ -2683,6 +2781,7 @@ async function adoptRecoveryCleanupSuccessorState(
       },
       options,
       async () => { await assertRecoveryCleanupElection(election); },
+      validateInstalled,
     );
   }
   return current;
@@ -2786,8 +2885,67 @@ async function recoverRetainedRecoveryCleanup(
   }
   journal = await executeRecoveryCleanupJournal(journal, election, recoveryClaim, activeClaim, options);
   journal = await adoptRecoveryCleanupSuccessorState(journal, election, recoveryClaim, activeClaim, options);
+  if (journal.record.phase === "installing_successor" || journal.record.phase === "successor_quarantined") {
+    const handoffCompleted = samePreparationLockOwner(activeClaim, election.owner);
+    const handoffNotStarted = samePreparationLockOwner(activeClaim, election.activeClaim);
+    assertSafe(
+      handoffCompleted || handoffNotStarted,
+      "Staging preparation lock recovery retained successor handoff is ambiguous.",
+    );
+    assertSafe(
+      handoffNotStarted || journal.record.phase === "successor_quarantined",
+      "Staging preparation lock recovery retained successor phase is incomplete.",
+    );
+    const successorStaleOwnerId = journal.record.successorQuarantine?.owner.ownerId ?? election.staleOwnerId;
+    const successorPaths = recoveryQuarantinePaths(recoveryClaim, successorStaleOwnerId);
+    for (const [filePath, stored, description] of [
+      [
+        successorPaths.quarantinePath,
+        journal.record.successorQuarantine,
+        "Staging preparation lock recovery retained successor quarantine",
+      ],
+      ...(handoffNotStarted ? [[
+        successorPaths.transitionOwnerPath,
+        journal.record.successorTransition,
+        "Staging preparation lock recovery retained successor transition",
+      ]] : []),
+    ] as Array<[string, StoredRecoveryArtifactIdentity | undefined, string]>) {
+      if (!stored || !(await exists(filePath))) continue;
+      const artifact = await readRecoveryArtifactIdentity(filePath, description);
+      assertSafe(
+        sameExactFilesystemIdentity(artifact, stored)
+          && samePreparationLockOwner(artifact.owner, stored.owner),
+        `${description} is replaced or ambiguous.`,
+      );
+      await unlinkExactOwnedRecoveryArtifact(artifact, async () => {
+        await assertRecoveryCleanupJournal(journal);
+        await assertRecoveryCleanupElection(election);
+      });
+    }
+    const nextPhase: RecoveryCleanupPhase = handoffCompleted ? "finalizing" : "complete";
+    journal = await updateRecoveryCleanupJournal(
+      journal,
+      {
+        ...journal.record,
+        phase: nextPhase,
+        successorQuarantine: handoffCompleted ? journal.record.successorQuarantine : undefined,
+        successorTransition: handoffCompleted ? journal.record.successorTransition : undefined,
+      },
+      options,
+      async () => { await assertRecoveryCleanupElection(election); },
+      async (installed) => {
+        await validateRecoveryCleanupJournalFilesystem(installed, election, recoveryClaim, activeClaim);
+        await assertRecoveryCleanupElection(election);
+      },
+    );
+  }
+  assertSafe(
+    journal.record.phase === "complete" || journal.record.phase === "finalizing",
+    "Staging preparation lock recovery retained cleanup is not ready for finalization.",
+  );
   await releaseRecoveryCleanupElection(election, options);
-  await removeRecoveryCleanupJournal(journal);
+  await options?.afterRecoveryCleanupElectionReleased?.(journal.path);
+  await removeRecoveryCleanupJournal(journal, options, "journal");
 }
 
 async function recoverOrphanedRecoveryCleanupJournal(
@@ -2812,7 +2970,7 @@ async function recoverOrphanedRecoveryCleanupJournal(
     "A live staging preparation lock recovery cleanup journal owner already exists.",
   );
   assertSafe(
-    journal.record.phase === "complete"
+    (journal.record.phase === "complete" || journal.record.phase === "finalizing")
       && journal.record.pendingArtifacts.length === 0
       && journal.record.pendingClaims.length === 0
       && existing.cleanupArtifactClaimPaths.length === 0
@@ -2826,7 +2984,41 @@ async function recoverOrphanedRecoveryCleanupJournal(
     !(await exists(recoveryCleanupOwnerPath(recoveryClaim, existing.staleOwnerId))),
     "Staging preparation lock recovery cleanup election changed during journal recovery.",
   );
-  await removeRecoveryCleanupJournal(journal);
+  const validateOrphan = async () => {
+    assertSafe(
+      !(await exists(recoveryCleanupOwnerPath(recoveryClaim, existing.staleOwnerId))),
+      "Staging preparation lock recovery cleanup election changed during journal recovery.",
+    );
+    if (journal.record.phase !== "finalizing") return;
+    const successorStaleOwnerId = (
+      journal.record.successorQuarantine as StoredRecoveryArtifactIdentity
+    ).owner.ownerId;
+    const { quarantinePath, transitionOwnerPath } = recoveryQuarantinePaths(recoveryClaim, successorStaleOwnerId);
+    assertSafe(
+      Boolean(journal.record.successorQuarantine && journal.record.successorTransition)
+        && !(await exists(quarantinePath)),
+      "Staging preparation lock recovery orphan finalization state is incomplete.",
+    );
+    const currentClaim = await readRecoveryArtifactIdentity(
+      recoveryClaim,
+      "Staging preparation lock recovery orphan finalization claim",
+    );
+    const transition = await readRecoveryArtifactIdentity(
+      transitionOwnerPath,
+      "Staging preparation lock recovery orphan finalization transition",
+    );
+    assertSafe(
+      samePreparationLockOwner(currentClaim.owner, journal.record.owner)
+        && sameExactFilesystemIdentity(
+          transition,
+          journal.record.successorTransition as StoredRecoveryArtifactIdentity,
+        )
+        && samePreparationLockOwner(transition.owner, journal.record.owner),
+      "Staging preparation lock recovery orphan finalization ownership is replaced or ambiguous.",
+    );
+  };
+  await validateOrphan();
+  await removeRecoveryCleanupJournal(journal, options, "journal", validateOrphan);
 }
 
 async function recoverExistingRecoveryQuarantine(
@@ -3038,6 +3230,102 @@ async function installRecoveryTransitionOwner(
   return identity;
 }
 
+function recoveryClaimHandoffOwnerPath(recoveryClaim: string) {
+  return `${recoveryClaim}.handoff-owner.json`;
+}
+
+async function releaseRecoveryClaimHandoff(handoff: RecoveryArtifactIdentity) {
+  await retryExactRecoveryCleanupUnlink(
+    handoff.path,
+    async () => {
+      const current = await assertRecoveryArtifactIdentity(handoff);
+      assertSafe(
+        sameExactRecoveryArtifactIdentity(current, handoff),
+        "Staging preparation lock recovery handoff ownership changed; release was refused.",
+      );
+    },
+    undefined,
+  );
+}
+
+async function recoverDeadRecoveryClaimHandoff(
+  recoveryClaim: string,
+  handoff: RecoveryArtifactIdentity,
+  claimant: PreparationLockOwner,
+  options: PrepareStagingOptions["preparationLock"],
+) {
+  await assertDeadSameHostRecoveryOwner(handoff.owner, claimant, options, "Staging preparation lock recovery handoff");
+  const directory = path.dirname(recoveryClaim);
+  const basename = path.basename(recoveryClaim);
+  const transitionNames = (await readdir(directory)).filter(
+    (name) => name.startsWith(`${basename}.`) && name.endsWith(".quarantine.owner.json"),
+  );
+  assertSafe(transitionNames.length <= 1, "Staging preparation lock recovery handoff transition set is ambiguous.");
+  const transition = transitionNames[0]
+    ? await readRecoveryArtifactIdentity(
+        path.join(directory, transitionNames[0]),
+        "Staging preparation lock recovery handoff transition",
+      )
+    : undefined;
+  if (!(await exists(recoveryClaim))) {
+    assertSafe(
+      Boolean(transition) && samePreparationLockOwner((transition as RecoveryArtifactIdentity).owner, handoff.owner),
+      "Staging preparation lock recovery handoff has no exact recoverable successor evidence.",
+    );
+    await assertRecoveryArtifactIdentity(handoff);
+    try {
+      await writeFile(recoveryClaim, `${JSON.stringify(handoff.owner, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    } catch (error) {
+      if (!(isObject(error) && error.code === "EEXIST")) throw error;
+    }
+  }
+  const active = await readRecoveryArtifactIdentity(
+    recoveryClaim,
+    "Staging preparation lock recovery handoff active claim",
+  );
+  if (!samePreparationLockOwner(active.owner, handoff.owner)) {
+    assertSafe(
+      !transition || transition.path.includes(`.${active.owner.ownerId}.quarantine.owner.json`),
+      "Staging preparation lock recovery handoff active claim is replaced or ambiguous.",
+    );
+  }
+  await assertRecoveryArtifactIdentity(handoff);
+  await releaseRecoveryClaimHandoff(handoff);
+}
+
+async function acquireRecoveryClaimHandoff(
+  recoveryClaim: string,
+  claimant: PreparationLockOwner,
+  options: PrepareStagingOptions["preparationLock"],
+) {
+  const handoffPath = recoveryClaimHandoffOwnerPath(recoveryClaim);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await writeFile(handoffPath, `${JSON.stringify(claimant, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+      const handoff = await readRecoveryArtifactIdentity(
+        handoffPath,
+        "Staging preparation lock recovery handoff ownership metadata",
+      );
+      assertSafe(
+        samePreparationLockOwner(handoff.owner, claimant),
+        "Staging preparation lock recovery handoff ownership changed during acquisition.",
+      );
+      return handoff;
+    } catch (error) {
+      if (!(isObject(error) && error.code === "EEXIST")) throw error;
+      const existing = await readRecoveryArtifactIdentity(
+        handoffPath,
+        "Staging preparation lock recovery handoff ownership metadata",
+      );
+      if (await processIsAlive(existing.owner.pid, options?.isProcessAlive)) {
+        throw new SafeProvisionError("A live staging preparation lock recovery handoff is active.");
+      }
+      await recoverDeadRecoveryClaimHandoff(recoveryClaim, existing, claimant, options);
+    }
+  }
+  throw new SafeProvisionError("Staging preparation lock recovery handoff could not be acquired safely.");
+}
+
 async function replaceDeadRecoveryClaim(
   recoveryClaim: string,
   existingClaim: PreparationLockOwner,
@@ -3049,28 +3337,55 @@ async function replaceDeadRecoveryClaim(
   let ownsQuarantine = false;
   let ownsTransitionOwner = false;
   let replacementInstalled = false;
+  let originalClaimUnlinked = false;
   let quarantineIdentity: RecoveryArtifactIdentity | undefined;
   let transitionOwnerIdentity: RecoveryArtifactIdentity | undefined;
+  let cleanupProtocolIncomplete = false;
+  let cleanupProtocolError: unknown;
+  const updateCleanupHandle = async (
+    record: RecoveryCleanupJournalRecord,
+    filesystemActiveClaim: PreparationLockOwner,
+  ) => {
+    assertSafe(Boolean(cleanupHandle), "Staging preparation lock recovery cleanup handle is missing.");
+    try {
+      const handle = cleanupHandle as RecoveryCleanupHandle;
+      handle.journal = await updateRecoveryCleanupJournal(
+        handle.journal,
+        record,
+        options,
+        async () => { await assertRecoveryCleanupElection(handle.election); },
+        async (installed) => {
+          await validateRecoveryCleanupJournalFilesystem(
+            installed,
+            handle.election,
+            recoveryClaim,
+            filesystemActiveClaim,
+          );
+          await assertRecoveryCleanupElection(handle.election);
+        },
+      );
+    } catch (error) {
+      cleanupProtocolIncomplete = true;
+      cleanupProtocolError = error;
+      throw error;
+    }
+  };
   try {
     if (cleanupHandle) {
-      cleanupHandle.journal = await updateRecoveryCleanupJournal(
-        cleanupHandle.journal,
+      await updateCleanupHandle(
         { ...cleanupHandle.journal.record, phase: "installing_successor" },
-        options,
-        async () => { await assertRecoveryCleanupElection(cleanupHandle?.election as RecoveryCleanupElection); },
+        existingClaim,
       );
     }
     transitionOwnerIdentity = await installRecoveryTransitionOwner(transitionOwnerPath, claimant, options);
     ownsTransitionOwner = true;
     if (cleanupHandle) {
-      cleanupHandle.journal = await updateRecoveryCleanupJournal(
-        cleanupHandle.journal,
+      await updateCleanupHandle(
         {
           ...cleanupHandle.journal.record,
           successorTransition: storedRecoveryArtifactIdentity(transitionOwnerIdentity),
         },
-        options,
-        async () => { await assertRecoveryCleanupElection(cleanupHandle?.election as RecoveryCleanupElection); },
+        existingClaim,
       );
     }
     const claimBeforeQuarantine = validatePreparationLockOwner(
@@ -3095,15 +3410,13 @@ async function replaceDeadRecoveryClaim(
       "Staging preparation lock recovery quarantine ownership metadata",
     );
     if (cleanupHandle) {
-      cleanupHandle.journal = await updateRecoveryCleanupJournal(
-        cleanupHandle.journal,
+      await updateCleanupHandle(
         {
           ...cleanupHandle.journal.record,
           phase: "successor_quarantined",
           successorQuarantine: storedRecoveryArtifactIdentity(quarantineIdentity),
         },
-        options,
-        async () => { await assertRecoveryCleanupElection(cleanupHandle?.election as RecoveryCleanupElection); },
+        existingClaim,
       );
     }
     await options?.afterRecoveryClaimQuarantined?.(quarantinePath);
@@ -3134,6 +3447,8 @@ async function replaceDeadRecoveryClaim(
         "A live staging preparation lock recovery claimant already exists.",
       );
     });
+    originalClaimUnlinked = true;
+    await options?.afterRecoveryClaimUnlinkedBeforeSuccessor?.(recoveryClaim);
     try {
       await writeFile(recoveryClaim, `${JSON.stringify(claimant, null, 2)}\n`, { flag: "wx", mode: 0o600 });
       replacementInstalled = true;
@@ -3153,8 +3468,24 @@ async function replaceDeadRecoveryClaim(
       throw new SafeProvisionError("Staging preparation lock recovery ownership changed during reclaim.");
     }
   } finally {
-    let cleanupFailed = false;
-    if (ownsQuarantine) {
+    let cleanupFailed = cleanupProtocolIncomplete;
+    if (originalClaimUnlinked && !replacementInstalled && !(await exists(recoveryClaim))) {
+      try {
+        await writeFile(recoveryClaim, `${JSON.stringify(claimant, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+        const restored = await readRecoveryArtifactIdentity(
+          recoveryClaim,
+          "Staging preparation lock recovery restored successor ownership",
+        );
+        assertSafe(
+          samePreparationLockOwner(restored.owner, claimant),
+          "Staging preparation lock recovery restored successor ownership is ambiguous.",
+        );
+        replacementInstalled = true;
+      } catch {
+        cleanupFailed = true;
+      }
+    }
+    if (!cleanupProtocolIncomplete && ownsQuarantine) {
       try {
         assertSafe(Boolean(quarantineIdentity), "Staging preparation lock recovery quarantine identity is missing.");
         await unlinkExactOwnedRecoveryArtifact(
@@ -3165,7 +3496,7 @@ async function replaceDeadRecoveryClaim(
         cleanupFailed = true;
       }
     }
-    if (ownsTransitionOwner && !replacementInstalled && !cleanupFailed) {
+    if (!cleanupProtocolIncomplete && ownsTransitionOwner && !replacementInstalled && !cleanupFailed) {
       try {
         assertSafe(Boolean(transitionOwnerIdentity), "Staging preparation lock recovery transition identity is missing.");
         await unlinkExactOwnedRecoveryArtifact(
@@ -3176,9 +3507,19 @@ async function replaceDeadRecoveryClaim(
         cleanupFailed = true;
       }
     }
-    if (cleanupHandle) {
+    if (cleanupHandle && !cleanupProtocolIncomplete) {
+      if (replacementInstalled && !cleanupFailed) {
+        try {
+          await updateCleanupHandle(
+            { ...cleanupHandle.journal.record, phase: "finalizing" },
+            claimant,
+          );
+        } catch {
+          cleanupFailed = true;
+        }
+      }
       let releaseIsSerialized = !cleanupFailed;
-      if (!releaseIsSerialized && ownsTransitionOwner && transitionOwnerIdentity) {
+      if (!cleanupProtocolIncomplete && !releaseIsSerialized && ownsTransitionOwner && transitionOwnerIdentity) {
         try {
           await assertRecoveryArtifactIdentity(transitionOwnerIdentity);
           releaseIsSerialized = true;
@@ -3189,13 +3530,15 @@ async function replaceDeadRecoveryClaim(
       if (releaseIsSerialized) {
         try {
           await releaseRecoveryCleanupElection(cleanupHandle.election, options);
-          await removeRecoveryCleanupJournal(cleanupHandle.journal);
+          await options?.afterRecoveryCleanupElectionReleased?.(cleanupHandle.journal.path);
+          await removeRecoveryCleanupJournal(cleanupHandle.journal, options, "journal");
         } catch {
           cleanupFailed = true;
         }
       }
     }
     if (cleanupFailed) {
+      if (cleanupProtocolIncomplete && cleanupProtocolError instanceof Error) throw cleanupProtocolError;
       throw new SafeProvisionError("Staging preparation lock recovery transition cleanup failed safely and may be retried.");
     }
   }
@@ -3278,6 +3621,8 @@ async function reclaimDeadPreparationLock(
   options: PrepareStagingOptions["preparationLock"],
 ) {
   const recoveryClaim = path.join(lockDirectory, "recovery-owner.json");
+  const recoveryHandoff = await acquireRecoveryClaimHandoff(recoveryClaim, claimant, options);
+  let recoveryHandoffReleased = false;
   let ownsRecoveryClaim = false;
   let lockQuarantined = false;
   let recoveryTransition: ReturnType<typeof recoveryQuarantinePaths> | undefined;
@@ -3305,6 +3650,8 @@ async function reclaimDeadPreparationLock(
       ownsRecoveryClaim = true;
       ownsRecoveryTransition = true;
     }
+    await releaseRecoveryClaimHandoff(recoveryHandoff);
+    recoveryHandoffReleased = true;
     await options?.afterRecoveryClaimAcquired?.();
     const currentOwner = validatePreparationLockOwner(
       await readJson(path.join(lockDirectory, "owner.json"), "Staging preparation lock ownership metadata"),
@@ -3351,6 +3698,16 @@ async function reclaimDeadPreparationLock(
     }
     await cleanupPreparationLockDirectory(quarantineDirectory);
   } catch (error) {
+    if (!recoveryHandoffReleased && await exists(recoveryClaim)) {
+      try {
+        await releaseRecoveryClaimHandoff(recoveryHandoff);
+        recoveryHandoffReleased = true;
+      } catch {
+        throw new SafeProvisionError(
+          "Staging preparation lock recovery failed and handoff ownership could not be released safely.",
+        );
+      }
+    }
     if (!lockQuarantined && recoveryTransition && await exists(recoveryTransition.quarantinePath)) {
       throw error;
     }
