@@ -105,12 +105,14 @@ import {
 } from "./platform/domain";
 import {
   defaultAppView,
+  defaultWorkspaceRoute,
   isAppViewAllowed,
   parseWorkspaceRoute,
   workspaceBusinessForSession,
   workspaceContextFromSearch,
   workspaceLocationForBusiness,
   workspaceRoute,
+  workspaceRouteForSession,
   type AppView,
 } from "./routing";
 
@@ -1570,11 +1572,12 @@ function AppShell() {
   const requestedView = parsedRoute?.view ?? "home";
   const googleProfileTab = parsedRoute?.googleProfileTab ?? "profile";
   const contentTab = parsedRoute?.contentTab ?? "create";
-  const settingsBillingTab = parsedRoute?.settingsBillingTab ?? "connections";
+  const parsedSettingsBillingTab = parsedRoute?.settingsBillingTab ?? "connections";
   const compactViewport = useMediaQuery("(max-width: 59.999rem)");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [addJobOpen, setAddJobOpen] = useState(false);
   const [session, setSession] = useState<SessionContext | null>(IS_DEMO_MODE ? OWNER_SESSION : null);
+  const settingsBillingTab = session?.businessRole === "billing" ? "billing" : parsedSettingsBillingTab;
   const [workspaceState, setWorkspaceState] = useState<WorkspaceLoadState>(IS_DEMO_MODE ? "authenticated" : "loading");
   const [workspaceError, setWorkspaceError] = useState("");
   const [workspaceNotice, setWorkspaceNotice] = useState<WorkspaceNotice | null>(null);
@@ -1619,20 +1622,23 @@ function AppShell() {
     nextView: AppView,
     context: { businessId?: string; locationId?: string; googleProfileTab?: "profile" | "reviews" | "requests-qr" | "posts-media"; contentTab?: "create" | "uploads" | "approvals" | "scheduled" | "published" | "failed"; settingsBillingTab?: "connections" | "billing"; replace?: boolean } = {},
   ) => {
+    const destinationContext = nextView === "settings-billing" && session?.businessRole === "billing"
+      ? { ...context, settingsBillingTab: "billing" as const }
+      : context;
     if (session?.role === "agency_admin" && !supportSession) {
-      navigate(workspaceRoute(nextView, context, location.search), { replace: context.replace });
+      navigate(workspaceRoute(nextView, destinationContext, location.search), { replace: destinationContext.replace });
       return;
     }
     const currentBusinessId = supportSession?.businessId ?? session?.businessId ?? routeContext.businessId ?? selectedBusinessId;
-    const businessId = context.businessId ?? currentBusinessId;
+    const businessId = destinationContext.businessId ?? currentBusinessId;
     const selectedBusiness = businesses.find((item) => item.id === businessId);
     const locationId = workspaceLocationForBusiness(
       routeContext,
       businessId,
-      context.locationId,
+      destinationContext.locationId,
       selectedBusiness?.locationId ?? selectedBusiness?.locationReports?.[0]?.id,
     );
-    navigate(workspaceRoute(nextView, { ...context, businessId, locationId }, location.search), { replace: context.replace });
+    navigate(workspaceRoute(nextView, { ...destinationContext, businessId, locationId }, location.search), { replace: destinationContext.replace });
   };
 
   useEffect(() => {
@@ -1841,7 +1847,7 @@ function AppShell() {
       ? requestedView
       : defaultAppView(session.role, Boolean(supportSession), session.businessRole);
     if (agencyPortfolioOnly) {
-      const canonicalRoute = workspaceRoute(resolvedView, routeContext, location.search);
+      const canonicalRoute = workspaceRouteForSession(resolvedView, session.businessRole, routeContext, location.search);
       if (`${location.pathname}${location.search}` !== canonicalRoute) {
         navigate(canonicalRoute, { replace: true });
       }
@@ -1857,7 +1863,7 @@ function AppShell() {
     const locationId = routeLocationBelongsToBusiness
       ? routeContext.locationId
       : selectedBusiness.locationId ?? selectedBusiness.locationReports?.[0]?.id;
-    const canonicalRoute = workspaceRoute(resolvedView, { ...routeContext, businessId, locationId }, location.search);
+    const canonicalRoute = workspaceRouteForSession(resolvedView, session.businessRole, { ...routeContext, businessId, locationId }, location.search);
     if (`${location.pathname}${location.search}` !== canonicalRoute) {
       navigate(canonicalRoute, { replace: true });
     }
@@ -1984,7 +1990,7 @@ function AppShell() {
       const signedInView = isAppViewAllowed(requestedView, workspace.session.role, false, workspace.session.businessRole)
         ? requestedView
         : defaultAppView(workspace.session.role, false, workspace.session.businessRole);
-      navigate(workspaceRoute(signedInView, {
+      navigate(workspaceRouteForSession(signedInView, workspace.session.businessRole, {
         businessId: signedInBusinessId,
         locationId,
       }), { replace: true });
@@ -2067,7 +2073,7 @@ function AppShell() {
     if (isAppViewAllowed(requestedView, session.role, Boolean(supportSession), session.businessRole)) return;
     const fallback = defaultAppView(session.role, Boolean(supportSession), session.businessRole);
     if (fallback === "agency") {
-      navigate(workspaceRoute(fallback), { replace: true });
+      navigate(defaultWorkspaceRoute(session.role, Boolean(supportSession), session.businessRole), { replace: true });
     } else {
       navigateToView(fallback, { replace: true });
     }
@@ -2083,7 +2089,7 @@ function AppShell() {
           <p>{workspaceError || "The selected tenant context could not be loaded."}</p>
           <div className="dialog-card__actions">
             <Button variant="secondary" onClick={() => window.location.reload()}>Retry</Button>
-            <Button onClick={() => navigate(workspaceRoute(defaultAppView(session.role, Boolean(supportSession), session.businessRole)), { replace: true })}>Open default workspace</Button>
+            <Button onClick={() => navigate(defaultWorkspaceRoute(session.role, Boolean(supportSession), session.businessRole), { replace: true })}>Open default workspace</Button>
           </div>
           <small>No account or business context was changed.</small>
         </section>
@@ -2174,8 +2180,8 @@ function AppShell() {
   const page = [...CLIENT_NAV, ...AGENCY_NAV].find((item) => item.id === view) ?? navItems[0];
   const descriptions: Record<AppView, string> = {
     home: "Action inbox, connection health, recent results, and allowance summary.",
-    "google-profile": "Profile updates, Google reviews, requests, QR codes, and media.",
-    content: "Create, approve, and track publishing work in one place.",
+    "google-profile": "Google connection status, current reviews, review requests, and QR details.",
+    content: "Content publishing availability and destination authorisation status.",
     reports: IS_DEMO_MODE ? "A simple monthly proof-of-value report." : "Current durable metrics and integration status for this tenant.",
     "settings-billing": "Connections, workspace settings, users, and billing.",
     agency: "Portfolio readiness, approvals, failures, and client allowance use.",
@@ -2474,7 +2480,7 @@ function AppShell() {
           {!agencyMode && canReadTenant && view === "google-profile" && <><WorkspaceContextBar business={business} locationId={selectedLocationId} onSelectLocation={(locationId) => navigateToView("google-profile", { businessId: business.id, locationId, googleProfileTab })} /><GoogleProfileView tab={googleProfileTab} onTabChange={(tab) => navigateToView("google-profile", { googleProfileTab: tab })}>{googleProfileTab === "reviews" ? <ReviewsView business={contextBusiness} reviews={reviews} /> : googleProfileTab === "requests-qr" ? <><RequestsView requests={requests} onAddJob={() => setAddJobOpen(true)} canConfigure={canConfigure} /><AutomationView business={contextBusiness} requests={requests} workflow={selectedWorkflow} onOpenIntegrations={() => navigateToView("settings-billing", { settingsBillingTab: "connections" })} />{qrCodesByBusiness[business.id]?.locationId === selectedLocationId ? <QrCodesView business={contextBusiness} record={qrCodesByBusiness[business.id]} /> : <section className="panel empty-state"><QrCode size={24} /><h2>No QR code for this location.</h2><p>Connect a verified Google review destination before generating location-specific artwork.</p><Button onClick={() => navigateToView("settings-billing", { settingsBillingTab: "connections" })}>Open connections</Button></section>}</> : googleProfileTab === "profile" ? <IntegrationsView business={contextBusiness} onConnect={() => void beginGoogleConnection()} canConfigure={canConfigure && !supportSession} services={services} servicesLoading={servicesLoading} /> : <section className="panel empty-state"><h2>Posts and media are not enabled for this workspace.</h2><p>No publishing capability is presented until its connected destination is authorised.</p></section>}</GoogleProfileView></>}
           {!agencyMode && canReadTenant && view === "content" && <><WorkspaceContextBar business={business} locationId={selectedLocationId} onSelectLocation={(locationId) => navigateToView("content", { businessId: business.id, locationId, contentTab })} /><ContentView tab={contentTab} onTabChange={(tab) => navigateToView("content", { contentTab: tab })} /></>}
           {!agencyMode && canReadTenant && view === "reports" && <ProductReportsView><ReportsView business={business} selectedBusiness={contextBusiness} /></ProductReportsView>}
-          {!agencyMode && view === "settings-billing" && <SettingsBillingView tab={settingsBillingTab} onTabChange={(tab) => navigateToView("settings-billing", { settingsBillingTab: tab })}>{settingsBillingTab === "connections" && canReadTenant ? <IntegrationsView business={contextBusiness} onConnect={() => void beginGoogleConnection()} canConfigure={canConfigure && !supportSession} services={services} servicesLoading={servicesLoading} /> : settingsBillingTab === "billing" && canReadTenantBilling ? <TeamBillingView business={business} canConfigure={canManageTenantBilling} canManageStripe={canManageStripeBilling} canViewTeamMembers={canConfigure} onSaveSmsPolicy={saveSmsOveragePolicy} onStartCheckout={startStripeCheckout} onOpenBillingPortal={openStripeBillingPortal} stripeCheckoutEnabled={stripeCheckoutEnabled} stripePortalEnabled={stripePortalEnabled} /> : null}</SettingsBillingView>}
+          {!agencyMode && view === "settings-billing" && <SettingsBillingView tab={settingsBillingTab} canAccessConnections={session.businessRole !== "billing" && canReadTenant} onTabChange={(tab) => navigateToView("settings-billing", { settingsBillingTab: tab })}>{settingsBillingTab === "connections" && canReadTenant ? <IntegrationsView business={contextBusiness} onConnect={() => void beginGoogleConnection()} canConfigure={canConfigure && !supportSession} services={services} servicesLoading={servicesLoading} /> : settingsBillingTab === "billing" && canReadTenantBilling ? <TeamBillingView business={business} canConfigure={canManageTenantBilling} canManageStripe={canManageStripeBilling} canViewTeamMembers={canConfigure} onSaveSmsPolicy={saveSmsOveragePolicy} onStartCheckout={startStripeCheckout} onOpenBillingPortal={openStripeBillingPortal} stripeCheckoutEnabled={stripeCheckoutEnabled} stripePortalEnabled={stripePortalEnabled} /> : null}</SettingsBillingView>}
           {!agencyMode && canReadTenant && view === "home" && <HomeView><GrowthSuite
             business={business}
             businesses={businesses}

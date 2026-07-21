@@ -8,7 +8,9 @@ import { createServer } from "vite";
 import {
   appViewFromPath,
   defaultAppView,
+  defaultWorkspaceRoute,
   isAppViewAllowed,
+  legacyRedirectDecision,
   parseWorkspaceRoute,
   isPublicReviewPreview,
   publicReviewPreviewUrl,
@@ -93,10 +95,14 @@ test("role routing keeps Agency, operations, and tenant modules separated", () =
   assert.equal(isAppViewAllowed("settings-billing", "business_owner", false, "operator"), false);
   assert.equal(isAppViewAllowed("google-profile", "business_owner", false, "billing"), false);
   assert.equal(isAppViewAllowed("settings-billing", "business_owner", false, "billing"), true);
+  assert.equal(defaultWorkspaceRoute("business_owner", false, "billing"), "/app/settings-billing/billing");
 });
 
-test("legacy redirects retain context and unrelated query parameters without looping", () => {
+test("every legacy redirect retains context, replaces history, and cannot loop", () => {
   const cases = [
+    ["/app", "/app/home"],
+    ["/app/growth", "/app/home"],
+    ["/workspace", "/app/home"],
     ["/app/reviews", "/app/google-profile/reviews"],
     ["/app/requests", "/app/google-profile/requests-qr"],
     ["/app/automation", "/app/google-profile/requests-qr"],
@@ -111,16 +117,38 @@ test("legacy redirects retain context and unrelated query parameters without loo
   const search = "?business=business-1&location=location-2&source=bookmark";
 
   for (const [legacyPath, canonicalPath] of cases) {
-    const route = parseWorkspaceRoute(legacyPath, search);
-    assert.ok(route?.legacy, `${legacyPath} should be a redirect`);
-    const canonical = workspaceRoute(route.view, route, search);
+    const decision = legacyRedirectDecision(legacyPath, search);
+    assert.ok(decision, `${legacyPath} should be a redirect`);
+    assert.equal(decision.replace, true, `${legacyPath} must replace history`);
+    const canonical = decision.to;
     assert.equal(canonical, `${canonicalPath}${search}`);
     assert.equal(parseWorkspaceRoute(canonicalPath, search)?.legacy, false, `${canonicalPath} must not redirect again`);
   }
-
-  const redirectSource = readFileSync(new URL("../src/features/shared/LegacyRouteRedirect.tsx", import.meta.url), "utf8");
-  assert.match(redirectSource, /<Navigate[^>]*\breplace\b/u);
   assert.equal(appViewFromPath("/r/public-review-token"), undefined);
+});
+
+test("Home module cards retain their exact nested destinations", async (t) => {
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const vite = await createServer({ appType: "custom", configFile: false, logLevel: "silent", root, server: { middlewareMode: true } });
+  t.after(() => vite.close());
+  const { HOME_MODULES } = await vite.ssrLoadModule("/src/growth/GrowthSuite.tsx");
+  const routeFor = (title: string) => {
+    const card = HOME_MODULES.find((candidate) => candidate.title === title);
+    assert.ok(card, `missing ${title} card`);
+    return workspaceRoute(card.view, card.routeContext);
+  };
+  assert.equal(routeFor("Review Anchor"), "/app/google-profile/reviews");
+  assert.equal(routeFor("Customer requests"), "/app/google-profile/requests-qr");
+  assert.equal(routeFor("Review workflow"), "/app/google-profile/requests-qr");
+  assert.equal(routeFor("Review QR codes"), "/app/google-profile/requests-qr");
+  assert.equal(routeFor("Connected services"), "/app/settings-billing/connections");
+  assert.equal(routeFor("Account and billing"), "/app/settings-billing/billing");
+});
+
+test("billing tabs expose selected state and omit inaccessible Connections", () => {
+  const settingsSource = readFileSync(new URL("../src/features/settings/SettingsBillingView.tsx", import.meta.url), "utf8");
+  assert.match(settingsSource, /aria-current=\{tab === "connections" \? "page" : undefined\}/u);
+  assert.match(settingsSource, /canAccessConnections/u);
 });
 
 test("QR test links use a non-recording preview context", () => {
@@ -171,8 +199,9 @@ test("billing-only rendering hides every team member name, role and initial", as
   });
   t.after(() => vite.close());
 
-  const [{ TeamBillingView }, { BUSINESSES }] = await Promise.all([
+  const [{ TeamBillingView }, { SettingsBillingView }, { BUSINESSES }] = await Promise.all([
     vite.ssrLoadModule("/src/platform/AgencyViews.tsx"),
+    vite.ssrLoadModule("/src/features/settings/SettingsBillingView.tsx"),
     vite.ssrLoadModule("/src/platform/domain.ts"),
   ]);
   const business = BUSINESSES[0];
@@ -204,4 +233,12 @@ test("billing-only rendering hides every team member name, role and initial", as
     assert.equal(tenantManagerMarkup.includes(member.role), true, `must show role ${member.role}`);
     assert.equal(tenantManagerMarkup.includes(member.initials), true, `must show initials ${member.initials}`);
   }
+
+  const billingOnlyTabs = renderToStaticMarkup(createElement(SettingsBillingView, {
+    tab: "billing",
+    canAccessConnections: false,
+    onTabChange: () => undefined,
+  }, createElement("p", null, "Billing panel")));
+  assert.equal(billingOnlyTabs.includes("Connections"), false);
+  assert.match(billingOnlyTabs, /aria-current="page"/u);
 });

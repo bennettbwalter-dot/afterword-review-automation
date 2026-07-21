@@ -27,6 +27,8 @@ export type ParsedWorkspaceRoute = WorkspaceRouteContext & {
   legacy: boolean;
 };
 
+export type LegacyRedirectDecision = { to: string; replace: true };
+
 export const APP_VIEW_PATHS: Record<AppView, string> = {
   home: "/app/home",
   "google-profile": "/app/google-profile",
@@ -98,6 +100,29 @@ export function defaultAppView(role?: ActorRole, hasSupportSession = false, busi
   return "home";
 }
 
+export function defaultWorkspaceRoute(
+  role?: ActorRole,
+  hasSupportSession = false,
+  businessRole?: BusinessRole,
+  context: WorkspaceRouteContext = {},
+  search = "",
+) {
+  const view = defaultAppView(role, hasSupportSession, businessRole);
+  return workspaceRouteForSession(view, businessRole, context, search);
+}
+
+export function workspaceRouteForSession(
+  view: AppView,
+  businessRole?: BusinessRole,
+  context: WorkspaceRouteContext = {},
+  search = "",
+) {
+  return workspaceRoute(view, {
+    ...context,
+    ...(view === "settings-billing" && businessRole === "billing" ? { settingsBillingTab: "billing" } : {}),
+  }, search);
+}
+
 export function isAppViewAllowed(view: AppView, role: ActorRole, hasSupportSession = false, businessRole?: BusinessRole) {
   if (role === "agency_admin" && !hasSupportSession) return AGENCY_APP_VIEWS.includes(view);
   if (role === "business_owner" && businessRole === "billing") return view === "settings-billing";
@@ -116,6 +141,12 @@ export function workspaceRoute(view: AppView, context: WorkspaceRouteContext = {
   if (context.locationId) params.set("location", context.locationId); else params.delete("location");
   const serialized = params.toString();
   return `${path}${serialized ? `?${serialized}` : ""}`;
+}
+
+export function legacyRedirectDecision(pathname: string, search = ""): LegacyRedirectDecision | undefined {
+  const route = parseWorkspaceRoute(pathname, search);
+  if (!route?.legacy) return undefined;
+  return { to: workspaceRoute(route.view, route, search), replace: true };
 }
 
 export function workspaceLocationForBusiness(routeContext: WorkspaceRouteContext, businessId: string | undefined, requestedLocationId: string | undefined, defaultLocationId: string | undefined) {

@@ -21,7 +21,7 @@ import type {
   SessionContext,
 } from "../platform/domain";
 import { IS_DEMO_MODE } from "../platform/api";
-import { isAppViewAllowed, type AppView } from "../routing";
+import { isAppViewAllowed, type AppView, type WorkspaceRouteContext } from "../routing";
 
 type GrowthSuiteProps = {
   business: BusinessAccount;
@@ -34,7 +34,7 @@ type GrowthSuiteProps = {
   canManageBilling: boolean;
   selectedLocationId?: string;
   onSelectLocation: (locationId: string) => void;
-  onNavigate: (view: AppView) => void;
+  onNavigate: (view: AppView, context?: WorkspaceRouteContext) => void;
   onAddJob: () => void;
 };
 
@@ -44,15 +44,17 @@ type ModuleCard = {
   detail: string;
   action: string;
   icon: typeof Star;
+  routeContext?: WorkspaceRouteContext;
 };
 
-const MODULES: ModuleCard[] = [
+export const HOME_MODULES: ModuleCard[] = [
   {
     view: "google-profile",
     title: "Review Anchor",
     detail: "Monitor Google reviews and owner-reply status for this location.",
     action: "Open Reviews",
     icon: Star,
+    routeContext: { googleProfileTab: "reviews" },
   },
   {
     view: "google-profile",
@@ -60,6 +62,7 @@ const MODULES: ModuleCard[] = [
     detail: "Track completed jobs, consent evidence, delivery and conversions.",
     action: "Open Requests",
     icon: UsersRound,
+    routeContext: { googleProfileTab: "requests-qr" },
   },
   {
     view: "google-profile",
@@ -67,6 +70,7 @@ const MODULES: ModuleCard[] = [
     detail: "See the neutral request sequence and its protected sending state.",
     action: "Open Workflow",
     icon: Activity,
+    routeContext: { googleProfileTab: "requests-qr" },
   },
   {
     view: "google-profile",
@@ -74,6 +78,7 @@ const MODULES: ModuleCard[] = [
     detail: "Use the permanent Google review destination and scan reporting.",
     action: "Open QR Codes",
     icon: QrCode,
+    routeContext: { googleProfileTab: "requests-qr" },
   },
   {
     view: "reports",
@@ -88,6 +93,7 @@ const MODULES: ModuleCard[] = [
     detail: "Manage Google, messaging and completed-job intake readiness.",
     action: "Open Integrations",
     icon: Link2,
+    routeContext: { settingsBillingTab: "connections" },
   },
   {
     view: "settings-billing",
@@ -95,6 +101,7 @@ const MODULES: ModuleCard[] = [
     detail: "Use the same tenant members, plan and SMS allowance as Review Anchor.",
     action: "Open Account",
     icon: Building2,
+    routeContext: { settingsBillingTab: "billing" },
   },
 ];
 
@@ -179,7 +186,7 @@ export default function GrowthSuite(props: GrowthSuiteProps) {
   const locationRequests = requests.filter((request) => request.locationId === effectiveLocationId);
   const locationReviews = reviews.filter((review) => review.locationId === effectiveLocationId);
   const latestReviews = locationReviews.slice(0, 3);
-  const availableModules = MODULES.filter((module) => (
+  const availableModules = HOME_MODULES.filter((module) => (
     isAppViewAllowed(module.view, session.role, session.role === "agency_admin", session.businessRole)
   ));
 
@@ -258,7 +265,7 @@ export default function GrowthSuite(props: GrowthSuiteProps) {
                 <span className="growth-module-card__icon"><Icon size={20} /></span>
                 <h4>{module.title}</h4>
                 <p>{module.detail}</p>
-                <button type="button" onClick={() => onNavigate(module.view)}>{module.action} <ArrowRight size={15} /></button>
+                <button type="button" onClick={() => onNavigate(module.view, module.routeContext)}>{module.action} <ArrowRight size={15} /></button>
               </article>
             );
           })}

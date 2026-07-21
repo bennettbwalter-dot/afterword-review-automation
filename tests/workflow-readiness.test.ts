@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { isGoogleReviewDestinationDispatchable } from "../server/repository/postgres.js";
 
 const baseEvidence = {
@@ -34,21 +36,16 @@ test("Google review destination readiness fails closed on missing, invalid or di
 });
 
 test("the shipped product source does not advertise retired product surfaces", () => {
-  const productSource = [
-    "src/App.tsx",
-    "src/growth/GrowthSuite.tsx",
-    "src/features/home/HomeView.tsx",
-    "src/features/google-profile/GoogleProfileView.tsx",
-    "src/features/content/ContentView.tsx",
-    "src/features/reports/ReportsView.tsx",
-    "src/features/settings/SettingsBillingView.tsx",
-    "src/features/agency/AgencyView.tsx",
-  ].map((path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8")).join("\n").toLowerCase();
+  const root = fileURLToPath(new URL("../src", import.meta.url));
+  const shippedUiFiles = readdirSync(root, { recursive: true })
+    .map((entry) => join(root, entry))
+    .filter((path) => /\.(?:tsx?|css)$/u.test(path));
+  const productSource = shippedUiFiles.map((path) => readFileSync(path, "utf8")).join("\n").toLowerCase().replace(/[\s_-]+/gu, "");
 
   for (const retiredClaim of [
-    "heatmap", "keyword tracking", "ai ranking audit", "citation", "directory", "website widget",
-    "white label", "geotagging", "image dripping", "autonomous strategy", "custom permission builder",
-    "companycam", "zapier", "professional editor",
+    "heatmap", "keywordtracking", "airankingaudit", "ranktracker", "citation", "directoryintegration",
+    "websitewidget", "whitelabel", "geotagging", "imagedripping", "autonomousstrategy", "custompermission",
+    "companycam", "zapier", "professionaleditor", "professionalvideoeditor",
   ]) {
     assert.equal(productSource.includes(retiredClaim), false, `must not advertise ${retiredClaim}`);
   }
