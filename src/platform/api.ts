@@ -225,6 +225,11 @@ function normalizeWorkspace(payload: unknown): WorkspacePayload {
 }
 
 export const platformApi = {
+  async acceptAgencyGrant(grantId: string) {
+    const payload = unwrapData(await request<unknown>(`/api/v1/agency-grants/${encodeURIComponent(grantId)}/accept`, { method: "POST" }));
+    if (!isRecord(payload) || typeof payload.id !== "string") throw new ApiError("The server returned an invalid agency grant.", 502, "INVALID_AGENCY_GRANT");
+    return payload;
+  },
   async issueAgencyGrantClaim(grantId: string, email: string, expiresInMinutes = 1_440) {
     const payload = unwrapData(await request<unknown>(`/api/v1/agency-grants/${encodeURIComponent(grantId)}/claims`, { method: "POST", body: JSON.stringify({ email, expiresInMinutes }) }));
     if (!isRecord(payload) || typeof payload.claimUrl !== "string" || typeof payload.expiresAt !== "string") throw new ApiError("The server returned an invalid agency claim.", 502, "INVALID_AGENCY_CLAIM");
