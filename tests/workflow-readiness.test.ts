@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -59,5 +59,24 @@ test("workspace headers describe only currently rendered product surfaces", () =
   const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8").toLowerCase();
   for (const unsupportedClaim of ["action inbox", "allowance summary", "approvals, failures, and client allowance use"]) {
     assert.equal(appSource.includes(unsupportedClaim), false, `must not claim ${unsupportedClaim}`);
+  }
+});
+
+test("external feasibility evidence records a dated owner decision and immutable revision", () => {
+  const evidenceRoot = fileURLToPath(new URL("../docs/evidence", import.meta.url));
+  const requiredEvidence = [
+    "mobilewan-feasibility.md",
+    "private-storage-feasibility.md",
+    "platform-capability-readiness.md",
+    "licensing-and-moderation-readiness.md",
+  ];
+
+  for (const evidenceFile of requiredEvidence) {
+    const path = join(evidenceRoot, evidenceFile);
+    assert.equal(existsSync(path), true, `missing ${evidenceFile}`);
+    const contents = readFileSync(path, "utf8");
+    for (const requiredField of ["Decision", "Date", "Immutable revision", "Owner", "State: blocked"]) {
+      assert.match(contents, new RegExp(requiredField, "i"), `${evidenceFile} must include ${requiredField}`);
+    }
   }
 });
