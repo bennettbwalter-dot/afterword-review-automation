@@ -105,5 +105,13 @@ test("clients can immediately revoke their own selected business grant", async (
   const routes = await readFile(path.resolve("server", "routes", "agency-grants.ts"), "utf8");
   assert.match(selector, /revokeAgencyGrantAsCurrentClient\(activeGrant\.id, activeGrant\.businessId\)/);
   assert.match(selector, /Revoke agency access/);
-  assert.match(routes, /revoke-as-client[\s\S]+actor\.businessId !== businessId/i);
+  assert.match(routes, /revoke-as-client[\s\S]+revokeCurrentClientAgencyGrant/i);
+});
+
+test("single-location claims stage consent and replay refuses revoked or expired access", async () => {
+  const selector = await readFile(path.resolve("src", "features", "agency", "ClientLocationSelector.tsx"), "utf8");
+  const schema = await readFile(path.resolve("database", "migrations", "011_agency_client_grants.sql"), "utf8");
+  assert.match(selector, /scopes\.length === 1\) \{ setSelected\(scopes\[0\]!\.locationId\); setPending\(scopes\[0\]!\); \}/);
+  assert.match(schema, /claim\.selected_grant_id is not null and grant\.status='active'/i);
+  assert.match(schema, /selected agency grant is no longer active/i);
 });

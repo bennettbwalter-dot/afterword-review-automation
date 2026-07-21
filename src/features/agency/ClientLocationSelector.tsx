@@ -9,7 +9,7 @@ export function ClientLocationSelector({ claimToken, onSelect }: { claimToken?: 
   const [activeGrant, setActiveGrant] = useState<{ id: string; businessId: string }>();
   const token = claimToken ?? new URLSearchParams(window.location.search).get("claim") ?? "";
   useEffect(() => { if (!token) { setError("This client claim is unavailable."); return; } void platformApi.consumeAgencyClientAccessClaim(token).then(() => platformApi.listAgencyClientAccessLocations(token)).then(setScopes).catch((caught) => setError(caught instanceof Error ? caught.message : "This client claim is unavailable.")); }, [token]);
-  useEffect(() => { if (scopes.length === 1) setSelected(scopes[0]!.locationId); }, [scopes]);
+  useEffect(() => { if (scopes.length === 1) { setSelected(scopes[0]!.locationId); setPending(scopes[0]!); } }, [scopes]);
   if (error) return <p role="alert">{error}</p>;
   const revoke = async () => {
     if (!activeGrant) return;

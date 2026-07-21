@@ -208,7 +208,7 @@ language sql stable security definer set search_path=pg_catalog as $$
  join public.agency_client_grants grant on grant.id=claim.selected_grant_id
  join public.businesses business on business.id=grant.business_id
  join public.locations location on location.id=grant.location_id
- where claim.token_hash=p_token_hash and claim.consumed_by_user_id=app_private.current_user_id() and claim.selected_grant_id is not null
+ where claim.token_hash=p_token_hash and claim.consumed_by_user_id=app_private.current_user_id() and claim.selected_grant_id is not null and grant.status='active' and (grant.expires_at is null or grant.expires_at>statement_timestamp())
  union all
  select business.id,business.name,location.id,location.name,claim.permissions from app_private.agency_client_access_claims claim
  join public.business_memberships membership on membership.user_id=app_private.current_user_id() and membership.status='active' and membership.role::text in ('owner','admin')
@@ -225,7 +225,7 @@ begin
  perform app_private.reject_agency_grant_support_mutation();
  select * into v_claim from app_private.agency_client_access_claims claim where claim.token_hash=p_token_hash and claim.consumed_by_user_id=app_private.current_user_id() and claim.expires_at>statement_timestamp() for update; get diagnostics v_found = row_count;
  if v_found<>1 then raise exception 'client claim is unavailable'; end if;
- if v_claim.selected_grant_id is not null then select * into v_grant from public.agency_client_grants where id=v_claim.selected_grant_id; return v_grant; end if;
+ if v_claim.selected_grant_id is not null then select * into v_grant from public.agency_client_grants where id=v_claim.selected_grant_id and status='active' and (expires_at is null or expires_at>statement_timestamp()); if not found then raise exception 'selected agency grant is no longer active'; end if; return v_grant; end if;
  select membership.business_id into v_business from public.business_memberships membership join public.locations location on location.business_id=membership.business_id and location.id=p_location_id and location.archived_at is null where membership.user_id=app_private.current_user_id() and membership.status='active' and membership.role::text in ('owner','admin'); get diagnostics v_found = row_count;
  if v_found<>1 then raise exception 'selected location is not a direct client location'; end if;
  insert into public.agency_client_grants(agency_id,business_id,location_id,status,permissions,self_approver_user_id,video_soft_monthly_cap,video_hard_monthly_cap,requested_by_user_id,accepted_by_user_id,accepted_at,expires_at) values(v_claim.agency_id,v_business,p_location_id,'active',v_claim.permissions,v_claim.self_approver_user_id,v_claim.video_soft_monthly_cap,v_claim.video_hard_monthly_cap,v_claim.issued_by_user_id,app_private.current_user_id(),statement_timestamp(),v_claim.grant_expires_at) returning * into v_grant;
