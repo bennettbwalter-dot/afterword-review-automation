@@ -1,5 +1,9 @@
-export type ActorRole = "business_owner" | "agency_admin";
-export type BusinessRole = "owner" | "admin" | "operator" | "viewer" | "billing";
+export type PlatformRole = "business_owner" | "agency_admin" | "agency_user";
+// Retain this alias until presentation callers can adopt the platform name.
+export type ActorRole = PlatformRole;
+export type ProductRole = "owner" | "staff" | "client_approver";
+export type AgencyRole = "owner" | "admin" | "operator" | "support";
+export type BusinessRole = "owner" | "admin" | "operator" | "approver" | "viewer" | "billing";
 export type SupportScope = "view" | "configuration";
 export type Channel = "SMS" | "Email";
 export type RequestStatus = "Queued" | "Delivered" | "Clicked" | "Reviewed" | "Opted out" | "Blocked";
@@ -28,6 +32,8 @@ export interface SessionContext {
   userId: string;
   userName: string;
   role: ActorRole;
+  productRole?: ProductRole;
+  agencyRole?: AgencyRole;
   businessRole?: BusinessRole;
   businessId?: string;
   mfaVerified: boolean;
@@ -250,15 +256,29 @@ const ROLE_PERMISSIONS: Record<ActorRole, ReadonlySet<Permission>> = {
     "support.start",
     "support.configure",
   ]),
+  agency_user: new Set(),
 };
 
 const BUSINESS_ROLE_PERMISSIONS: Record<BusinessRole, ReadonlySet<Permission>> = {
   owner: ROLE_PERMISSIONS.business_owner,
   admin: ROLE_PERMISSIONS.business_owner,
   operator: new Set(["tenant.read"]),
+  approver: new Set(),
   viewer: new Set(["tenant.read"]),
   billing: new Set(["billing.manage"]),
 };
+
+export function projectProductRole(input: { businessRole?: BusinessRole; agencyRole?: AgencyRole }): ProductRole | undefined {
+  if (input.agencyRole) {
+    if (input.agencyRole === "owner" || input.agencyRole === "admin") return "owner";
+    if (input.agencyRole === "operator") return "staff";
+    return undefined;
+  }
+  if (input.businessRole === "owner" || input.businessRole === "admin") return "owner";
+  if (input.businessRole === "operator") return "staff";
+  if (input.businessRole === "approver") return "client_approver";
+  return undefined;
+}
 
 export function hasPermission(session: SessionContext, permission: Permission) {
   if (session.role === "business_owner") {
@@ -322,8 +342,11 @@ export function startSupportSession(
   input: { businessId: string; reason: string; scope: SupportScope; durationMinutes: 15 | 30 | 60 },
   now = new Date(),
 ): SupportSession {
-  if (actor.role !== "agency_admin" || !hasPermission(actor, "support.start")) {
-    throw new Error("Only an agency administrator can start a support session.");
+  const canStartSupport = actor.agencyRole === "owner"
+    || actor.agencyRole === "admin"
+    || actor.agencyRole === "support";
+  if (!canStartSupport) {
+    throw new Error("Only an agency administrator or support member can start a support session.");
   }
   if (!actor.mfaVerified) throw new Error("Agency MFA is required.");
   if (input.reason.trim().length < 12) throw new Error("Add a support reason or ticket reference.");
@@ -693,6 +716,8 @@ export const ADMIN_SESSION: SessionContext = {
   userId: "user_admin_001",
   userName: "Maya Chen",
   role: "agency_admin",
+  agencyRole: "admin",
+  productRole: "owner",
   mfaVerified: true,
   stepUpVerifiedAt: "2026-07-16T11:55:00.000Z",
 };

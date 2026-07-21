@@ -1,5 +1,7 @@
-export type PlatformRole = "business_owner" | "agency_admin";
-export type BusinessRole = "owner" | "admin" | "operator" | "viewer" | "billing";
+export type PlatformRole = "business_owner" | "agency_admin" | "agency_user";
+export type ProductRole = "owner" | "staff" | "client_approver";
+export type AgencyRole = "owner" | "admin" | "operator" | "support";
+export type BusinessRole = "owner" | "admin" | "operator" | "approver" | "viewer" | "billing";
 export type SupportScope = "view" | "configuration";
 export type SmsOveragePolicy = "auto_top_up" | "pause_sms";
 
@@ -70,6 +72,8 @@ export interface ActorContext {
   userName: string;
   email: string;
   role: PlatformRole;
+  productRole?: ProductRole;
+  agencyRole?: AgencyRole;
   businessRole?: BusinessRole;
   businessId?: string;
   agencyId?: string;

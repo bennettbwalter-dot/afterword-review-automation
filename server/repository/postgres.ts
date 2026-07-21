@@ -5,6 +5,7 @@ import { inTransaction, setActorContext } from "../db.js";
 import { decryptField, encryptField, hashDestination } from "../security/crypto.js";
 import type {
   ActorContext,
+  AgencyRole,
   AuthCredential,
   BusinessRole,
   CompletedJobInput,
@@ -18,6 +19,8 @@ import type {
   MessageJob,
   MessagePayload,
   PlatformRepository,
+  PlatformRole,
+  ProductRole,
   PublicQrScanInput,
   PublicReviewFlow,
   ReserveSmsSegmentsInput,
@@ -64,6 +67,22 @@ function googleIntegrationState(health: unknown) {
   if (value === "provider_unavailable" || value === "failing") return { status: "Sync failing", tone: "danger" as const };
   if (value === "disabled") return { status: "Disconnected", tone: "muted" as const };
   return { status: "Configuration required", tone: "warning" as const };
+}
+
+const PLATFORM_ROLES = new Set<PlatformRole>(["business_owner", "agency_admin", "agency_user"]);
+const PRODUCT_ROLES = new Set<ProductRole>(["owner", "staff", "client_approver"]);
+const AGENCY_ROLES = new Set<AgencyRole>(["owner", "admin", "operator", "support"]);
+const BUSINESS_ROLES = new Set<BusinessRole>(["owner", "admin", "operator", "approver", "viewer", "billing"]);
+
+function asKnownRole<T extends string>(value: unknown, allowed: ReadonlySet<T>): T | undefined {
+  return typeof value === "string" && allowed.has(value as T) ? value as T : undefined;
+}
+
+function projectBusinessProductRole(role: BusinessRole | undefined): ProductRole | undefined {
+  if (role === "owner" || role === "admin") return "owner";
+  if (role === "operator") return "staff";
+  if (role === "approver") return "client_approver";
+  return undefined;
 }
 
 const GOOGLE_DISPATCH_BLOCKED_HEALTH = new Set([
@@ -172,12 +191,19 @@ export class PostgresRepository implements PlatformRepository {
     const result = await this.auth().query("select * from app_private.resolve_auth_session_with_role($1)", [tokenHash]);
     const row = result.rows[0];
     if (!row) return null;
+    const role = asKnownRole(row.platform_role, PLATFORM_ROLES);
+    if (!role) return null;
+    const agencyRole = asKnownRole(row.agency_role, AGENCY_ROLES);
+    const businessRole = asKnownRole(row.business_role, BUSINESS_ROLES);
+    const productRole = asKnownRole(row.product_role, PRODUCT_ROLES);
     return {
       userId: row.user_id,
       userName: row.display_name,
       email: row.email,
-      role: row.platform_role,
-      businessRole: row.business_role ?? undefined,
+      role,
+      productRole,
+      agencyRole,
+      businessRole,
       businessId: row.business_id ?? undefined,
       agencyId: row.agency_id ?? undefined,
       mfaVerified: Boolean(row.mfa_verified_at),
@@ -388,7 +414,7 @@ export class PostgresRepository implements PlatformRepository {
               as can_manage_stripe_billing
         `, [requestedBusinessId, requestedLocationId ?? null]);
         const accessRow = accessResult.rows[0];
-        selectedBusinessRole = accessRow?.business_role as BusinessRole | undefined;
+        selectedBusinessRole = asKnownRole(accessRow?.business_role, BUSINESS_ROLES);
         workspaceAccess = {
           businessId: requestedBusinessId,
           locationId: requestedLocationId ?? undefined,
@@ -694,6 +720,10 @@ export class PostgresRepository implements PlatformRepository {
         userName: actor.userName,
         email: actor.email,
         role: actor.role,
+        productRole: actor.role === "business_owner"
+          ? projectBusinessProductRole(selectedBusinessRole)
+          : actor.productRole,
+        agencyRole: actor.agencyRole,
         businessRole: actor.role === "business_owner" ? selectedBusinessRole : actor.businessRole,
         businessId: actor.role === "business_owner" ? requestedBusinessId : actor.businessId,
         agencyId: actor.agencyId,

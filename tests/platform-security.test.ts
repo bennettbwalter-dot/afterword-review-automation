@@ -12,6 +12,7 @@ import {
   canReadTenantData,
   isSupportSessionActive,
   makeAuditEvent,
+  projectProductRole,
   startSupportSession,
   validateNeutralReviewTemplate,
   type SessionContext,
@@ -43,6 +44,43 @@ test("business membership roles fail closed before database authorisation", () =
   assert.equal(canConfigureTenant(session("billing"), "business_123", null, now), false);
   assert.equal(canManageBilling(session("billing"), "business_123"), true);
   assert.equal(canManageBilling(session("billing"), "business_201"), false);
+});
+
+test("content roles project narrowly without widening legacy membership access", () => {
+  assert.equal(projectProductRole({ businessRole: "owner" }), "owner");
+  assert.equal(projectProductRole({ businessRole: "admin" }), "owner");
+  assert.equal(projectProductRole({ businessRole: "operator" }), "staff");
+  assert.equal(projectProductRole({ businessRole: "approver" }), "client_approver");
+  assert.equal(projectProductRole({ agencyRole: "owner" }), "owner");
+  assert.equal(projectProductRole({ agencyRole: "admin" }), "owner");
+  assert.equal(projectProductRole({ agencyRole: "operator" }), "staff");
+  assert.equal(projectProductRole({ businessRole: "viewer" }), undefined);
+  assert.equal(projectProductRole({ businessRole: "billing" }), undefined);
+  assert.equal(projectProductRole({ agencyRole: "support" }), undefined);
+
+  const approver: SessionContext = { ...OWNER_SESSION, businessRole: "approver" };
+  assert.equal(canReadTenantData(approver, "business_123", null, now), false);
+  assert.equal(canConfigureTenant(approver, "business_123", null, now), false);
+  assert.equal(canManageBilling(approver, "business_123"), false);
+});
+
+test("agency operators cannot create support sessions", () => {
+  const operator: SessionContext = {
+    ...ADMIN_SESSION,
+    role: "agency_user",
+    agencyRole: "operator",
+  };
+  assert.throws(
+    () => startSupportSession(operator, { businessId: "business_123", reason: "SUP-187 operator attempt", scope: "view", durationMinutes: 15 }, now),
+    /agency administrator or support member/i,
+  );
+});
+
+test("billing membership is limited to Settings and Billing", () => {
+  const billing: SessionContext = { ...OWNER_SESSION, businessRole: "billing" };
+  assert.equal(canManageBilling(billing, "business_123"), true);
+  assert.equal(canReadTenantData(billing, "business_123", null, now), false);
+  assert.equal(canConfigureTenant(billing, "business_123", null, now), false);
 });
 
 test("agency portfolio access does not silently grant tenant data access", () => {

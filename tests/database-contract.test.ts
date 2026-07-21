@@ -48,6 +48,30 @@ test("authenticated sessions expose only an unambiguous initial tenant role with
   assert.doesNotMatch(schema, /drop\s+function\s+app_private\.resolve_auth_session/i);
 });
 
+test("content-role migration is forward-only and keeps role projections fail closed", async () => {
+  const schema = await readFile(
+    path.resolve("database", "migrations", "009_add_content_roles.sql"),
+    "utf8",
+  );
+  const databaseTest = await readFile(path.resolve("database", "tests", "004_content_roles.sql"), "utf8");
+
+  assert.match(schema, /alter\s+type\s+public\.agency_role\s+add\s+value\s+if\s+not\s+exists\s+'operator'/i);
+  assert.match(schema, /alter\s+type\s+public\.business_role\s+add\s+value\s+if\s+not\s+exists\s+'approver'/i);
+  assert.doesNotMatch(schema, /drop\s+type\s+public\.(?:agency_role|business_role)/i);
+  assert.match(schema, /create\s+or\s+replace\s+function\s+app_private\.resolve_auth_session_with_role\(p_token_hash\s+bytea\)/i);
+  assert.match(schema, /membership\.role::text\s+in\s*\('owner',\s*'admin',\s*'operator',\s*'support'\)/i);
+  assert.match(schema, /when\s+agency_membership\.role::text\s*=\s*'operator'\s+then\s+'agency_user'/i);
+  assert.match(schema, /when\s+business_membership\.role::text\s*=\s*'approver'\s+then\s+'client_approver'/i);
+  assert.match(schema, /active_business_membership\.status\s*=\s*'active'/i);
+  assert.match(schema, /set\s+search_path\s*=\s+pg_catalog/i);
+  assert.match(schema, /revoke\s+all\s+on\s+function\s+app_private\.resolve_auth_session_with_role\(bytea\)\s+from\s+public/i);
+  assert.match(schema, /grant\s+execute\s+on\s+function\s+app_private\.resolve_auth_session_with_role\(bytea\)\s+to\s+afterword_auth/i);
+  assert.match(schema, /create\s+or\s+replace\s+function\s+app_private\.start_support_session\(/i);
+  assert.match(schema, /v_agency_role::text\s+not\s+in\s*\('owner',\s*'admin',\s*'support'\)/i);
+  assert.match(databaseTest, /agency operator/i);
+  assert.match(databaseTest, /business approver/i);
+});
+
 test("SMS billing migration is forward-only, tenant-isolated and worker-fenced", async () => {
   const schema = await readFile(
     path.resolve("database", "migrations", "004_sms_billing_and_location_reporting.sql"),
