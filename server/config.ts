@@ -46,6 +46,7 @@ const baseEnvironmentSchema = z.object({
   EXTERNAL_WEBHOOK_BASE_URL: optionalEnvironmentValue(z.string().url()),
   PUBLIC_REVIEW_BASE_URL: optionalEnvironmentValue(z.string().url()),
   SESSION_COOKIE_NAME: z.string().default("afterword_session"),
+  SIGNUP_VERIFICATION_TTL_MINUTES: z.coerce.number().int().min(5).max(30).default(15),
   SESSION_PEPPER: z.string().min(32),
   FIELD_ENCRYPTION_KEY: z.string().min(43).refine(isThirtyTwoByteBase64Url, {
     message: "FIELD_ENCRYPTION_KEY must be a canonical base64url-encoded 32-byte key.",

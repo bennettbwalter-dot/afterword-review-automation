@@ -201,6 +201,9 @@ export interface StripeBillingWebhookInput {
 }
 
 export interface PlatformRepository {
+  createSignupIntent?(input: import("./onboarding/types.js").SignupIntentInput): Promise<{ accepted: boolean; shouldSendEmail: boolean }>;
+  consumeSignupIntent?(tokenHash: Buffer): Promise<import("./onboarding/types.js").VerifiedSignup | null>;
+  registerVerifiedSignup?(input: import("./onboarding/types.js").RegistrationInput): Promise<import("./onboarding/types.js").RegistrationResult>;
   findCredentialByEmail(email: string): Promise<AuthCredential | null>;
   recordLoginResult?(email: string, succeeded: boolean): Promise<void>;
   createLoginSession(input: {

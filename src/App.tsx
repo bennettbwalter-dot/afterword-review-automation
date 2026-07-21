@@ -61,6 +61,10 @@ import { GoogleProfileView } from "./features/google-profile/GoogleProfileView";
 import { HomeView } from "./features/home/HomeView";
 import { ReportsView as ProductReportsView } from "./features/reports/ReportsView";
 import { SettingsBillingView } from "./features/settings/SettingsBillingView";
+import { SignupView } from "./features/onboarding/SignupView";
+import { VerifyEmailView } from "./features/onboarding/VerifyEmailView";
+import { BusinessOnboarding } from "./features/onboarding/BusinessOnboarding";
+import { AgencyOnboarding } from "./features/onboarding/AgencyOnboarding";
 import { LegacyRouteRedirect } from "./features/shared/LegacyRouteRedirect";
 import { WorkspaceContextBar } from "./features/shared/WorkspaceContextBar";
 import {
@@ -2519,6 +2523,11 @@ export default function App() {
   const billingReturn = !IS_DEMO_MODE && (returnParams.has("checkout") || returnParams.has("billing"));
   const publicToken = location.pathname.match(/^\/r\/([a-z0-9-]+)\/?$/i)?.[1];
   const publicQrCode = IS_DEMO_MODE && publicToken ? getQrCodeByToken(publicToken) : undefined;
+
+  if (!IS_DEMO_MODE && location.pathname === "/signup") return <ThemeProvider><SignupView onSubmitted={(email) => navigate(`/signup/check-email?email=${encodeURIComponent(email)}`)} /></ThemeProvider>;
+  if (!IS_DEMO_MODE && location.pathname === "/signup/verify") return <ThemeProvider><VerifyEmailView token={returnParams.get("token")} onVerified={(accountType) => navigate(accountType === "business" ? "/signup/business" : "/signup/agency", { replace: true })} /></ThemeProvider>;
+  if (!IS_DEMO_MODE && location.pathname === "/signup/business") return <ThemeProvider><BusinessOnboarding onComplete={(result) => navigate(result.businessId ? `/app/settings-billing/connections?businessId=${encodeURIComponent(result.businessId)}&locationId=${encodeURIComponent(result.locationId ?? "")}` : "/app")} /></ThemeProvider>;
+  if (!IS_DEMO_MODE && location.pathname === "/signup/agency") return <ThemeProvider><AgencyOnboarding onComplete={() => navigate("/app", { replace: true })} /></ThemeProvider>;
 
   const startSetup = () => {
     navigate(workspaceRoute("home"));

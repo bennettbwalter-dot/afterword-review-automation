@@ -96,6 +96,16 @@ export interface PublicReviewFlowPayload {
   destinationUrl: string;
 }
 
+export interface SignupRegistrationInput {
+  accountType: "business" | "agency";
+  password: string;
+  agencyName?: string;
+  businessName?: string;
+  locationName?: string;
+  country?: "GB" | "US";
+  timezone?: string;
+}
+
 export interface GoogleProfileSelectionPayload {
   businessId: string;
   locationId: string;
@@ -205,6 +215,21 @@ function normalizeWorkspace(payload: unknown): WorkspacePayload {
 }
 
 export const platformApi = {
+  async startSignup(email: string, displayName: string, accountType: "business" | "agency") {
+    await request<unknown>("/api/v1/auth/signup-intents", { method: "POST", body: JSON.stringify({ email, displayName, accountType }) });
+  },
+
+  async verifySignup(token: string) {
+    const data = unwrapData(await request<unknown>("/api/v1/auth/signup-intents/verify", { method: "POST", body: JSON.stringify({ token }) }));
+    if (!isRecord(data) || (data.accountType !== "business" && data.accountType !== "agency")) throw new ApiError("The server returned an invalid verification response.", 502, "INVALID_SIGNUP_VERIFICATION");
+    return data as { verified: true; accountType: "business" | "agency" };
+  },
+
+  async registerSignup(input: SignupRegistrationInput) {
+    const data = unwrapData(await request<unknown>("/api/v1/auth/register", { method: "POST", body: JSON.stringify(input) }));
+    if (!isRecord(data) || typeof data.onboardingStep !== "string") throw new ApiError("The server returned an invalid registration response.", 502, "INVALID_SIGNUP_REGISTRATION");
+    return { businessId: typeof data.businessId === "string" ? data.businessId : undefined, locationId: typeof data.locationId === "string" ? data.locationId : undefined, onboardingStep: data.onboardingStep };
+  },
   async login(email: string, password: string) {
     activeSupportSessionId = undefined;
     await request<unknown>("/api/v1/auth/login", {
