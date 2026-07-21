@@ -3092,6 +3092,17 @@ textarea[aria-invalid="true"] {
   min-width: 0;
 }
 
+.agency-grant-controls__body {
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.agency-grant-controls select {
+  width: 100%;
+  min-height: 2.75rem;
+  margin-block-start: var(--space-2xs);
+}
+
 .integration-card .status-pill,
 .integration-card .button {
   grid-column: 1 / -1;

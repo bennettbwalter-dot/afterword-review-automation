@@ -88,3 +88,12 @@ test("active grant listing is actor-bound, excludes support sessions, and return
   assert.match(schema, /revoke all on function app_private\.list_active_agency_client_grants\(uuid\) from public/i);
   assert.match(routes, /agency-grants\/active[\s\S]+requireSameOrigin[\s\S]+SUPPORT_SESSION_READ_ONLY[\s\S]+actor\.agencyId !== agencyId/i);
 });
+
+test("agency workspace exposes persistent active-grant selection and immediate server-backed revocation", async () => {
+  const controls = await readFile(path.resolve("src", "features", "agency", "ActiveAgencyGrantControls.tsx"), "utf8");
+  const api = await readFile(path.resolve("src", "platform", "api.ts"), "utf8");
+  assert.match(controls, /listActiveAgencyClientGrants\(agencyId\)/);
+  assert.match(controls, /Revoke access/);
+  assert.match(controls, /await platformApi\.revokeAgencyGrant\(selected\.id\); await load\(\)/);
+  assert.match(api, /agency-grants\/\$\{encodeURIComponent\(grantId\)\}\/revoke/);
+});
