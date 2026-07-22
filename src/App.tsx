@@ -1799,7 +1799,7 @@ function AppShell() {
   ));
   const page = [...CLIENT_NAV, ...AGENCY_NAV].find((item) => item.id === view) ?? navItems[0];
   const descriptions: Record<AppView, string> = {
-    home: "Google review snapshot, request status, connection health, and reporting links.",
+    home: "Selected-location completed jobs, request delivery, link activity, and product navigation.",
     "google-profile": "Google connection status, current reviews, review requests, and QR details.",
     content: "Content publishing availability and destination authorisation status.",
     reports: IS_DEMO_MODE ? "A simple monthly proof-of-value report." : "Current durable metrics and integration status for this tenant.",
@@ -2130,6 +2130,7 @@ function AppShell() {
             business={business}
             requests={requests}
             session={session}
+            hasSupportSession={Boolean(supportSession)}
             canConfigure={canConfigure}
             canManageBilling={canManageTenantBilling}
             selectedLocationId={selectedLocationId}

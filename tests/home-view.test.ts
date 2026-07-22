@@ -57,6 +57,7 @@ function render(overrides: Partial<HomeViewProps> = {}) {
     business,
     requests,
     session,
+    hasSupportSession: false,
     canConfigure: true,
     canManageBilling: true,
     selectedLocationId: "location-b",
@@ -111,13 +112,35 @@ test("billing-only sessions expose Billing without Connections", () => {
   assert.doesNotMatch(markup, /<h4>Connections<\/h4>/);
 });
 
+test("agency support sessions expose tenant Home modules only while support is active", () => {
+  const agencySession: SessionContext = {
+    ...session,
+    role: "agency_admin",
+    agencyRole: "support",
+  };
+  const activeSupportMarkup = render({
+    session: agencySession,
+    hasSupportSession: true,
+  });
+  assert.match(activeSupportMarkup, /<h4>Google Profile<\/h4>/);
+  assert.match(activeSupportMarkup, /<h4>Billing<\/h4>/);
+
+  const agencyMarkup = render({
+    session: agencySession,
+    hasSupportSession: false,
+  });
+  assert.doesNotMatch(agencyMarkup, /<h4>Google Profile<\/h4>/);
+  assert.doesNotMatch(agencyMarkup, /<h4>Billing<\/h4>/);
+});
+
 test("App composes Home without review data and Growth Suite is retired", () => {
   const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
   const homeSource = readFileSync(new URL("../src/features/home/HomeView.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(appSource, /GrowthSuite/u);
   const call = appSource.match(/<HomeView\b[\s\S]*?\/>/u)?.[0] ?? "";
-  for (const prop of ["business={business}", "requests={requests}", "session={session}", "canConfigure={canConfigure}", "canManageBilling={canManageTenantBilling}", "selectedLocationId={selectedLocationId}"]) assert.ok(call.includes(prop), `missing ${prop}`);
+  for (const prop of ["business={business}", "requests={requests}", "session={session}", "hasSupportSession={Boolean(supportSession)}", "canConfigure={canConfigure}", "canManageBilling={canManageTenantBilling}", "selectedLocationId={selectedLocationId}"]) assert.ok(call.includes(prop), `missing ${prop}`);
   assert.doesNotMatch(call, /reviews=|businesses=|agencyMode=|oauth|token|secret|destination|readiness/iu);
   assert.doesNotMatch(homeSource, /ReviewRecord|reviews\s*:\s*ReviewRecord/u);
   assert.equal(existsSync(new URL("../src/growth/GrowthSuite.tsx", import.meta.url)), false);
+  assert.match(appSource, /home: "Selected-location completed jobs, request delivery, link activity, and product navigation\."/u);
 });

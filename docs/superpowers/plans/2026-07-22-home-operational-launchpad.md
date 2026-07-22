@@ -4,7 +4,7 @@
 
 **Goal:** Replace the obsolete Growth Suite business dashboard with a location-scoped Home feature that exposes seven simplified destinations and only aggregate operational workflow data.
 
-**Architecture:** A pure `home-domain.ts` module defines the immutable Home module records and builds a review-free projection from the already-scoped business, requests, and selected location. `HomeView.tsx` renders that projection, applies existing role routing, and owns the Home UI; `App.tsx` supplies only scoped inputs and callbacks and no longer imports or passes review records to Home.
+**Architecture:** A pure `home-domain.ts` module defines the immutable Home module records and builds a review-free projection from the already-scoped business, requests, and selected location. `HomeView.tsx` renders that projection, applies existing role routing with explicit support-session state, and owns the Home UI; `App.tsx` supplies only scoped inputs and callbacks and no longer imports or passes review records to Home.
 
 **Tech Stack:** React 19, TypeScript 7, `lucide-react`, Node's built-in test runner, React server rendering, Vite.
 
@@ -13,6 +13,7 @@
 - Google review records live only inside Google Profile. Home must not receive or render review bodies, reviewer names, per-review ratings, review dates, or reply state.
 - Home may show only existing location-scoped completed-job, request-delivery, unique-click, automation, and request-count aggregates.
 - Preserve selected business/location context, the completed-job action, its configuration permission, read-only disclosure, and existing role routing.
+- Preserve agency support-session authorization when Home is rendered directly.
 - Billing-only users continue to enter Billing rather than Home.
 - Home exposes exactly Google Profile, Reviews, Requests & QR, Content, Reports, Connections, and Billing, using canonical scoped routes.
 - Remove `src/growth/GrowthSuite.tsx` and all `GrowthSuite`/review-data wiring from the Home path.
@@ -27,7 +28,7 @@
 - `src/App.tsx`: scoped Home composition only; remove `GrowthSuite` import and review prop wiring.
 - `src/growth/GrowthSuite.tsx`: delete after all references move into the Home feature.
 - `tests/home-domain.test.ts`: module-route and scoped projection tests.
-- `tests/home-view.test.ts`: server-rendered privacy, aggregate, permission, composition, and removal tests.
+- `tests/home-view.test.ts`: server-rendered privacy, aggregate, billing/support authorization, composition, and removal tests.
 - `tests/workspace-routing.test.ts`: point the existing Home module route assertions at the new domain owner and update consolidated card names.
 
 ---
@@ -282,6 +283,7 @@ function render(overrides: Partial<HomeViewProps> = {}) {
     business,
     requests,
     session,
+    hasSupportSession: false,
     canConfigure: true,
     canManageBilling: true,
     selectedLocationId: "location-b",
@@ -313,7 +315,7 @@ test("Home excludes review records and private request fields", () => {
   for (const marker of ["PRIVATE_CUSTOMER_A", "PRIVATE_CUSTOMER_B", "PRIVATE_JOB_A", "PRIVATE_JOB_B", "PRIVATE_DESTINATION_A", "PRIVATE_DESTINATION_B"]) {
     assert.equal(markup.includes(marker), false, `must not render ${marker}`);
   }
-  assert.doesNotMatch(markup, /Google rating|Reviews detected|review records|Awaiting owner reply/i);
+  assert.doesNotMatch(markup, /Google rating|Reviews detected|Awaiting owner reply/i);
   assert.equal(markup.includes("4.9"), false);
   assert.equal(markup.includes("999"), false);
 });
@@ -330,12 +332,14 @@ test("App composes Home without review data and Growth Suite is retired", () => 
   const homeSource = readFileSync(new URL("../src/features/home/HomeView.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(appSource, /GrowthSuite/u);
   const call = appSource.match(/<HomeView\b[\s\S]*?\/>/u)?.[0] ?? "";
-  for (const prop of ["business={business}", "requests={requests}", "session={session}", "canConfigure={canConfigure}", "canManageBilling={canManageTenantBilling}", "selectedLocationId={selectedLocationId}"]) assert.ok(call.includes(prop), `missing ${prop}`);
+  for (const prop of ["business={business}", "requests={requests}", "session={session}", "hasSupportSession={Boolean(supportSession)}", "canConfigure={canConfigure}", "canManageBilling={canManageTenantBilling}", "selectedLocationId={selectedLocationId}"]) assert.ok(call.includes(prop), `missing ${prop}`);
   assert.doesNotMatch(call, /reviews=|businesses=|agencyMode=|oauth|token|secret|destination|readiness/iu);
   assert.doesNotMatch(homeSource, /ReviewRecord|reviews\s*:/u);
   assert.equal(existsSync(new URL("../src/growth/GrowthSuite.tsx", import.meta.url)), false);
 });
 ```
+
+Also render an `agency_admin` session with `hasSupportSession: true` and assert its authorised tenant modules are present; render the same session with `false` and assert tenant modules are absent.
 
 - [ ] **Step 2: Run the Home view tests and verify they fail on the wrapper-only component**
 
@@ -370,6 +374,7 @@ export interface HomeViewProps {
   business: BusinessAccount;
   requests: RequestRecord[];
   session: SessionContext;
+  hasSupportSession: boolean;
   canConfigure: boolean;
   canManageBilling: boolean;
   selectedLocationId?: string;
@@ -392,6 +397,7 @@ export function HomeView({
   business,
   requests,
   session,
+  hasSupportSession,
   canConfigure,
   canManageBilling,
   selectedLocationId,
@@ -401,7 +407,7 @@ export function HomeView({
 }: HomeViewProps) {
   const { locations, activeLocation, requestCount } = buildHomeProjection(business, requests, selectedLocationId);
   const availableModules = HOME_MODULES.filter((module) => (
-    isAppViewAllowed(module.view, session.role, false, session.businessRole)
+    isAppViewAllowed(module.view, session.role, hasSupportSession, session.businessRole)
   ));
 
   return (
@@ -488,6 +494,7 @@ In `src/App.tsx`, remove the `GrowthSuite` import and replace the nested `<HomeV
   business={business}
   requests={requests}
   session={session}
+  hasSupportSession={Boolean(supportSession)}
   canConfigure={canConfigure}
   canManageBilling={canManageTenantBilling}
   selectedLocationId={selectedLocationId}
@@ -497,7 +504,7 @@ In `src/App.tsx`, remove the `GrowthSuite` import and replace the nested `<HomeV
 />}
 ```
 
-Delete `src/growth/GrowthSuite.tsx` after confirming no source import remains.
+Delete `src/growth/GrowthSuite.tsx` after confirming no source import remains. Update the Home page header description to: `Selected-location completed jobs, request delivery, link activity, and product navigation.`
 
 - [ ] **Step 5: Update the existing canonical Home route regression**
 

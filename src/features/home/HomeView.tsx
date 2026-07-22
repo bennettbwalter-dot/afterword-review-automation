@@ -20,6 +20,7 @@ export interface HomeViewProps {
   business: BusinessAccount;
   requests: RequestRecord[];
   session: SessionContext;
+  hasSupportSession: boolean;
   canConfigure: boolean;
   canManageBilling: boolean;
   selectedLocationId?: string;
@@ -38,8 +39,8 @@ const HOME_ICONS = {
   billing: Building2,
 } as const;
 
-function isHomeModuleAllowed(module: typeof HOME_MODULES[number], session: SessionContext) {
-  if (!isAppViewAllowed(module.view, session.role, false, session.businessRole)) return false;
+function isHomeModuleAllowed(module: typeof HOME_MODULES[number], session: SessionContext, hasSupportSession: boolean) {
+  if (!isAppViewAllowed(module.view, session.role, hasSupportSession, session.businessRole)) return false;
   if (session.role === "business_owner" && session.businessRole === "billing") {
     return module.view === "settings-billing"
       && "routeContext" in module
@@ -52,6 +53,7 @@ export function HomeView({
   business,
   requests,
   session,
+  hasSupportSession,
   canConfigure,
   canManageBilling,
   selectedLocationId,
@@ -60,7 +62,7 @@ export function HomeView({
   onAddJob,
 }: HomeViewProps) {
   const { locations, activeLocation, requestCount } = buildHomeProjection(business, requests, selectedLocationId);
-  const availableModules = HOME_MODULES.filter((module) => isHomeModuleAllowed(module, session));
+  const availableModules = HOME_MODULES.filter((module) => isHomeModuleAllowed(module, session, hasSupportSession));
 
   return (
     <div className="product-feature product-feature--home">

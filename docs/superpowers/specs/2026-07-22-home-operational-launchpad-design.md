@@ -58,6 +58,7 @@ The feature continues using existing Home/Growth CSS classes where practical. Th
 - `business: BusinessAccount`
 - `requests: RequestRecord[]`
 - `session: SessionContext`
+- `hasSupportSession: boolean`
 - `canConfigure: boolean`
 - `canManageBilling: boolean`
 - `selectedLocationId?: string`
@@ -118,6 +119,7 @@ Remove the `GrowthSuite` import and composition from `App.tsx`, then delete `src
 - An empty request list renders aggregate zero/count copy without fabricating provider failures.
 - Read-only users retain navigation but cannot use Add completed job or configuration actions.
 - Billing-only users do not render Home under the existing route policy.
+- An agency administrator may render tenant Home only while `hasSupportSession` is true; Home passes that state into existing view authorization so direct rendering cannot lose support-session access.
 - Home introduces no new loading, network, or error state because it consumes existing scoped workspace data.
 - No operational aggregate is described as proof of Google/social publishing capability.
 
@@ -141,9 +143,11 @@ Add executed domain/source and server-rendered tests that verify:
 - the selected-location request count remains scoped;
 - the completed-job action follows configuration permission;
 - read-only disclosure remains visible;
+- an active agency support session sees only its authorised tenant Home modules, while the same agency session without support sees none;
 - no review body, reviewer name, per-review rating, reply state, review date, Google rating, total-review count, or reviews-detected metric renders;
 - `HomeView` has no `ReviewRecord`, `reviews`, provider credential, OAuth, destination identity, or publication-readiness input;
 - `App.tsx` passes only the approved scoped Home inputs and no longer imports or renders `GrowthSuite`;
+- the Home page header describes selected-location completed jobs, request delivery, link activity, and product navigation rather than review or connection-health surfaces;
 - `src/growth/GrowthSuite.tsx` is removed;
 - billing-only routing continues to bypass Home.
 
