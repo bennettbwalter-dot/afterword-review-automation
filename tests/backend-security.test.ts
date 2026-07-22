@@ -168,6 +168,7 @@ interface TestActorOptions {
   agencyRole?: ActorContext["agencyRole"];
   mfaVerified?: boolean;
   agencyId?: string;
+  supportSessionId?: string;
   initialBusinessId?: string | null;
   accessibleBusinessIds?: string[];
   businessRoles?: Partial<Record<string, BusinessRole>>;
@@ -200,9 +201,12 @@ function createRepository(actorOptions: TestActorOptions = {}) {
           : actorOptions.initialBusinessId === null
             ? undefined
             : actorOptions.initialBusinessId ?? businessId,
-        agencyId: actorOptions.role === "agency_admin" || actorOptions.role === "agency_user" ? actorOptions.agencyId ?? randomUUID() : undefined,
+        agencyId: actorOptions.role === "agency_admin" || actorOptions.role === "agency_user"
+          ? actorOptions.agencyId ?? randomUUID()
+          : actorOptions.agencyId,
         agencyRole: actorOptions.agencyRole ?? (actorOptions.role === "agency_admin" ? "admin" : undefined),
         mfaVerified: actorOptions.mfaVerified ?? false,
+        supportSessionId: actorOptions.supportSessionId,
         sessionId,
         sessionTokenHash: input.tokenHash,
       });
@@ -605,8 +609,8 @@ test("support sessions cannot begin Google Business Profile OAuth", async (t) =>
   });
 
   assert.equal(response.statusCode, 403);
-  assert.equal(response.json().error.code, "GOOGLE_OWNER_REQUIRED");
-  assert.match(response.json().error.message, /direct business owner or administrator/i);
+  assert.equal(response.json().error.code, "GOOGLE_DIRECT_BUSINESS_REQUIRED");
+  assert.match(response.json().error.message, /directly signed-in business owner or administrator/i);
 });
 
 test("Google Profile responses remain no-store when the global support pre-handler rejects", async (t) => {
@@ -923,6 +927,43 @@ test("agency support-role operators can start only view sessions", async (t) => 
   const active = await app.inject({ method: "GET", url: "/api/v1/support-sessions/active", headers: { cookie } });
   assert.equal(active.statusCode, 200);
   assert.equal(active.json().data.session.scope, "view");
+});
+
+test("direct-container business owners cannot start agency support sessions", async (t) => {
+  const { app, cookie } = await authenticatedApp({
+    role: "business_owner",
+    agencyRole: "owner",
+    agencyId: randomUUID(),
+    mfaVerified: true,
+  });
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/v1/support-sessions",
+    headers: { cookie, origin: appOrigin },
+    payload: { businessId, scope: "view", reason: "Direct owner self support", durationMinutes: 15 },
+  });
+  assert.equal(response.statusCode, 403);
+  assert.equal(response.json().error.code, "AGENCY_SUPPORT_REQUIRED");
+});
+
+test("agency and support-session actors cannot mutate Google account state", async (t) => {
+  const cases = [
+    { role: "agency_admin" as const, agencyRole: "admin" as const, supportSessionId: undefined },
+    { role: "business_owner" as const, agencyRole: undefined, supportSessionId: randomUUID() },
+  ];
+  for (const actor of cases) {
+    const { app, cookie } = await authenticatedApp(actor);
+    t.after(() => app.close());
+    for (const request of [
+      { method: "POST", url: `/api/v1/businesses/${businessId}/integrations/google/reviews/sync` },
+      { method: "DELETE", url: `/api/v1/businesses/${businessId}/locations/${locationId}/integrations/google` },
+    ] as const) {
+      const response = await app.inject({ ...request, headers: { cookie, origin: appOrigin } });
+      assert.equal(response.statusCode, 403);
+      assert.equal(response.json().error.code, "GOOGLE_DIRECT_BUSINESS_REQUIRED");
+    }
+  }
 });
 
 test("Google mutations reject summary-visible actors without business management", async (t) => {
