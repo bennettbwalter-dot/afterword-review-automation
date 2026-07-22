@@ -1,4 +1,4 @@
-import pg, { type PoolClient } from "pg";
+import pg, { type Pool as PgPool, type PoolClient } from "pg";
 import { databaseTlsOptions } from "./database-tls.js";
 import type { ActorContext } from "./types.js";
 
@@ -32,4 +32,22 @@ export async function setActorContext(client: PoolClient, actor: ActorContext) {
     "select app_private.set_request_context_from_session($1, $2::uuid)",
     [actor.sessionTokenHash, actor.supportSessionId ?? null],
   );
+  if (actor.supportSessionId) {
+    await client.query(
+      "select app_private.touch_support_session($1::uuid)",
+      [actor.supportSessionId],
+    );
+  }
+}
+
+export async function withActorTransaction<T>(pool: PgPool, actor: ActorContext, operation: (client: PoolClient) => Promise<T>) {
+  const client = await pool.connect();
+  try {
+    return await inTransaction(client, async () => {
+      await setActorContext(client, actor);
+      return operation(client);
+    });
+  } finally {
+    client.release();
+  }
 }

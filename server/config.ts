@@ -46,6 +46,7 @@ const baseEnvironmentSchema = z.object({
   EXTERNAL_WEBHOOK_BASE_URL: optionalEnvironmentValue(z.string().url()),
   PUBLIC_REVIEW_BASE_URL: optionalEnvironmentValue(z.string().url()),
   SESSION_COOKIE_NAME: z.string().default("afterword_session"),
+  SIGNUP_VERIFICATION_TTL_MINUTES: z.coerce.number().int().min(5).max(30).default(15),
   SESSION_PEPPER: z.string().min(32),
   FIELD_ENCRYPTION_KEY: z.string().min(43).refine(isThirtyTwoByteBase64Url, {
     message: "FIELD_ENCRYPTION_KEY must be a canonical base64url-encoded 32-byte key.",
@@ -61,6 +62,7 @@ const baseEnvironmentSchema = z.object({
   TWILIO_MESSAGING_SERVICE_SID: optionalEnvironmentValue(z.string().min(1)),
   SENDGRID_API_KEY: optionalEnvironmentValue(z.string().min(1)),
   SENDGRID_FROM_EMAIL: optionalEnvironmentValue(z.string().email()),
+  SIGNUP_EMAIL_ENABLED: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
   SENDGRID_ASM_GROUP_ID: optionalEnvironmentValue(z.coerce.number().int().positive()),
   SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY: optionalEnvironmentValue(z.string().min(1)),
   STRIPE_CHECKOUT_ENABLED: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
@@ -172,6 +174,9 @@ function environmentSchema(requiredCapabilities: readonly ProcessCapability[]) {
         path: ["STRIPE_API_KEY"],
       });
     }
+  }
+  if (value.NODE_ENV === "production" && value.SIGNUP_EMAIL_ENABLED && (!value.SENDGRID_API_KEY || !value.SENDGRID_FROM_EMAIL)) {
+    context.addIssue({ code: "custom", message: "Production signup email requires SENDGRID_API_KEY and SENDGRID_FROM_EMAIL.", path: ["SENDGRID_API_KEY"] });
   }
   if (value.STRIPE_CHECKOUT_ENABLED && requiredCapabilities.includes("stripeCheckout")) {
     const requiredStripeKeys = [

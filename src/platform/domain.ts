@@ -1,11 +1,20 @@
-export type ActorRole = "business_owner" | "agency_admin";
+export type PlatformRole = "business_owner" | "agency_admin" | "agency_user";
+// Retain this alias until presentation callers can adopt the platform name.
+export type ActorRole = PlatformRole;
+export type ProductRole = "owner" | "staff" | "client_approver";
+export type AgencyRole = "owner" | "admin" | "operator" | "support";
+export type BusinessRole = "owner" | "admin" | "operator" | "approver" | "viewer" | "billing";
 export type SupportScope = "view" | "configuration";
+export type AgencyGrantPermission = "content.create" | "content.submit" | "content.approve" | "content.self_approve" | "content.schedule" | "content.publish" | "video.spend";
 export type Channel = "SMS" | "Email";
 export type RequestStatus = "Queued" | "Delivered" | "Clicked" | "Reviewed" | "Opted out" | "Blocked";
 export type ConsentStatus = "Verified" | "Missing" | "Withdrawn";
 export type ClientView = "overview" | "requests" | "automation" | "reviews" | "qr-codes" | "reports" | "integrations" | "team-billing";
 export type AgencyView = "agency-overview" | "clients" | "exceptions" | "audit";
 export type WorkspaceView = ClientView | AgencyView;
+export type ProductView = "home" | "google-profile" | "content" | "reports" | "settings-billing" | "agency" | "operations-exceptions" | "operations-audit";
+export type GoogleProfileTab = "profile" | "reviews" | "requests-qr" | "posts-media";
+export type ContentTab = "create" | "uploads" | "approvals" | "scheduled" | "published" | "failed";
 export type HealthTone = "success" | "warning" | "danger" | "muted" | "accent";
 export type Permission =
   | "portfolio.read"
@@ -21,9 +30,13 @@ export type Permission =
   | "support.configure";
 
 export interface SessionContext {
+  agencyId?: string;
   userId: string;
   userName: string;
   role: ActorRole;
+  productRole?: ProductRole;
+  agencyRole?: AgencyRole;
+  businessRole?: BusinessRole;
   businessId?: string;
   mfaVerified: boolean;
   stepUpVerifiedAt?: string;
@@ -94,6 +107,39 @@ export interface LocationReportSummary {
   smsSegments: number;
 }
 
+export interface LocationWorkflowSummary {
+  businessId: string;
+  locationId: string;
+  channels: Array<{
+    channel: "sms" | "email";
+    enabled: boolean;
+    timezone: string;
+    allowedWeekdays: number[];
+    sendWindowStart: string;
+    sendWindowEnd: string;
+    maxMessages: number;
+    minimumGapSeconds: number;
+    ruleVersion: string;
+    template: {
+      id: string;
+      key: string;
+      version: number;
+      body: string;
+      subject?: string;
+      includesBusinessIdentity: boolean;
+      includesUnsubscribe: boolean;
+      approvedAt: string;
+    } | null;
+  }>;
+  reviewDestination: {
+    runtimeUrl?: string;
+    qrUrl?: string;
+    verifiedAt?: string;
+    connectionHealth?: string;
+    matchesRuntime: boolean;
+  } | null;
+}
+
 export interface BusinessAccount {
   id: string;
   locationId?: string;
@@ -125,6 +171,7 @@ export interface BusinessAccount {
 export interface RequestRecord {
   id: string;
   businessId: string;
+  locationId?: string;
   customer: string;
   job: string;
   channel: Channel;
@@ -141,6 +188,7 @@ export interface RequestRecord {
 export interface ReviewRecord {
   id: string;
   businessId: string;
+  locationId?: string;
   name: string;
   rating: number;
   date: string;
@@ -150,6 +198,7 @@ export interface ReviewRecord {
 
 export interface QrCodeRecord {
   businessId: string;
+  locationId?: string;
   publicToken: string;
   destinationUrl: string;
   destinationVerified: boolean;
@@ -209,10 +258,42 @@ const ROLE_PERMISSIONS: Record<ActorRole, ReadonlySet<Permission>> = {
     "support.start",
     "support.configure",
   ]),
+  agency_user: new Set(),
 };
 
+const BUSINESS_ROLE_PERMISSIONS: Record<BusinessRole, ReadonlySet<Permission>> = {
+  owner: ROLE_PERMISSIONS.business_owner,
+  admin: ROLE_PERMISSIONS.business_owner,
+  operator: new Set(["tenant.read"]),
+  approver: new Set(),
+  viewer: new Set(["tenant.read"]),
+  billing: new Set(["billing.manage"]),
+};
+
+export function projectProductRole(input: { businessRole?: BusinessRole; agencyRole?: AgencyRole }): ProductRole | undefined {
+  if (input.agencyRole) {
+    if (input.agencyRole === "owner" || input.agencyRole === "admin") return "owner";
+    if (input.agencyRole === "operator") return "staff";
+    return undefined;
+  }
+  if (input.businessRole === "owner" || input.businessRole === "admin") return "owner";
+  if (input.businessRole === "operator") return "staff";
+  if (input.businessRole === "approver") return "client_approver";
+  return undefined;
+}
+
 export function hasPermission(session: SessionContext, permission: Permission) {
+  if (session.role === "business_owner") {
+    if (!session.businessRole) return permission === "tenant.read";
+    return BUSINESS_ROLE_PERMISSIONS[session.businessRole].has(permission);
+  }
   return ROLE_PERMISSIONS[session.role].has(permission);
+}
+
+export function canManageBilling(actor: SessionContext, businessId: string) {
+  return actor.role === "business_owner"
+    && actor.businessId === businessId
+    && hasPermission(actor, "billing.manage");
 }
 
 export function isSupportSessionActive(session: SupportSession | null, now = new Date()) {
@@ -229,7 +310,9 @@ export function canReadTenantData(
   supportSession: SupportSession | null,
   now = new Date(),
 ) {
-  if (actor.role === "business_owner") return actor.businessId === businessId;
+  if (actor.role === "business_owner") {
+    return actor.businessId === businessId && hasPermission(actor, "tenant.read");
+  }
   return Boolean(
     isSupportSessionActive(supportSession, now)
     && supportSession?.actorUserId === actor.userId
@@ -244,9 +327,15 @@ export function canConfigureTenant(
   now = new Date(),
 ) {
   if (actor.role === "business_owner") return actor.businessId === businessId && hasPermission(actor, "tenant.manage");
+  const stepUpAt = actor.stepUpVerifiedAt ? new Date(actor.stepUpVerifiedAt).getTime() : Number.NaN;
+  const nowTime = now.getTime();
+  const freshStepUp = Number.isFinite(stepUpAt)
+    && stepUpAt > nowTime - 15 * 60 * 1_000
+    && stepUpAt <= nowTime + 5 * 60 * 1_000;
   return Boolean(
     canReadTenantData(actor, businessId, supportSession, now)
-    && supportSession?.scope === "configuration",
+    && supportSession?.scope === "configuration"
+    && freshStepUp,
   );
 }
 
@@ -255,8 +344,11 @@ export function startSupportSession(
   input: { businessId: string; reason: string; scope: SupportScope; durationMinutes: 15 | 30 | 60 },
   now = new Date(),
 ): SupportSession {
-  if (actor.role !== "agency_admin" || !hasPermission(actor, "support.start")) {
-    throw new Error("Only an agency administrator can start a support session.");
+  const canStartSupport = actor.agencyRole === "owner"
+    || actor.agencyRole === "admin"
+    || actor.agencyRole === "support";
+  if (!canStartSupport) {
+    throw new Error("Only an agency administrator or support member can start a support session.");
   }
   if (!actor.mfaVerified) throw new Error("Agency MFA is required.");
   if (input.reason.trim().length < 12) throw new Error("Add a support reason or ticket reference.");
@@ -354,6 +446,7 @@ const multiBilling: BillingSummary = {
 export const BUSINESSES: BusinessAccount[] = [
   {
     id: "business_123",
+    locationId: "location_123_bristol",
     agencyId: "agency_afterword",
     name: "Harbour & Hearth",
     locationName: "Bristol",
@@ -375,6 +468,7 @@ export const BUSINESSES: BusinessAccount[] = [
   },
   {
     id: "business_201",
+    locationId: "location_201_leeds",
     agencyId: "agency_afterword",
     name: "Northline Electrical",
     locationName: "Leeds",
@@ -396,6 +490,7 @@ export const BUSINESSES: BusinessAccount[] = [
   },
   {
     id: "business_202",
+    locationId: "location_202_austin",
     agencyId: "agency_afterword",
     name: "Bright Smile Dental",
     locationName: "Austin",
@@ -417,6 +512,7 @@ export const BUSINESSES: BusinessAccount[] = [
   },
   {
     id: "business_203",
+    locationId: "location_203_bath",
     agencyId: "agency_afterword",
     name: "Elm & Stone Landscaping",
     locationName: "Bath",
@@ -444,6 +540,7 @@ export const BUSINESSES: BusinessAccount[] = [
   },
   {
     id: "business_204",
+    locationId: "location_204_glasgow",
     agencyId: "agency_afterword",
     name: "Ember Heating",
     locationName: "Glasgow",
@@ -465,6 +562,7 @@ export const BUSINESSES: BusinessAccount[] = [
   },
   {
     id: "business_205",
+    locationId: "location_205_tampa",
     agencyId: "agency_afterword",
     name: "Coastline Air",
     locationName: "Tampa",
@@ -499,6 +597,7 @@ const request = (
   consentStatus: ConsentStatus = "Verified",
 ): RequestRecord => ({
   businessId,
+  locationId: BUSINESSES.find((business) => business.id === businessId)?.locationId,
   id,
   customer,
   job,
@@ -534,6 +633,7 @@ export const REVIEWS_BY_BUSINESS: Record<string, ReviewRecord[]> = Object.fromEn
   BUSINESSES.map((business, index) => [business.id, [{
     id: `REV-${311 + index}`,
     businessId: business.id,
+    locationId: business.locationId,
     name: ["Amelia C.", "Grace H.", "Jordan L.", "Megan R.", "Fiona R.", "Alex M."][index],
     rating: index === 3 ? 4 : 5,
     date: index === 0 ? "Today · 10:18" : `${15 - index} Jul · 11:20`,
@@ -559,6 +659,7 @@ const qrRecord = (
   reviewConversions: number,
 ): QrCodeRecord => ({
   businessId,
+  locationId: BUSINESSES.find((business) => business.id === businessId)?.locationId,
   publicToken,
   destinationUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${businessName} ${locationName}`)}`,
   destinationVerified: false,
@@ -608,6 +709,7 @@ export const OWNER_SESSION: SessionContext = {
   userId: "user_owner_123",
   userName: "Sarah Collins",
   role: "business_owner",
+  businessRole: "owner",
   businessId: "business_123",
   mfaVerified: true,
 };
@@ -616,6 +718,8 @@ export const ADMIN_SESSION: SessionContext = {
   userId: "user_admin_001",
   userName: "Maya Chen",
   role: "agency_admin",
+  agencyRole: "admin",
+  productRole: "owner",
   mfaVerified: true,
   stepUpVerifiedAt: "2026-07-16T11:55:00.000Z",
 };

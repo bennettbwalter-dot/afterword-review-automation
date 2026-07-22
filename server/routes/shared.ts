@@ -54,13 +54,26 @@ export async function requireBusinessAccess(
   actor: ActorContext,
   businessId: string,
 ): Promise<BusinessSummary> {
-  if (actor.role === "business_owner" && actor.businessId !== businessId) {
+  if (actor.role === "business_owner" && actor.businessId && actor.businessId !== businessId) {
     throw new ApiError(403, "BUSINESS_ACCESS_DENIED", "You do not have access to this business.");
   }
   const workspace = await repository.getWorkspace(actor, businessId);
   const business = workspace.businesses.find((candidate) => candidate.id === businessId);
   if (!business) {
     throw new ApiError(403, "BUSINESS_ACCESS_DENIED", "You do not have access to this business.");
+  }
+  return business;
+}
+
+export async function requireBusinessManagement(
+  repository: PlatformRepository,
+  actor: ActorContext,
+  businessId: string,
+): Promise<BusinessSummary> {
+  const business = await requireBusinessAccess(repository, actor, businessId);
+  const workspace = await repository.getWorkspace(actor, businessId);
+  if (workspace.access?.businessId !== businessId || workspace.access?.canManageBusiness !== true) {
+    throw new ApiError(403, "BUSINESS_MANAGEMENT_REQUIRED", "Business management access is required.");
   }
   return business;
 }
@@ -75,6 +88,7 @@ export function redactActor(actor: ActorContext) {
     userName: actor.userName,
     email: actor.email,
     role: actor.role,
+    businessRole: actor.businessRole,
     businessId: actor.businessId,
     agencyId: actor.agencyId,
     mfaVerified: actor.mfaVerified,

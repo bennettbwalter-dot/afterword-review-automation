@@ -15,6 +15,8 @@ export interface StripeCheckoutContext {
   subscriptionPricePence: number;
   setupFeePence: number;
   customerId?: string;
+  successUrl: string;
+  cancelUrl: string;
 }
 
 export interface StripeCheckoutSessionResult {
@@ -191,8 +193,8 @@ export class StripeSdkBillingClient implements StripeBillingClient {
       metadata,
       subscription_data: { metadata },
       integration_identifier: `review_anchor_${randomLetters(8)}`,
-      success_url: `${this.config.APP_ORIGIN}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${this.config.APP_ORIGIN}/?checkout=cancelled`,
+      success_url: context.successUrl,
+      cancel_url: context.cancelUrl,
     }, {
       idempotencyKey: `review-anchor-checkout-${context.attemptId}`,
     });

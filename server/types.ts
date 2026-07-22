@@ -1,4 +1,7 @@
-export type PlatformRole = "business_owner" | "agency_admin";
+export type PlatformRole = "business_owner" | "agency_admin" | "agency_user";
+export type ProductRole = "owner" | "staff" | "client_approver";
+export type AgencyRole = "owner" | "admin" | "operator" | "support";
+export type BusinessRole = "owner" | "admin" | "operator" | "approver" | "viewer" | "billing";
 export type SupportScope = "view" | "configuration";
 export type SmsOveragePolicy = "auto_top_up" | "pause_sms";
 
@@ -31,11 +34,47 @@ export interface LocationReportSummary {
   smsSegments: number;
 }
 
+export interface LocationWorkflowSummary {
+  businessId: string;
+  locationId: string;
+  channels: Array<{
+    channel: "sms" | "email";
+    enabled: boolean;
+    timezone: string;
+    allowedWeekdays: number[];
+    sendWindowStart: string;
+    sendWindowEnd: string;
+    maxMessages: number;
+    minimumGapSeconds: number;
+    ruleVersion: string;
+    template: {
+      id: string;
+      key: string;
+      version: number;
+      body: string;
+      subject?: string;
+      includesBusinessIdentity: boolean;
+      includesUnsubscribe: boolean;
+      approvedAt: string;
+    } | null;
+  }>;
+  reviewDestination: {
+    runtimeUrl?: string;
+    qrUrl?: string;
+    verifiedAt?: string;
+    connectionHealth?: string;
+    matchesRuntime: boolean;
+  } | null;
+}
+
 export interface ActorContext {
   userId: string;
   userName: string;
   email: string;
   role: PlatformRole;
+  productRole?: ProductRole;
+  agencyRole?: AgencyRole;
+  businessRole?: BusinessRole;
   businessId?: string;
   agencyId?: string;
   mfaVerified: boolean;
@@ -92,6 +131,16 @@ export interface WorkspacePayload {
   requestsByBusiness: Record<string, unknown[]>;
   reviewsByBusiness: Record<string, unknown[]>;
   qrCodesByBusiness: Record<string, unknown>;
+  workflowsByLocation: Record<string, LocationWorkflowSummary>;
+  access?: {
+    businessId: string;
+    locationId?: string;
+    canReadTenant: boolean;
+    canManageBusiness: boolean;
+    canReadBilling: boolean;
+    canManageBilling: boolean;
+    canManageStripeBilling: boolean;
+  };
   exceptions: unknown[];
   auditEvents: unknown[];
 }
@@ -152,6 +201,22 @@ export interface StripeBillingWebhookInput {
 }
 
 export interface PlatformRepository {
+  requestAgencyClientGrant?(actor: ActorContext, input: import("./agency/types.js").AgencyGrantRequest): Promise<import("./agency/types.js").AgencyGrant>;
+  acceptAgencyClientGrant?(actor: ActorContext, grantId: string, correlationId: string): Promise<import("./agency/types.js").AgencyGrant>;
+  rejectAgencyClientGrant?(actor: ActorContext, grantId: string, correlationId: string): Promise<import("./agency/types.js").AgencyGrant>;
+  revokeCurrentAgencyClientGrant?(actor: ActorContext, grantId: string, agencyId: string, correlationId: string): Promise<import("./agency/types.js").AgencyGrant>;
+  revokeCurrentClientAgencyGrant?(actor: ActorContext, grantId: string, businessId: string, correlationId: string): Promise<import("./agency/types.js").AgencyGrant>;
+  listActiveAgencyClientGrants?(actor: ActorContext, agencyId: string): Promise<import("./agency/types.js").AgencyGrant[]>;
+  issueAgencyClientGrantClaim?(actor: ActorContext, grantId: string, email: string, tokenHash: Buffer, expiresAt: Date, correlationId: string): Promise<void>;
+  consumeAgencyClientGrantClaim?(actor: ActorContext, tokenHash: Buffer): Promise<import("./agency/types.js").AgencyGrantClaimScope | null>;
+  listAgencyClientGrantClaimLocations?(actor: ActorContext, tokenHash: Buffer): Promise<import("./agency/types.js").AgencyGrantClaimScope[]>;
+  issueAgencyClientAccessClaim?(actor: ActorContext, agencyId: string, email: string, permissions: import("./agency/types.js").AgencyGrantPermission[], selfApproverUserId: string | undefined, tokenHash: Buffer, expiresAt: Date, correlationId: string): Promise<void>;
+  consumeAgencyClientAccessClaim?(actor: ActorContext, tokenHash: Buffer): Promise<boolean>;
+  listAgencyClientAccessLocations?(actor: ActorContext, tokenHash: Buffer): Promise<import("./agency/types.js").AgencyClientClaimLocation[]>;
+  selectAgencyClientAccessLocation?(actor: ActorContext, tokenHash: Buffer, locationId: string, correlationId: string): Promise<import("./agency/types.js").AgencyGrant>;
+  createSignupIntent?(input: import("./onboarding/types.js").SignupIntentInput): Promise<{ accepted: boolean; shouldSendEmail: boolean }>;
+  consumeSignupIntent?(tokenHash: Buffer): Promise<import("./onboarding/types.js").VerifiedSignup | null>;
+  registerVerifiedSignup?(input: import("./onboarding/types.js").RegistrationInput): Promise<import("./onboarding/types.js").RegistrationResult>;
   findCredentialByEmail(email: string): Promise<AuthCredential | null>;
   recordLoginResult?(email: string, succeeded: boolean): Promise<void>;
   createLoginSession(input: {
@@ -164,7 +229,7 @@ export interface PlatformRepository {
   }): Promise<string>;
   resolveLoginSession(tokenHash: Buffer): Promise<ActorContext | null>;
   revokeLoginSession(sessionId: string, tokenHash: Buffer): Promise<void>;
-  getWorkspace(actor: ActorContext, selectedBusinessId?: string): Promise<WorkspacePayload>;
+  getWorkspace(actor: ActorContext, selectedBusinessId?: string, selectedLocationId?: string): Promise<WorkspacePayload>;
   updateSmsOveragePolicy(actor: ActorContext, businessId: string, policy: SmsOveragePolicy, correlationId: string): Promise<{ updated: boolean; policy?: SmsOveragePolicy; reason: string }>;
   prepareStripeCheckout?(actor: ActorContext, businessId: string, attemptId: string, correlationId: string): Promise<StripeCheckoutPreparation>;
   bindStripeCheckoutSession?(actor: ActorContext, businessId: string, attemptId: string, sessionId: string, customerId: string | undefined, livemode: boolean, correlationId: string): Promise<void>;
@@ -172,6 +237,7 @@ export interface PlatformRepository {
   recordStripeBillingWebhook?(input: StripeBillingWebhookInput): Promise<{ duplicate: boolean }>;
   purgeExpiredStripeWebhookPayloads?(limit: number): Promise<number>;
   startSupportSession(actor: ActorContext, input: StartSupportSessionInput): Promise<string>;
+  getActiveSupportSession(actor: ActorContext): Promise<ActiveSupportSession | null>;
   endSupportSession(actor: ActorContext, supportSessionId: string, reason: string): Promise<boolean>;
   createCompletedJob(actor: ActorContext, input: CompletedJobInput): Promise<{ requestId: string; status: "Queued" | "Blocked"; duplicate: boolean }>;
   beginGoogleOAuth(actor: ActorContext, businessId: string, locationId: string, stateHash: Buffer, codeVerifier: EncryptedPayload, expiresAt: Date): Promise<void>;
@@ -204,6 +270,14 @@ export interface PlatformRepository {
   resolvePublicReviewFlow(publicToken: string): Promise<PublicReviewFlow | null>;
   recordPublicQrScan(input: PublicQrScanInput): Promise<{ scanId: string; destinationUrl: string }>;
   markPublicQrContinue(scanId: string): Promise<void>;
+}
+
+export interface ActiveSupportSession {
+  id: string;
+  businessId: string;
+  scope: SupportScope;
+  startedAt: string;
+  expiresAt: string;
 }
 
 export interface StartSupportSessionInput {

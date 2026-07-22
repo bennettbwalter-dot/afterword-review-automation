@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import pg from "pg";
 import { databaseTlsOptions } from "../server/database-tls.js";
@@ -11,8 +11,9 @@ if (!connectionString) {
   throw new Error("MIGRATION_DATABASE_URL is required and must be able to SET ROLE afterword_migration_owner.");
 }
 
-const sqlLines = (await readFile(path.resolve("database", "tests", "003_tenant_isolation.sql"), "utf8"))
-  .split(/\r?\n/);
+const databaseTests = (await readdir(path.resolve("database", "tests")))
+  .filter((file) => /^\d{3}_.+\.sql$/.test(file))
+  .sort();
 
 function quoteLiteral(value: string) {
   return `'${value.replaceAll("'", "''")}'`;
@@ -25,7 +26,8 @@ function psqlText(value: unknown) {
   return String(value);
 }
 
-async function runPsqlCompatibleScript(client: pg.Client) {
+async function runPsqlCompatibleScript(client: pg.Client, source: string) {
+  const sqlLines = source.split(/\r?\n/);
   const variables = new Map<string, string>();
   let segment: string[] = [];
 
@@ -38,13 +40,16 @@ async function runPsqlCompatibleScript(client: pg.Client) {
     },
   );
 
-  const execute = async (prefix?: string) => {
+  const execute = async (prefix?: string, assertResult = false) => {
     const query = renderVariables(segment.join("\n")).trim();
     segment = [];
     if (!query) return;
     const result = await client.query(query);
-    if (prefix === undefined) return;
     const finalResult = Array.isArray(result) ? result.at(-1) : result;
+    if (assertResult) {
+      if (!finalResult || finalResult.rows.length !== 1 || Object.values(finalResult.rows[0]).some((value) => value !== true)) throw new Error(`\\assert expected one all-true row but received ${JSON.stringify(finalResult?.rows ?? [])}.`);
+    }
+    if (prefix === undefined) return;
     if (!finalResult || finalResult.rows.length !== 1) {
       throw new Error(`\\gset expected one row but received ${finalResult?.rows.length ?? 0}.`);
     }
@@ -56,6 +61,7 @@ async function runPsqlCompatibleScript(client: pg.Client) {
   for (const line of sqlLines) {
     if (line.trimStart().startsWith("\\set ")) continue;
     const marker = line.match(/\\gset(?:[ \t]+([A-Za-z_][A-Za-z0-9_]*))?[ \t]*$/);
+    if (line.trim() === "\\assert") { await execute(undefined, true); continue; }
     if (!marker) {
       segment.push(line);
       continue;
@@ -70,8 +76,10 @@ const ssl = databaseTlsOptions(process.env.DATABASE_SSL === "require");
 const client = new pg.Client({ connectionString, ssl, application_name: "afterword-isolation-test" });
 await client.connect();
 try {
-  await runPsqlCompatibleScript(client);
-  process.stdout.write("PostgreSQL tenant-isolation suite passed.\n");
+  for (const file of databaseTests) {
+    await runPsqlCompatibleScript(client, await readFile(path.resolve("database", "tests", file), "utf8"));
+  }
+  process.stdout.write(`PostgreSQL database-isolation suite passed (${databaseTests.length} scripts).\n`);
 } catch (error) {
   await client.query("rollback").catch(() => undefined);
   throw error;

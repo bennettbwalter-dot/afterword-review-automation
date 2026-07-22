@@ -8,7 +8,7 @@ import {
   validateGoogleReviewUri,
 } from "../providers/google.js";
 import { encryptField, decryptField, hashOpaqueToken } from "../security/crypto.js";
-import { ApiError, requireActor, requireBusinessAccess, requireSameOrigin, sendData } from "./shared.js";
+import { ApiError, requireActor, requireBusinessAccess, requireBusinessManagement, requireSameOrigin, sendData } from "./shared.js";
 import type { ActorContext, PlatformRepository } from "../types.js";
 
 interface GoogleCommandRepository extends PlatformRepository {
@@ -80,7 +80,7 @@ const selectionParamsSchema = z.object({
 const selectionBodySchema = z.object({ profileIndex: z.number().int().min(0).max(499) }).strict();
 
 function appRedirect(origin: string, values: Record<string, string>) {
-  const url = new URL(origin);
+  const url = new URL("/app/integrations", origin);
   for (const [key, value] of Object.entries(values)) url.searchParams.set(key, value);
   return url.toString();
 }
@@ -114,8 +114,15 @@ export async function registerGoogleRoutes(app: FastifyInstance, options: BuildA
     async (request, reply) => {
       requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production");
       const actor = requireActor(request);
+      if (actor.supportSessionId) {
+        throw new ApiError(
+          403,
+          "GOOGLE_OWNER_REQUIRED",
+          "Google Business Profile must be connected by a direct business owner or administrator session.",
+        );
+      }
       const { businessId, locationId } = oauthParamsSchema.parse(request.params);
-      await requireBusinessAccess(options.repository, actor, businessId);
+      await requireBusinessManagement(options.repository, actor, businessId);
       const googleClient = googleUnavailable(options);
 
       const state = randomBytes(32).toString("base64url");
@@ -155,6 +162,8 @@ export async function registerGoogleRoutes(app: FastifyInstance, options: BuildA
       return reply.redirect(appRedirect(options.config.APP_ORIGIN, {
         google: "error",
         reason: query.error ?? "authorization_cancelled",
+        business: storedState.businessId,
+        location: storedState.locationId,
       }));
     }
 
@@ -210,6 +219,8 @@ export async function registerGoogleRoutes(app: FastifyInstance, options: BuildA
         return reply.redirect(appRedirect(options.config.APP_ORIGIN, {
           google: "selection_required",
           selection: selectionToken,
+          business: storedState.businessId,
+          location: storedState.locationId,
         }));
       }
       const profile = profiles[0];
@@ -236,13 +247,16 @@ export async function registerGoogleRoutes(app: FastifyInstance, options: BuildA
       });
       return reply.redirect(appRedirect(options.config.APP_ORIGIN, {
         google: "connected",
-        businessId: storedState.businessId,
+        business: storedState.businessId,
+        location: storedState.locationId,
       }));
     } catch (error) {
       request.log.warn({ err: error, requestId: request.id }, "google oauth callback failed");
       return reply.redirect(appRedirect(options.config.APP_ORIGIN, {
         google: "error",
         reason: "connection_failed",
+        business: storedState.businessId,
+        location: storedState.locationId,
       }));
     }
   });
@@ -286,7 +300,7 @@ export async function registerGoogleRoutes(app: FastifyInstance, options: BuildA
     const tokenHash = hashOpaqueToken(selectionToken, options.config.SESSION_PEPPER);
     const pending = await repository.peekGoogleProfileSelection(actor, tokenHash);
     if (!pending) throw new ApiError(404, "GOOGLE_SELECTION_EXPIRED", "This Google profile selection is invalid or expired.");
-    await requireBusinessAccess(options.repository, actor, pending.businessId);
+    await requireBusinessManagement(options.repository, actor, pending.businessId);
     const state = await repository.consumeGoogleProfileSelection(actor, tokenHash);
     if (!state || state.businessId !== pending.businessId || state.locationId !== pending.locationId) {
       throw new ApiError(409, "GOOGLE_SELECTION_ALREADY_USED", "This Google profile selection has already been completed.");
@@ -317,7 +331,7 @@ export async function registerGoogleRoutes(app: FastifyInstance, options: BuildA
     requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production");
     const actor = requireActor(request);
     const businessId = pathBusinessId ?? syncBodySchema.parse(request.body).businessId;
-    await requireBusinessAccess(options.repository, actor, businessId);
+    await requireBusinessManagement(options.repository, actor, businessId);
     googleUnavailable(options);
     const syncRepository = options.repository as GoogleCommandRepository;
     if (!syncRepository.requestGoogleReviewSync) {
@@ -339,7 +353,7 @@ export async function registerGoogleRoutes(app: FastifyInstance, options: BuildA
       requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production");
       const actor = requireActor(request);
       const { businessId, locationId } = oauthParamsSchema.parse(request.params);
-      await requireBusinessAccess(options.repository, actor, businessId);
+      await requireBusinessManagement(options.repository, actor, businessId);
       const repository = options.repository as GoogleCommandRepository;
       if (!repository.disconnectGoogleConnection) {
         throw new ApiError(503, "GOOGLE_DISCONNECT_UNAVAILABLE", "Google disconnect is not configured.");

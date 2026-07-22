@@ -6,6 +6,7 @@ import { ApiError, requireActor, requireBusinessAccess, requireSameOrigin, sendD
 
 const workspaceQuerySchema = z.object({
   businessId: z.string().uuid().optional(),
+  locationId: z.string().uuid().optional(),
 }).strict();
 
 const businessParamsSchema = z.object({
@@ -70,7 +71,16 @@ export async function registerWorkspaceRoutes(app: FastifyInstance, options: Bui
     if (query.businessId) {
       await requireBusinessAccess(options.repository, actor, query.businessId);
     }
-    const workspace = await options.repository.getWorkspace(actor, query.businessId);
+    const workspace = await options.repository.getWorkspace(actor, query.businessId, query.locationId);
+    if (query.locationId) {
+      const selectedBusinessId = query.businessId ?? actor.businessId;
+      const selectedBusiness = workspace.businesses.find((business) => business.id === selectedBusinessId);
+      const locationAllowed = selectedBusiness?.locationId === query.locationId
+        || selectedBusiness?.locationReports.some((location) => location.id === query.locationId);
+      if (!locationAllowed) {
+        throw new ApiError(404, "LOCATION_NOT_FOUND", "This location is not available in the selected business workspace.");
+      }
+    }
     reply.header("cache-control", "no-store");
     return sendData(reply, workspace);
   });
