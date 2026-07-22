@@ -19,6 +19,7 @@ test("Google review bodies remain inside the Google Profile review view", async 
   assert.match(route, /selectedBusiness=\{contextBusiness\}/);
   assert.doesNotMatch(route, /\b(?:reviews|requests|prompts|receipts|oauth|provider|destination|children)\w*\s*=/iu);
   assert.doesNotMatch(route, /initialCombined\s*=/u);
+  assert.doesNotMatch(reportsView, /initialCombined/u);
 });
 
 test("Content does not offer Google reviews as a creation source and write capabilities fail closed", async () => {

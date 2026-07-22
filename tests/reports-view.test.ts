@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ReportsView } from "../src/features/reports/ReportsView";
+import { ReportDocument, ReportsView } from "../src/features/reports/ReportsView";
 import type { BusinessAccount } from "../src/platform/domain";
+import { buildReportProjection } from "../src/features/reports/reports-domain";
 
 const markers = [
   "REVIEW_BODY_MARKER",
@@ -90,7 +91,8 @@ test("renders the selected printable operational report without sensitive record
     "managed GPU",
     "legal and moderation",
     "private Storage",
-    "credit ledger",
+    "a commercial-account projection",
+    "append-only credit ledger",
     "approved pricing",
   ]) assert.ok(markup.includes(text), `missing ${text}`);
 
@@ -131,17 +133,12 @@ test("renders the demo report identity and detected-review wording", () => {
   }
 });
 
-test("renders the combined printable report from the domain projection", () => {
-  const markup = renderToStaticMarkup(createElement(ReportsView, {
-    business,
-    selectedBusiness,
+test("renders the combined report document from an already-built projection", () => {
+  const markup = renderToStaticMarkup(createElement(ReportDocument, {
+    projection: buildReportProjection(business, selectedBusiness, true),
     demoMode: false,
     BrandComponent: Brand,
-    ButtonComponent: Button,
-    DemoNoticeComponent: DemoNotice,
     StarsComponent: Stars,
-    onPrint: () => undefined,
-    initialCombined: true,
   }));
 
   assert.ok(markup.includes("Combined 2-location report"));

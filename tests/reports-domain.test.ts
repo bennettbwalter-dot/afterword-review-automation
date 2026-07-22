@@ -67,6 +67,8 @@ const selectedLocation: BusinessAccount = {
 test("projects selected and combined location report metrics", () => {
   assert.equal(canCombineReportLocations(multiLocationBusiness), true);
   assert.equal(canCombineReportLocations({ ...multiLocationBusiness, locationReports: [locationA] }), false);
+  assert.equal(canCombineReportLocations({ ...multiLocationBusiness, locationReports: [] }), false);
+  assert.equal(canCombineReportLocations({ ...multiLocationBusiness, locationReports: undefined }), false);
   assert.deepEqual(buildReportProjection(multiLocationBusiness, selectedLocation, false).metrics, selectedLocation.metrics);
 
   const combined = buildReportProjection(multiLocationBusiness, selectedLocation, true);
