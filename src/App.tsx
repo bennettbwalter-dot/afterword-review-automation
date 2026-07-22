@@ -46,7 +46,6 @@ import {
   TeamBillingView,
 } from "./platform/AgencyViews";
 import { LivePublicReviewFlow, PublicReviewFlow, QrCodesView } from "./platform/QrCodesView";
-import GrowthSuite from "./growth/GrowthSuite";
 import { AgencyView } from "./features/agency/AgencyView";
 import { ClientLocationSelector } from "./features/agency/ClientLocationSelector";
 import { ContentView } from "./features/content/ContentView";
@@ -83,7 +82,6 @@ import {
   INITIAL_REQUESTS_BY_BUSINESS,
   OWNER_SESSION,
   PLATFORM_EXCEPTIONS,
-  REVIEWS_BY_BUSINESS,
   canConfigureTenant,
   canManageBilling,
   canReadTenantData,
@@ -96,7 +94,6 @@ import {
   type BusinessAccount,
   type Channel,
   type RequestRecord,
-  type ReviewRecord,
   type SessionContext,
   type SmsOveragePolicy,
   type SupportScope,
@@ -1234,7 +1231,6 @@ function AppShell() {
   const [requestsByBusiness, setRequestsByBusiness] = useState<Record<string, RequestRecord[]>>(() => Object.fromEntries(
     IS_DEMO_MODE ? Object.entries(INITIAL_REQUESTS_BY_BUSINESS).map(([businessId, requests]) => [businessId, [...requests]]) : [],
   ));
-  const [reviewsByBusiness, setReviewsByBusiness] = useState<Record<string, ReviewRecord[]>>(IS_DEMO_MODE ? REVIEWS_BY_BUSINESS : {});
   const [platformExceptions, setPlatformExceptions] = useState(IS_DEMO_MODE ? PLATFORM_EXCEPTIONS : []);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>(IS_DEMO_MODE ? INITIAL_AUDIT_EVENTS : []);
   const selectionToken = useMemo(
@@ -1341,7 +1337,6 @@ function AppShell() {
     setSession(workspace.session);
     setBusinesses(workspace.businesses);
     setRequestsByBusiness(workspace.requestsByBusiness);
-    setReviewsByBusiness(workspace.reviewsByBusiness);
     setWorkspaceAccess(workspace.access);
     setPlatformExceptions(workspace.exceptions);
     setAuditEvents(workspace.auditEvents);
@@ -1656,7 +1651,6 @@ function AppShell() {
       setEndingSupportSession(false);
       setBusinesses([]);
       setRequestsByBusiness({});
-      setReviewsByBusiness({});
       setWorkspaceAccess(undefined);
       setPlatformExceptions([]);
       setAuditEvents([]);
@@ -1782,9 +1776,6 @@ function AppShell() {
   } : business;
   const requests = (requestsByBusiness[business.id] ?? []).filter(
     (request) => !selectedLocationId || request.locationId === selectedLocationId,
-  );
-  const reviews = (reviewsByBusiness[business.id] ?? []).filter(
-    (review) => !selectedLocationId || review.locationId === selectedLocationId,
   );
   const accessMatchesContext = workspaceAccess?.businessId === business.id
     && (!workspaceAccess.locationId || workspaceAccess.locationId === selectedLocationId);
@@ -2135,20 +2126,17 @@ function AppShell() {
               DemoNoticeComponent={DemoNotice}
             />
           ) : settingsBillingTab === "billing" && canReadTenantBilling ? <TeamBillingView business={business} canConfigure={canManageTenantBilling} canManageStripe={canManageStripeBilling} canViewTeamMembers={canConfigure} onSaveSmsPolicy={saveSmsOveragePolicy} onStartCheckout={startStripeCheckout} onOpenBillingPortal={openStripeBillingPortal} stripeCheckoutEnabled={stripeCheckoutEnabled} stripePortalEnabled={stripePortalEnabled} /> : null}</SettingsBillingView>}
-          {!agencyMode && canReadTenant && view === "home" && <HomeView><GrowthSuite
+          {!agencyMode && canReadTenant && view === "home" && <HomeView
             business={business}
-            businesses={businesses}
             requests={requests}
-            reviews={reviews}
             session={session}
-            agencyMode={agencyMode}
             canConfigure={canConfigure}
             canManageBilling={canManageTenantBilling}
             selectedLocationId={selectedLocationId}
             onSelectLocation={(locationId) => navigateToView("home", { businessId: business.id, locationId })}
             onNavigate={navigateToView}
             onAddJob={() => setAddJobOpen(true)}
-          /></HomeView>}
+          />}
         </div>
       </main>
       <AddJobDialog open={addJobOpen && canConfigure} onClose={() => setAddJobOpen(false)} onAdd={addRequest} locationId={selectedLocationId} demoMode={IS_DEMO_MODE} />

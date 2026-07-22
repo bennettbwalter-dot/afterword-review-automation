@@ -147,18 +147,26 @@ test("Home module cards retain their exact nested destinations", async (t) => {
   const root = fileURLToPath(new URL("..", import.meta.url));
   const vite = await createServer({ appType: "custom", configFile: false, logLevel: "silent", root, server: { middlewareMode: true } });
   t.after(() => vite.close());
-  const { HOME_MODULES } = await vite.ssrLoadModule("/src/growth/GrowthSuite.tsx");
+  const { HOME_MODULES } = await vite.ssrLoadModule("/src/features/home/home-domain.ts");
   const routeFor = (title: string) => {
     const card = HOME_MODULES.find((candidate) => candidate.title === title);
     assert.ok(card, `missing ${title} card`);
     return workspaceRoute(card.view, card.routeContext);
   };
-  assert.equal(routeFor("Review Anchor"), "/app/google-profile/reviews");
-  assert.equal(routeFor("Customer requests"), "/app/google-profile/requests-qr");
-  assert.equal(routeFor("Review workflow"), "/app/google-profile/requests-qr");
-  assert.equal(routeFor("Review QR codes"), "/app/google-profile/requests-qr");
-  assert.equal(routeFor("Connected services"), "/app/settings-billing/connections");
-  assert.equal(routeFor("Account and billing"), "/app/settings-billing/billing");
+  assert.equal(routeFor("Google Profile"), "/app/google-profile");
+  assert.equal(routeFor("Reviews"), "/app/google-profile/reviews");
+  assert.equal(routeFor("Requests & QR"), "/app/google-profile/requests-qr");
+  assert.equal(routeFor("Content"), "/app/content");
+  assert.equal(routeFor("Reports"), "/app/reports");
+  assert.equal(routeFor("Connections"), "/app/settings-billing/connections");
+  assert.equal(routeFor("Billing"), "/app/settings-billing/billing");
+});
+
+test("module tab navigation preserves the current business and location context", () => {
+  const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(appSource, /const businessId = destinationContext\.businessId \?\? currentBusinessId;/u);
+  assert.match(appSource, /workspaceLocationForBusiness\(\s*routeContext,\s*businessId,\s*destinationContext\.locationId,/u);
+  assert.match(appSource, /navigate\(workspaceRoute\(nextView, \{ \.\.\.destinationContext, businessId, locationId \}, location\.search\)/u);
 });
 
 test("billing tabs expose selected state and omit inaccessible Connections", () => {
