@@ -17,6 +17,11 @@ function CreateReadiness() {
         <p className="content-readiness-eyebrow">Manual-first workflow</p>
         <h2>Prepare approved business content</h2>
         <p className="content-readiness-copy">Start with original business sources. Manual image and video remain independent from paid video generation, and every destination needs its own release evidence.</p>
+        <ol className="content-readiness-journey" aria-label="Future content journey">
+          <li><strong>Validated upload</strong> — private media Storage and moderation evidence must be proven first.</li>
+          <li><strong>Immutable revision approval</strong> — a prepared revision must be approved before it can move forward.</li>
+          <li><strong>Publication to a proven destination</strong> — only a destination that passes its release gate can receive approved content.</li>
+        </ol>
       </div>
       <div className="content-source-grid">
         {CONTENT_SOURCE_GUIDANCE.map((source) => <article key={source.id}>

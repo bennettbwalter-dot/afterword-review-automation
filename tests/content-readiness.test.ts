@@ -61,6 +61,14 @@ test("Create explains the manual-first sources and every unavailable capability"
   assert.equal((content.match(/>Unavailable</g) ?? []).length, 7);
 });
 
+test("Create explains the future read-only content journey", () => {
+  const content = renderContent("create");
+
+  assert.match(content, /Validated upload/);
+  assert.match(content, /Immutable revision approval/);
+  assert.match(content, /Publication to a proven destination/);
+});
+
 test("Create remains static and excludes review content", () => {
   const content = renderContent("create");
 

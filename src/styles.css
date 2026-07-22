@@ -5558,6 +5558,18 @@ textarea[aria-invalid="true"] {
   color: var(--color-muted);
 }
 
+.content-readiness-journey {
+  display: grid;
+  gap: var(--space-xs);
+  margin: var(--space-md) 0 0;
+  padding-inline-start: var(--space-lg);
+  color: var(--color-muted);
+}
+
+.content-readiness-journey strong {
+  color: var(--color-ink);
+}
+
 .content-source-grid,
 .content-capability-grid {
   display: grid;
