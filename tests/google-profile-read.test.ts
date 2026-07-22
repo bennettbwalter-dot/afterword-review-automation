@@ -93,18 +93,24 @@ test("Google Profile read projection is business and location scoped", () => {
   assert.notEqual(snapshot.workflow?.reviewDestination?.runtimeUrl, workspace.workflowsByLocation[OTHER_LOCATION_ID]?.reviewDestination?.runtimeUrl);
 });
 
-test("Google Profile read projection excludes a QR code from another location", () => {
+test("Google Profile read projection rejects a location report without location-keyed connection evidence", () => {
   const selectedWorkspace = cloneWorkspace();
   if (selectedWorkspace.access) selectedWorkspace.access.locationId = OTHER_LOCATION_ID;
-  const snapshot = projectGoogleProfileSnapshot(
+  assertNotFound(() => projectGoogleProfileSnapshot(
     selectedWorkspace,
     BUSINESS_ID,
     OTHER_LOCATION_ID,
-  );
+  ));
+});
+
+test("Google Profile read projection excludes a QR code from another location", () => {
+  const selectedWorkspace = cloneWorkspace();
+  selectedWorkspace.qrCodesByBusiness[BUSINESS_ID] = { locationId: OTHER_LOCATION_ID, publicToken: "other-location-token" };
+  const snapshot = projectGoogleProfileSnapshot(selectedWorkspace, BUSINESS_ID, LOCATION_ID);
 
   assert.equal(snapshot.qr, null);
   assert.equal(snapshot.reviews.length, 1);
-  assert.equal(snapshot.reviews[0]?.id, "review-b");
+  assert.equal(snapshot.reviews[0]?.id, "review-a");
 });
 
 test("Google Profile read projection excludes a workflow whose embedded scope is another location", () => {
@@ -134,8 +140,8 @@ test("Google Profile read projection rejects every non-exact tenant grant with t
 test("Google Profile connection states and capability recovery reasons fail closed", () => {
   const cases = [
     { status: "Connected", tone: "success" as const, expected: "connected", reason: /approved and proven in a controlled pilot/u },
-    { status: "Disconnected", tone: "warning" as const, expected: "disconnected", reason: /Reconnect the selected Google Business Profile location first/u },
-    { status: "Permission revoked", tone: "warning" as const, expected: "disconnected", reason: /Reconnect the selected Google Business Profile location first/u },
+    { status: "Disconnected", tone: "success" as const, expected: "disconnected", reason: /Reconnect the selected Google Business Profile location first/u },
+    { status: "Permission revoked", tone: "success" as const, expected: "disconnected", reason: /Reconnect the selected Google Business Profile location first/u },
     { status: "Permission loss detected", tone: "danger" as const, expected: "disconnected", reason: /Reconnect the selected Google Business Profile location first/u },
     { status: "Sync delayed", tone: "warning" as const, expected: "attention", reason: /Resolve the selected location's Google connection issue first/u },
   ] as const;
@@ -159,18 +165,21 @@ test("Google Profile connection states and capability recovery reasons fail clos
 test("Google Profile route binds repository reads to the actor and exact requested location", async (t) => {
   const actor = { userId: "actor-1", role: "agency_admin" } as ActorContext;
   const calls: Array<{ actor: ActorContext; businessId?: string; locationId?: string }> = [];
+  let currentActor: ActorContext | undefined = actor;
+  let denyBusinessAccess = false;
   let denyScopedLocation = false;
   const repository = {
     async getWorkspace(capturedActor: ActorContext, businessId?: string, locationId?: string) {
       calls.push({ actor: capturedActor, businessId, locationId });
       const result = cloneWorkspace();
+      if (denyBusinessAccess && !locationId) result.businesses = [];
       if (denyScopedLocation && locationId && result.access) result.access.locationId = OTHER_LOCATION_ID;
       return result;
     },
   } as PlatformRepository;
   const app = Fastify();
   t.after(() => app.close());
-  app.addHook("preHandler", async (request) => { request.actor = actor; });
+  app.addHook("preHandler", async (request) => { request.actor = currentActor; });
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ApiError) return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message } });
     return reply.code(500).send({ error: { code: "INTERNAL_ERROR" } });
@@ -187,10 +196,24 @@ test("Google Profile route binds repository reads to the actor and exact request
     { sameActor: true, businessId: BUSINESS_ID, locationId: LOCATION_ID },
   ]);
 
+  currentActor = undefined;
+  const unauthenticated = await app.inject({ method: "GET", url });
+  assert.equal(unauthenticated.statusCode, 401);
+  assert.equal(unauthenticated.headers["cache-control"], "no-store");
+
+  currentActor = actor;
+  denyBusinessAccess = true;
+  calls.length = 0;
+  const forbidden = await app.inject({ method: "GET", url });
+  assert.equal(forbidden.statusCode, 403);
+  assert.equal(forbidden.headers["cache-control"], "no-store");
+
+  denyBusinessAccess = false;
   denyScopedLocation = true;
   calls.length = 0;
   const denied = await app.inject({ method: "GET", url });
   assert.equal(denied.statusCode, 404);
+  assert.equal(denied.headers["cache-control"], "no-store");
   assert.equal(denied.json().error.code, "GOOGLE_PROFILE_NOT_FOUND");
   assert.doesNotMatch(denied.body, /Visible review/u);
 });

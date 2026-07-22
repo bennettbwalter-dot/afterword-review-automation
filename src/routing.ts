@@ -166,3 +166,11 @@ export function workspaceContextFromSearch(search: string): WorkspaceRouteContex
 
 export function publicReviewPreviewUrl(reviewUrl: string) { return `${reviewUrl}${reviewUrl.includes("?") ? "&" : "?"}preview=1`; }
 export function isPublicReviewPreview(search: string) { return new URLSearchParams(search).get("preview") === "1"; }
+
+export function beginPublicReviewTrackingLoad(previewMode: boolean, _previousScanId?: string) {
+  return { scanId: undefined, shouldRecordScan: !previewMode } as const;
+}
+
+export function canRecordPublicReviewContinue(previewMode: boolean, scanId?: string) {
+  return !previewMode && Boolean(scanId);
+}

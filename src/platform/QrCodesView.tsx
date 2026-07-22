@@ -17,7 +17,7 @@ import QRCode from "qrcode";
 import { useEffect, useRef, useState } from "react";
 import { platformApi, type PublicReviewFlowPayload } from "./api";
 import type { BusinessAccount, QrCodeRecord } from "./domain";
-import { isPublicReviewPreview, publicReviewPreviewUrl } from "../routing";
+import { beginPublicReviewTrackingLoad, canRecordPublicReviewContinue, isPublicReviewPreview, publicReviewPreviewUrl } from "../routing";
 
 const PUBLIC_REVIEW_BASE_URL = (import.meta.env.VITE_PUBLIC_REVIEW_BASE_URL || window.location.origin).replace(/\/$/, "");
 
@@ -246,13 +246,15 @@ export function LivePublicReviewFlow({ publicToken }: { publicToken: string }) {
   const previewMode = isPublicReviewPreview(window.location.search);
 
   useEffect(() => {
+    const tracking = beginPublicReviewTrackingLoad(previewMode, scanIdRef.current);
+    scanIdRef.current = tracking.scanId;
     let active = true;
     const load = async () => {
       try {
         const loadedFlow = await platformApi.getPublicReviewFlow(publicToken);
         if (!active) return;
         setFlow(loadedFlow);
-        if (previewMode) return;
+        if (!tracking.shouldRecordScan) return;
         const storageKey = `afterword:qr-live-scan:${publicToken}`;
         const existingScanId = sessionStorage.getItem(storageKey);
         if (existingScanId) {
@@ -276,7 +278,10 @@ export function LivePublicReviewFlow({ publicToken }: { publicToken: string }) {
     if (!flow || continued) return;
     setContinued(true);
     try {
-      if (scanIdRef.current) await platformApi.markPublicReviewContinue(scanIdRef.current);
+      const scanId = scanIdRef.current;
+      if (!previewMode && canRecordPublicReviewContinue(previewMode, scanId) && scanId) {
+        await platformApi.markPublicReviewContinue(scanId);
+      }
     } finally {
       window.location.assign(flow.destinationUrl);
     }

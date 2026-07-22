@@ -50,7 +50,7 @@ function unavailableCapabilityFor(state: GoogleProfileSnapshot["connection"]["st
 
 export function projectGoogleProfileSnapshot(workspace: WorkspacePayload, businessId: string, locationId: string): GoogleProfileSnapshot {
   const business = workspace.businesses.find((candidate) => candidate.id === businessId);
-  const locationKnown = business?.locationId === locationId || business?.locationReports.some((location) => location.id === locationId);
+  const locationKnown = business?.locationId === locationId;
   if (
     !business
     || !locationKnown
@@ -98,11 +98,11 @@ export function projectGoogleProfileSnapshot(workspace: WorkspacePayload, busine
 
 export async function registerGoogleProfileRoutes(app: FastifyInstance, options: BuildAppOptions) {
   app.get("/api/v1/businesses/:businessId/locations/:locationId/google-profile", async (request, reply) => {
+    reply.header("cache-control", "no-store");
     const actor = requireActor(request);
     const { businessId, locationId } = paramsSchema.parse(request.params);
     await requireBusinessAccess(options.repository, actor, businessId);
     const workspace = await options.repository.getWorkspace(actor, businessId, locationId);
-    reply.header("cache-control", "no-store");
     return sendData(reply, projectGoogleProfileSnapshot(workspace, businessId, locationId));
   });
 }

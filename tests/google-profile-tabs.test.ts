@@ -183,6 +183,10 @@ test("RequestsQrTab exposes the exact destination only with matching runtime ver
     { ...scopedWorkflow.reviewDestination, matchesRuntime: false },
     { ...scopedWorkflow.reviewDestination, verifiedAt: undefined },
     { ...scopedWorkflow.reviewDestination, runtimeUrl: undefined },
+    { ...scopedWorkflow.reviewDestination, connectionHealth: undefined },
+    { ...scopedWorkflow.reviewDestination, connectionHealth: "authentication_required" },
+    { ...scopedWorkflow.reviewDestination, connectionHealth: "permission_revoked" },
+    { ...scopedWorkflow.reviewDestination, connectionHealth: "disabled" },
   ]) {
     const markup = renderDestination(unavailable);
     assert.match(markup, /Incomplete/u);

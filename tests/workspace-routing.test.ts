@@ -7,6 +7,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import {
   appViewFromPath,
+  beginPublicReviewTrackingLoad,
+  canRecordPublicReviewContinue,
   defaultAppView,
   defaultWorkspaceRoute,
   isAppViewAllowed,
@@ -166,13 +168,21 @@ test("billing tabs expose selected state and omit inaccessible Connections", () 
 });
 
 test("QR test links use a non-recording preview context", () => {
-  const qrSource = readFileSync(new URL("../src/platform/QrCodesView.tsx", import.meta.url), "utf8");
   assert.equal(publicReviewPreviewUrl("https://reviews.example/r/abc"), "https://reviews.example/r/abc?preview=1");
   assert.equal(publicReviewPreviewUrl("https://reviews.example/r/abc?placement=card"), "https://reviews.example/r/abc?placement=card&preview=1");
   assert.equal(isPublicReviewPreview("?preview=1"), true);
   assert.equal(isPublicReviewPreview("?preview=0"), false);
-  assert.match(qrSource, /if \(previewMode\) return;[\s\S]*platformApi\.recordPublicReviewScan/u);
-  assert.match(qrSource, /if \(scanIdRef\.current\) await platformApi\.markPublicReviewContinue/u);
+});
+
+test("live-to-preview review tracking clears stale scan state and records neither scan nor continue", () => {
+  const live = beginPublicReviewTrackingLoad(false, undefined);
+  assert.deepEqual(live, { scanId: undefined, shouldRecordScan: true });
+  assert.equal(canRecordPublicReviewContinue(false, "live-scan-id"), true);
+
+  const preview = beginPublicReviewTrackingLoad(true, "live-scan-id");
+  assert.deepEqual(preview, { scanId: undefined, shouldRecordScan: false });
+  assert.equal(canRecordPublicReviewContinue(true, "live-scan-id"), false);
+  assert.equal(canRecordPublicReviewContinue(true, preview.scanId), false);
 });
 
 test("static hosting falls back to the SPA for workspace and public review routes", () => {
