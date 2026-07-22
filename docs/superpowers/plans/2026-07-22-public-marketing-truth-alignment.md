@@ -64,22 +64,33 @@ const marketingSource = extractPublicMarketingSource(appSource);
 const unsupportedClaimPatterns = [
   /\bsocial(?: media)? (?:publishing|posting)\b/iu,
   /\bautomatic(?:ally)? (?:social(?: media)? )?post(?:ing|s)?\b/iu,
-  /\bupload (?:your )?(?:photos?|images?|videos?|media)\b/iu,
-  /\bAI (?:content|video) generation\b/iu,
+  /\bupload (?:(?:a|your) )?(?:photos?|images?|videos?|media)\b/iu,
+  /\bAI(?:-powered)? (?:content|video) generation\b/iu,
   /\bgenerate (?:a |your )?(?:social(?: media)? posts?|videos?)\b/iu,
   /\b(?:publish|post)(?: (?:posts?|updates?))? (?:to |on )?Google(?: (?:Business Profile )?(?:posts?|updates?))?\b/iu,
   /\b(?:reply|respond) to (?:Google )?reviews?\b/iu,
   /\b(?:double|increase|boost|grow|get more|win more)\b[^.!?\r\n]{0,80}\b(?:reviews?|ratings?|rankings?|enquiries|customers?|revenue)\b/iu,
   /\b(?:guarantee|promise)\b[^.!?\r\n]{0,80}\b(?:more reviews?|higher ratings?|rankings?|enquiries|customers?|revenue)\b/iu,
 ];
-const explicitCaveatPattern = /\b(?:cannot|can't|do not|don't|does not|doesn't|will not|won't|never|not available|unavailable|no (?:ability|support|guarantee)|without)\b/iu;
+
+function hasExplicitCaveat(source: string, index: number, length: number): boolean {
+  const before = source.slice(Math.max(0, index - 80), index);
+  const after = source.slice(index + length, index + length + 160);
+  const immediatePrefix = /(?:\b(?:cannot|can't|do not|don't|does not|doesn't|will not|won't|never|unable to|not able to)\s+(?:(?:currently|yet)\s+)?|\bno\s+)$/iu;
+  const immediateSuffix = /^\s+(?:is|are|remains?)\s+(?:not available|unavailable|blocked|disabled)\b/iu;
+  const connectedFaqAnswer = /^\s*\?\s*(?:no|not currently)\s*[.!]\s*[^.!?]{0,80}\b(?:is|are)\s+(?:not available|unavailable|blocked|disabled)\b/iu;
+  return immediatePrefix.test(before)
+    || immediateSuffix.test(after)
+    || connectedFaqAnswer.test(after);
+}
 
 function findUnsupportedClaims(source: string): string[] {
-  return source
-    .split(/[\r\n.!?;]+|\bbut\b/iu)
-    .flatMap((clause) => explicitCaveatPattern.test(clause)
-      ? []
-      : unsupportedClaimPatterns.flatMap((pattern) => clause.match(pattern) ?? []));
+  return unsupportedClaimPatterns.flatMap((pattern) => {
+    const globalPattern = new RegExp(pattern.source, `${pattern.flags}g`);
+    return [...source.matchAll(globalPattern)]
+      .filter((match) => !hasExplicitCaveat(source, match.index, match[0].length))
+      .map((match) => match[0]);
+  });
 }
 
 function sourceRange(source: string, startMarker: string, endMarker: string): string {
@@ -167,6 +178,11 @@ test("unsupported claim detection distinguishes availability claims from caveats
     "Publish Google posts",
     "Post updates to Google",
     "Respond to Google reviews",
+    "Without leaving Review Anchor, publish Google posts",
+    "You don’t need another tool to reply to Google reviews",
+    "Never switch tabs to respond to Google reviews",
+    "Upload a photo",
+    "AI-powered content generation",
     "Double your reviews and revenue",
     "Boost your rankings",
     "Guarantee more reviews",
@@ -176,11 +192,13 @@ test("unsupported claim detection distinguishes availability claims from caveats
     "We do not reply to Google reviews",
     "Social media publishing is not available",
     "No guarantee of more reviews or revenue",
+    "Can we publish Google posts? No. Publishing is unavailable.",
     "We do not guarantee review counts, ratings, search rankings, enquiries or revenue.",
     "Sample Google review data",
   ];
-  for (const claim of prohibited) assert.ok(findUnsupportedClaims(claim).length > 0);
-  for (const caveat of permitted) assert.deepEqual(findUnsupportedClaims(caveat), []);
+  const missed = prohibited.filter((claim) => findUnsupportedClaims(claim).length === 0);
+  const rejected = permitted.filter((caveat) => findUnsupportedClaims(caveat).length > 0);
+  assert.deepEqual({ missed, rejected }, { missed: [], rejected: [] });
 });
 
 test("honesty guardrails and Google access caveat remain", () => {
