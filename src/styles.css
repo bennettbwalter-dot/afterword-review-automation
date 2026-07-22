@@ -3067,7 +3067,7 @@ textarea[aria-invalid="true"] {
   padding: var(--space-md);
 }
 
-.integration-card--publication-readiness {
+.integration-card.integration-card--publication-readiness {
   grid-template-columns: minmax(0, 1fr);
 }
 

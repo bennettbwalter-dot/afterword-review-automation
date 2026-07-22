@@ -70,7 +70,8 @@ test("gives publication ledger copy its own full-width card layout", () => {
   const viewSource = readFileSync(new URL("../src/features/settings/ConnectionsView.tsx", import.meta.url), "utf8");
   const stylesSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
   assert.match(viewSource, /className="integration-card integration-card--publication-readiness"/u);
-  assert.match(stylesSource, /\.integration-card--publication-readiness\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\);\s*\}/u);
+  assert.match(stylesSource, /\.integration-card\.integration-card--publication-readiness\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\);\s*\}/u);
+  assert.match(stylesSource, /@media \(min-width: 60rem\)\s*\{[\s\S]*?\.integration-card\s*\{\s*grid-template-columns:\s*2\.75rem minmax\(12rem, 1fr\);/u);
 });
 
 test("Google setup follows configured, loading, authorization, and demo rules", () => {

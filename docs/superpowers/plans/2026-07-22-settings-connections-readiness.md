@@ -378,7 +378,7 @@ git commit -m "feat: show settings connection readiness"
 Run:
 
 ```bash
-git diff HEAD~2..HEAD -- src/App.tsx src/features/settings/connection-readiness.ts src/features/settings/ConnectionsView.tsx tests/settings-connection-readiness.test.ts tests/settings-connections-view.test.ts
+git diff 521b208..HEAD
 ```
 
 Expected: only provider-independent Settings extraction, static readiness content, tests, and composition changes appear; no external writes or new provider activation path exists.

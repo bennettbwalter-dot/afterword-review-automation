@@ -18,3 +18,13 @@ test("publication capabilities are exact, platform-specific, and fail closed", (
     assert.match(capability.prerequisites, /reconciliation/i);
   }
 });
+
+test("publication prerequisites remain attached to their exact destination", () => {
+  assert.deepEqual(Object.fromEntries(PUBLICATION_CAPABILITIES.map(({ id, prerequisites }) => [id, prerequisites])), {
+    "google-posts-media": "Requires approved write scopes, exact location capability, destination reconciliation, and a controlled pilot.",
+    "facebook-page": "Requires Meta app approval, required Page scopes, exact Page enumeration, reconciliation, and a controlled pilot.",
+    "instagram-professional": "Requires Meta app approval, professional-account linkage and enumeration, required scopes, reconciliation, and a controlled pilot.",
+    "linkedin-organisation": "Requires LinkedIn app approval, an authorised organisation or Page role, organisation enumeration, reconciliation, and a controlled pilot.",
+    "youtube-channel": "Requires an approved API project, required scopes, exact channel enumeration, upload reconciliation, and a controlled pilot.",
+  });
+});
