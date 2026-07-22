@@ -15,10 +15,13 @@ test("Google review bodies remain inside the Google Profile review view", async 
 });
 
 test("Content does not offer Google reviews as a creation source and write capabilities fail closed", async () => {
-  const content = await readFile(path.resolve("src", "features", "content", "ContentView.tsx"), "utf8");
+  const contentView = await readFile(path.resolve("src", "features", "content", "ContentView.tsx"), "utf8");
+  const contentReadiness = await readFile(path.resolve("src", "features", "content", "content-readiness.ts"), "utf8");
+  const content = `${contentView}\n${contentReadiness}`;
   const profileRoute = await readFile(path.resolve("server", "routes", "google-profile.ts"), "utf8");
 
   assert.doesNotMatch(content, /review source|Google review/i);
+  assert.doesNotMatch(content, /fetch\(|apiRequest|<input|type=["']file["']|Publish now|Generate video/);
   assert.match(profileRoute, /available: false as const/);
   assert.match(profileRoute, /Unavailable until the Google capability is approved and proven in a controlled pilot/);
 });
