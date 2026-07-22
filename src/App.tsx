@@ -449,7 +449,9 @@ function MarketingNav({ onOpenDemo }: { onOpenDemo: () => void }) {
         <nav className="marketing-nav__links" aria-label="Main navigation">
           <a href="#workflow" onClick={() => setMenuOpen(false)}>How it works</a>
           <a href="#pricing" onClick={() => setMenuOpen(false)}>Pricing</a>
-          <button type="button" className="nav-demo-link" onClick={onOpenDemo}>Growth Suite</button>
+          <button type="button" className="nav-demo-link" onClick={onOpenDemo}>
+            {IS_DEMO_MODE ? "Product demo" : "Workspace"}
+          </button>
         </nav>
         <ThemeToggle className="marketing-nav__theme" />
         <Button variant="primary" className="marketing-nav__cta" onClick={onOpenDemo}>
@@ -471,7 +473,7 @@ function HeroJourney() {
           <span className="hero-journey__business">Harbour &amp; Hearth</span>
           <span className="hero-journey__location">Bristol · Demo workspace</span>
         </span>
-        <StatusPill tone="success"><span className="live-dot" /> Automation live</StatusPill>
+        <StatusPill tone="success"><span className="live-dot" /> Sample workflow</StatusPill>
       </figcaption>
       <div className="hero-journey__body">
         <div className="mini-job-card">
@@ -505,7 +507,7 @@ function JourneyCanvas({ activeStep }: { activeStep: number }) {
           <small>Send review request</small>
           <strong>Harbour &amp; Hearth · Bristol</strong>
         </span>
-        <StatusPill tone="success"><span className="live-dot" /> Live</StatusPill>
+        <StatusPill tone="success"><span className="live-dot" /> Sample</StatusPill>
       </figcaption>
       <div className="journey-canvas__content">
         <div className="journey-track" aria-hidden="true">
@@ -645,11 +647,11 @@ function MarketingSite({ onOpenDemo, onStartSetup }: { onOpenDemo: () => void; o
       <main>
         <section className="hero-section" aria-labelledby="hero-title">
           <div className="hero-copy reveal-sequence">
-            <p className="hero-kicker"><span className="live-dot" /> Business growth, starting with reviews</p>
-            <h1 id="hero-title">Get more reviews. Win more customers.</h1>
-            <p className="hero-lede">Review Anchor gives local businesses one place to build customer trust, starting with genuine Google reviews. Ask every customer, follow up politely and track what changes.</p>
+            <p className="hero-kicker"><span className="live-dot" /> Google review requests, kept honest</p>
+            <h1 id="hero-title">Make every review request honest and easy to track.</h1>
+            <p className="hero-lede">Review Anchor gives local businesses one workspace for Google Profile, neutral review requests and QR, selected-location reporting, and connection readiness.</p>
             <div className="hero-actions">
-              <Button onClick={onStartSetup}>Open Growth Suite <ArrowRight size={17} aria-hidden="true" /></Button>
+              <Button onClick={onStartSetup}>{IS_DEMO_MODE ? "Preview workspace" : "Open workspace"} <ArrowRight size={17} aria-hidden="true" /></Button>
               <Button variant="secondary" onClick={() => document.getElementById("workflow")?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" })}>
                 Watch the workflow
               </Button>
@@ -657,7 +659,7 @@ function MarketingSite({ onOpenDemo, onStartSetup }: { onOpenDemo: () => void; o
             <div className="hero-trust-row">
               <span><ShieldCheck size={16} /> No review gating</span>
               <span><Clock3 size={16} /> Three-touch maximum</span>
-              <span><Bell size={16} /> Exception alerts</span>
+              <span><Bell size={16} /> Location-scoped records</span>
             </div>
           </div>
           <div className="hero-proof reveal-sequence"><HeroJourney /></div>
@@ -700,14 +702,14 @@ function MarketingSite({ onOpenDemo, onStartSetup }: { onOpenDemo: () => void; o
           <div className="control-copy">
             <span className="plain-label">Review Anchor dashboard</span>
             <h2 id="control-title">Monitor reputation outcomes and exceptions.</h2>
-            <p>This is the reporting and oversight layer after the request workflow: delivery failures, opt-outs, new reviews and broken integrations come to the top.</p>
+            <p>Use Google Profile, Reports, and Connections to inspect request delivery, opt-outs, cached reviews, and service status.</p>
             <ul className="check-list">
-              <li><Check size={17} /> Completed-job trigger health</li>
-              <li><Check size={17} /> Delivery, click and opt-out events</li>
-              <li><Check size={17} /> New Google reviews and rating movement</li>
-              <li><Check size={17} /> Monthly client report, ready to print</li>
+              <li><Check size={17} /> Completed-job workflow status</li>
+              <li><Check size={17} /> Request delivery, click, and opt-out totals</li>
+              <li><Check size={17} /> Google review data inside Google Profile</li>
+              <li><Check size={17} /> Printable location-scoped operational reports</li>
             </ul>
-          <Button variant="secondary" onClick={onOpenDemo}>Open Growth Suite <ArrowRight size={17} /></Button>
+          <Button variant="secondary" onClick={onOpenDemo}>{IS_DEMO_MODE ? "Preview workspace" : "Open workspace"} <ArrowRight size={17} /></Button>
           </div>
           <OutcomePreview />
         </section>
@@ -757,8 +759,8 @@ function MarketingSite({ onOpenDemo, onStartSetup }: { onOpenDemo: () => void; o
       </main>
 
       <footer className="statement-footer">
-        <p>Get more reviews. Win more customers.</p>
-        <div><Brand compact /><span>Business growth, starting with reviews · Demo build</span><span>© 2026</span></div>
+        <p>Honest Google review requests, clearly tracked.</p>
+        <div><Brand compact /><span>{IS_DEMO_MODE ? "Google-first reputation operations - Seeded product demo" : "Google-first reputation operations - Protected business workspace"}</span><span>© 2026</span></div>
       </footer>
 
       {activeStoryStep >= 2 && (
