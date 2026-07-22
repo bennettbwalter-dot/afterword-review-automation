@@ -18,13 +18,11 @@ import {
   MessageSquareText,
   Moon,
   Plus,
-  Send,
   ShieldCheck,
   Smartphone,
   Sparkles,
   Star,
   Sun,
-  Webhook,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -60,6 +58,7 @@ import { PostsMediaTab } from "./features/google-profile/PostsMediaTab";
 import { HomeView } from "./features/home/HomeView";
 import { ReportsView } from "./features/reports/ReportsView";
 import { SettingsBillingView } from "./features/settings/SettingsBillingView";
+import { ConnectionsView } from "./features/settings/ConnectionsView";
 import { SignupView } from "./features/onboarding/SignupView";
 import { VerifyEmailView } from "./features/onboarding/VerifyEmailView";
 import { BusinessOnboarding } from "./features/onboarding/BusinessOnboarding";
@@ -987,68 +986,6 @@ function WorkspaceAuthScreen({
   );
 }
 
-
-function IntegrationsView({ business, onConnect, canConfigure, services, servicesLoading }: { business: BusinessAccount; onConnect: () => void; canConfigure: boolean; services: ServiceStatus[]; servicesLoading: boolean }) {
-  const integrations = [
-    { key: "google", name: "Google Business Profile", detail: "Review sync and direct review destination", state: business.integrations.google, icon: MapPin },
-    { key: "messaging", name: "Messaging provider", detail: "SMS and email delivery events", state: business.integrations.messaging, icon: Send },
-    { key: "jobIntake", name: "Completed-job intake", detail: "Receives genuine customer job completions", state: business.integrations.jobIntake, icon: Webhook },
-  ];
-  const attentionCount = integrations.filter((integration) => integration.state.tone !== "success").length;
-  const googleService = services.find((service) => service.key === "google");
-  const googleAvailable = googleService?.configured ?? false;
-  return (
-    <div className="view-stack">
-      <DemoNotice />
-      <section className="integration-grid">
-        {integrations.map((integration) => {
-          const Icon = integration.icon;
-          const isGoogle = integration.key === "google";
-          const blocked = isGoogle && !IS_DEMO_MODE && (servicesLoading || !googleAvailable);
-          return (
-            <article className="integration-card" key={integration.name}>
-              <span className="integration-card__icon"><Icon size={22} /></span>
-              <div><h2>{integration.name}</h2><p>{integration.detail}</p></div>
-              <StatusPill tone={blocked ? "warning" : integration.state.tone}>{blocked ? "Not configured" : integration.state.status}</StatusPill>
-              {isGoogle && IS_DEMO_MODE ? (
-                <small className="integration-card__status-note">Connection setup requires an authenticated deployment and is unavailable in the seeded demo.</small>
-              ) : isGoogle ? (
-                <Button variant="secondary" disabled={!canConfigure || blocked} onClick={!blocked ? onConnect : undefined}>
-                  {servicesLoading && !IS_DEMO_MODE ? "Checking availability…" : blocked ? "Unavailable" : "Review setup"}
-                </Button>
-              ) : <small className="integration-card__status-note">Status is read from the shared workspace backend.</small>}
-            </article>
-          );
-        })}
-      </section>
-      {!IS_DEMO_MODE && services.length > 0 && (
-        <section className="panel integration-log">
-          <header className="panel__head">
-            <div><h2>Service availability</h2><p>What this deployment can currently do</p></div>
-            <StatusPill tone={services.every((service) => service.configured) ? "success" : "warning"}>
-              {services.filter((service) => service.configured).length}/{services.length} configured
-            </StatusPill>
-          </header>
-          {services.map((service) => (
-            <div key={service.key}>
-              <span>
-                {service.configured ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />} {service.label}
-              </span>
-              <small>
-                {service.detail}
-                {!service.configured && service.requires.length > 0 && ` Needs: ${service.requires.join(", ")}.`}
-              </small>
-            </div>
-          ))}
-        </section>
-      )}
-      <section className="panel integration-log">
-        <header className="panel__head"><div><h2>Integration event log</h2><p>{IS_DEMO_MODE ? "Latest sample events" : "Latest provider state"} · {business.name}</p></div><StatusPill tone={attentionCount ? "warning" : "success"}>{attentionCount ? `${attentionCount} need attention` : "No failures"}</StatusPill></header>
-        {integrations.map((integration) => <div key={integration.key}><span>{integration.state.tone === "success" ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />} {integration.name}</span><small>{integration.state.lastEvent}</small></div>)}
-      </section>
-    </div>
-  );
-}
 
 function AddJobDialog({ open, onClose, onAdd, locationId, demoMode }: { open: boolean; onClose: () => void; onAdd: (draft: CompletedJobDraft) => Promise<void>; locationId?: string; demoMode: boolean }) {
   const [firstName, setFirstName] = useState("");
@@ -2185,7 +2122,19 @@ function AppShell() {
             DemoNoticeComponent={DemoNotice}
             StarsComponent={Stars}
           />}
-          {!agencyMode && view === "settings-billing" && <SettingsBillingView tab={settingsBillingTab} canAccessConnections={session.businessRole !== "billing" && canReadTenant} onTabChange={(tab) => navigateToView("settings-billing", { settingsBillingTab: tab })}>{settingsBillingTab === "connections" && canReadTenant ? <IntegrationsView business={contextBusiness} onConnect={() => void beginGoogleConnection()} canConfigure={canConfigure && !supportSession} services={services} servicesLoading={servicesLoading} /> : settingsBillingTab === "billing" && canReadTenantBilling ? <TeamBillingView business={business} canConfigure={canManageTenantBilling} canManageStripe={canManageStripeBilling} canViewTeamMembers={canConfigure} onSaveSmsPolicy={saveSmsOveragePolicy} onStartCheckout={startStripeCheckout} onOpenBillingPortal={openStripeBillingPortal} stripeCheckoutEnabled={stripeCheckoutEnabled} stripePortalEnabled={stripePortalEnabled} /> : null}</SettingsBillingView>}
+          {!agencyMode && view === "settings-billing" && <SettingsBillingView tab={settingsBillingTab} canAccessConnections={session.businessRole !== "billing" && canReadTenant} onTabChange={(tab) => navigateToView("settings-billing", { settingsBillingTab: tab })}>{settingsBillingTab === "connections" && canReadTenant ? (
+            <ConnectionsView
+              business={contextBusiness}
+              onConnect={() => void beginGoogleConnection()}
+              canConfigure={canConfigure && !supportSession}
+              services={services}
+              servicesLoading={servicesLoading}
+              demoMode={IS_DEMO_MODE}
+              ButtonComponent={Button}
+              StatusPillComponent={StatusPill}
+              DemoNoticeComponent={DemoNotice}
+            />
+          ) : settingsBillingTab === "billing" && canReadTenantBilling ? <TeamBillingView business={business} canConfigure={canManageTenantBilling} canManageStripe={canManageStripeBilling} canViewTeamMembers={canConfigure} onSaveSmsPolicy={saveSmsOveragePolicy} onStartCheckout={startStripeCheckout} onOpenBillingPortal={openStripeBillingPortal} stripeCheckoutEnabled={stripeCheckoutEnabled} stripePortalEnabled={stripePortalEnabled} /> : null}</SettingsBillingView>}
           {!agencyMode && canReadTenant && view === "home" && <HomeView><GrowthSuite
             business={business}
             businesses={businesses}
