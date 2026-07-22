@@ -83,6 +83,7 @@ test("claim approval lets only the direct client discover and select a named loc
   const schema = await readFile(path.resolve("database", "migrations", "011_agency_client_grants.sql"), "utf8");
   const app = await readFile(path.resolve("src", "App.tsx"), "utf8");
   const runner = await readFile(path.resolve("scripts", "test-database-isolation.ts"), "utf8");
+  assert.ok(schema.includes("order by business_name,location_name"));
   assert.match(schema, /function\s+app_private\.list_agency_client_claim_locations[\s\S]+business_memberships/i);
   assert.match(schema, /function\s+app_private\.select_agency_client_claim_location[\s\S]+membership\.user_id\s*=\s*app_private\.current_user_id\(\)/i);
   assert.match(schema, /select\s+lower\(btrim\(email\)\)/i);
