@@ -46,7 +46,7 @@ function hasConnectedFaqCaveat(after: string, claim: string): boolean {
   if (/reviews?/iu.test(claim) && /repl|respond/iu.test(claim)) references.push("review (?:replies|responses)", "replying", "responding");
 
   const capabilityState = new RegExp(
-    `\\b(?:${references.join("|")})\\b\\s+(?:is|are|remains?)\\s+(?:not available|unavailable|blocked|disabled)\\b`,
+    `\\b(?:${references.join("|")})\\b\\s+(?:is|are|remains?)\\s+(?:(?:currently|yet)\\s+)?(?:not available|unavailable|blocked|disabled)\\b`,
     "iu",
   );
   return capabilityState.test(answer);
@@ -55,11 +55,15 @@ function hasConnectedFaqCaveat(after: string, claim: string): boolean {
 function hasExplicitCaveat(source: string, index: number, length: number, claim: string): boolean {
   const before = source.slice(Math.max(0, index - 80), index);
   const after = source.slice(index + length, index + length + 160);
-  const immediatePrefix = /(?:\b(?:can(?:not|['’]t)|do not|don['’]t|does not|doesn['’]t|will not|won['’]t|never|unable to|not able to)\s+(?:(?:currently|yet)\s+)?|\bno\s+)$/iu;
-  const immediateSuffix = /^\s+(?:is|are|remains?)\s+(?:not available|unavailable|blocked|disabled)\b/iu;
+  const internalNegation = /\b(?:(?:is|are|was|were)\s+(?:(?:currently|yet)\s+)?not|can(?:not|['’]t)\s+be|(?:do|does|did)\s+not\s+(?:include|support)|(?:don|doesn|didn)['’]t\s+(?:include|support))\b/iu;
+  const immediatePrefix = /(?:\b(?:(?:do|does|did)\s+not\s+(?:include|support)|(?:don|doesn|didn)['’]t\s+(?:include|support)|can(?:not|['’]t)|do not|don['’]t|does not|doesn['’]t|will not|won['’]t|never|unable to|not able to)\s+(?:(?:currently|yet)\s+)?|\bno\s+)$/iu;
+  const immediateNegatedSuffix = /^\s+(?:(?:is|are|was|were)\s+(?:(?:currently|yet)\s+)?not\b|can(?:not|['’]t)\s+be\b)/iu;
+  const immediateStateSuffix = /^\s+(?:is|are|remains?)\s+(?:(?:currently|yet)\s+)?(?:not available|unavailable|blocked|disabled)\b/iu;
 
-  return immediatePrefix.test(before)
-    || immediateSuffix.test(after)
+  return internalNegation.test(claim)
+    || immediatePrefix.test(before)
+    || immediateNegatedSuffix.test(after)
+    || immediateStateSuffix.test(after)
     || hasConnectedFaqCaveat(after, claim);
 }
 
@@ -179,9 +183,15 @@ test("unsupported claim detection distinguishes availability claims from caveats
     "We do not reply to Google reviews",
     "We don’t publish to Google",
     "We can’t reply to Google reviews",
+    "Images are not uploaded",
+    "Google posts cannot be published",
+    "Reviews cannot be replied to",
+    "Google Profile does not include social media publishing",
+    "This capability is currently unavailable",
     "Social media publishing is not available",
     "No guarantee of more reviews or revenue",
     "Can we publish Google posts? No. Publishing is unavailable.",
+    "Can we publish Google posts? No. This capability is currently unavailable.",
     "We do not guarantee review counts, ratings, search rankings, enquiries or revenue.",
     "Sample Google review data",
   ];
