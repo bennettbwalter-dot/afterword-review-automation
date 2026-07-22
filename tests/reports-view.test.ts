@@ -94,6 +94,15 @@ test("renders the selected printable operational report without sensitive record
     "approved pricing",
   ]) assert.ok(markup.includes(text), `missing ${text}`);
 
+  for (const [label, value] of [
+    ["Completed jobs", "142"],
+    ["Requests delivered", "121"],
+    ["Unique link clicks", "18"],
+    ["Reviews cached", "11"],
+    ["Google rating", "4.8"],
+  ]) assert.match(markup, new RegExp(`<span>${label}</span><strong>${value}</strong>`));
+  assert.ok(markup.includes("126 total Google reviews in the current snapshot."));
+
   assert.equal((markup.match(/Unavailable/g) ?? []).length, 2);
   for (const marker of markers) assert.equal(markup.includes(marker), false, `must not render ${marker}`);
   assert.doesNotMatch(markup, />\s*(?:Upload|Publish now|Generate|Billing|Connect)\s*</u);
@@ -103,4 +112,47 @@ test("renders the selected printable operational report without sensitive record
     assert.doesNotMatch(section, /<(?:strong|svg|button)\b/iu);
     assert.doesNotMatch(section.replace(/<[^>]*>/gu, ""), /(?:\d|counter|chart|success state)/iu);
   }
+});
+
+test("renders the demo report identity and detected-review wording", () => {
+  const markup = renderToStaticMarkup(createElement(ReportsView, {
+    business,
+    selectedBusiness,
+    demoMode: true,
+    BrandComponent: Brand,
+    ButtonComponent: Button,
+    DemoNoticeComponent: DemoNotice,
+    StarsComponent: Stars,
+    onPrint: () => undefined,
+  }));
+
+  for (const text of ["Monthly report", "July 2026", "Sample report", "New reviews detected", "126 total reviews at month end.", "Sample data", "Not a live client report"]) {
+    assert.ok(markup.includes(text), `missing ${text}`);
+  }
+});
+
+test("renders the combined printable report from the domain projection", () => {
+  const markup = renderToStaticMarkup(createElement(ReportsView, {
+    business,
+    selectedBusiness,
+    demoMode: false,
+    BrandComponent: Brand,
+    ButtonComponent: Button,
+    DemoNoticeComponent: DemoNotice,
+    StarsComponent: Stars,
+    onPrint: () => undefined,
+    initialCombined: true,
+  }));
+
+  assert.ok(markup.includes("Combined 2-location report"));
+  assert.match(markup, /role="table" aria-label="Location-level report"/u);
+  for (const [label, value] of [
+    ["Completed jobs", "186"],
+    ["Requests delivered", "158"],
+    ["Unique link clicks", "23"],
+    ["Reviews cached", "14"],
+    ["Google rating", "4.8"],
+  ]) assert.match(markup, new RegExp(`<span>${label}</span><strong>${value}</strong>`));
+  assert.ok(markup.includes("150 total Google reviews in the current snapshot."));
+  for (const location of ["Bristol", "Bath"]) assert.match(markup, new RegExp(`<strong role="cell">${location}</strong>`));
 });

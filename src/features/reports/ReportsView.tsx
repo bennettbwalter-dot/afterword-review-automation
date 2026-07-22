@@ -20,6 +20,7 @@ export interface ReportsViewProps {
   DemoNoticeComponent: ComponentType;
   StarsComponent: ComponentType<{ rating: number; size?: number }>;
   onPrint?: () => void;
+  initialCombined?: boolean;
 }
 
 export function ReportsView({
@@ -31,8 +32,9 @@ export function ReportsView({
   DemoNoticeComponent,
   StarsComponent,
   onPrint,
+  initialCombined = false,
 }: ReportsViewProps) {
-  const [combined, setCombined] = useState(false);
+  const [combined, setCombined] = useState(initialCombined);
   const previousLocationId = useRef(selectedBusiness.locationId);
   useEffect(() => {
     const nextCombined = reportScopeAfterLocationSelection(previousLocationId.current, selectedBusiness.locationId, combined);
