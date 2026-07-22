@@ -83,7 +83,6 @@ import {
   ADMIN_SESSION,
   BUSINESSES,
   INITIAL_AUDIT_EVENTS,
-  INITIAL_QR_CODES_BY_BUSINESS,
   INITIAL_REQUESTS_BY_BUSINESS,
   OWNER_SESSION,
   PLATFORM_EXCEPTIONS,
@@ -103,7 +102,6 @@ import {
   type RequestRecord,
   type RequestStatus,
   type ReviewRecord,
-  type QrCodeRecord,
   type SessionContext,
   type SmsOveragePolicy,
   type SupportScope,
@@ -1061,44 +1059,6 @@ function workflowGapLabel(seconds: number) {
 
 const BLOCKED_GOOGLE_CONNECTION_HEALTH = new Set(["authentication_required", "permission_revoked", "disabled"]);
 
-function seededDemoWorkflow(business: BusinessAccount, qrCode?: QrCodeRecord): LocationWorkflowSummary | undefined {
-  if (!business.locationId) return undefined;
-  const destination = qrCode?.locationId === business.locationId && qrCode.destinationVerified
-    ? qrCode.destinationUrl
-    : undefined;
-  return {
-    businessId: business.id,
-    locationId: business.locationId,
-    channels: [{
-      channel: "sms",
-      enabled: true,
-      timezone: business.timezone,
-      allowedWeekdays: [1, 2, 3, 4, 5, 6],
-      sendWindowStart: "09:00",
-      sendWindowEnd: "18:00",
-      maxMessages: 2,
-      minimumGapSeconds: 172_800,
-      ruleVersion: "seeded-demo-v1",
-      template: {
-        id: `demo-template-${business.locationId}`,
-        key: "review-request",
-        version: 1,
-        body: "Hi {{first_name}}, thanks for choosing {{business_name}}. If you have 30 seconds, we’d appreciate an honest Google review: {{review_link}}. Reply STOP to opt out.",
-        includesBusinessIdentity: true,
-        includesUnsubscribe: true,
-        approvedAt: "Seeded demo configuration",
-      },
-    }],
-    reviewDestination: destination ? {
-      runtimeUrl: destination,
-      qrUrl: destination,
-      verifiedAt: qrCode?.generatedAt,
-      connectionHealth: "seeded_demo",
-      matchesRuntime: true,
-    } : null,
-  };
-}
-
 function AutomationView({
   business,
   requests,
@@ -1602,10 +1562,6 @@ function AppShell() {
   const [reviewsByBusiness, setReviewsByBusiness] = useState<Record<string, ReviewRecord[]>>(IS_DEMO_MODE ? REVIEWS_BY_BUSINESS : {});
   const [platformExceptions, setPlatformExceptions] = useState(IS_DEMO_MODE ? PLATFORM_EXCEPTIONS : []);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>(IS_DEMO_MODE ? INITIAL_AUDIT_EVENTS : []);
-  const [qrCodesByBusiness, setQrCodesByBusiness] = useState<Record<string, QrCodeRecord>>(() => Object.fromEntries(
-    IS_DEMO_MODE ? Object.entries(INITIAL_QR_CODES_BY_BUSINESS).map(([businessId, record]) => [businessId, { ...record, placements: record.placements.map((placement) => ({ ...placement })) }]) : [],
-  ));
-  const [workflowsByLocation, setWorkflowsByLocation] = useState<Record<string, LocationWorkflowSummary>>({});
   const selectionToken = useMemo(
     () => !IS_DEMO_MODE ? new URLSearchParams(location.search).get("selection") : null,
     [location.search],
@@ -1711,8 +1667,6 @@ function AppShell() {
     setBusinesses(workspace.businesses);
     setRequestsByBusiness(workspace.requestsByBusiness);
     setReviewsByBusiness(workspace.reviewsByBusiness);
-    setQrCodesByBusiness(workspace.qrCodesByBusiness);
-    setWorkflowsByLocation(workspace.workflowsByLocation);
     setWorkspaceAccess(workspace.access);
     setPlatformExceptions(workspace.exceptions);
     setAuditEvents(workspace.auditEvents);
@@ -2028,8 +1982,6 @@ function AppShell() {
       setBusinesses([]);
       setRequestsByBusiness({});
       setReviewsByBusiness({});
-      setQrCodesByBusiness({});
-      setWorkflowsByLocation({});
       setWorkspaceAccess(undefined);
       setPlatformExceptions([]);
       setAuditEvents([]);
@@ -2159,10 +2111,6 @@ function AppShell() {
   const reviews = (reviewsByBusiness[business.id] ?? []).filter(
     (review) => !selectedLocationId || review.locationId === selectedLocationId,
   );
-  const selectedWorkflow = selectedLocationId
-    ? workflowsByLocation[selectedLocationId]
-      ?? (IS_DEMO_MODE ? seededDemoWorkflow(contextBusiness, qrCodesByBusiness[business.id]) : undefined)
-    : undefined;
   const accessMatchesContext = workspaceAccess?.businessId === business.id
     && (!workspaceAccess.locationId || workspaceAccess.locationId === selectedLocationId);
   const canReadTenant = IS_DEMO_MODE
@@ -2483,7 +2431,7 @@ function AppShell() {
           {agencyMode && view === "operations-audit" && <AuditLogView businesses={businesses} events={auditEvents} />}
           {!agencyMode && !canReadTenant && view !== "settings-billing" && <section className="panel access-expired"><ShieldCheck size={26} /><h2>Tenant access is unavailable.</h2><p>{supportSession ? "Support access expired or no longer satisfies the required security evidence." : "Your business role does not include customer or location data."}</p>{supportSession && <Button onClick={endSupportSession}>Return to portfolio</Button>}</section>}
           {!agencyMode && view === "settings-billing" && settingsBillingTab === "billing" && !canReadTenantBilling && <section className="panel access-expired"><ShieldCheck size={26} /><h2>Billing access is unavailable.</h2><p>{supportSession ? "Support sessions cannot open or change tenant billing." : "Your signed-in business role does not include billing access."}</p>{supportSession && <Button onClick={endSupportSession}>Return to portfolio</Button>}</section>}
-          {!agencyMode && canReadTenant && view === "google-profile" && <><WorkspaceContextBar business={business} locationId={selectedLocationId} onSelectLocation={(locationId) => navigateToView("google-profile", { businessId: business.id, locationId, googleProfileTab })} /><GoogleProfileView businessId={business.id} locationId={selectedLocationId} tab={googleProfileTab} onTabChange={(tab) => navigateToView("google-profile", { googleProfileTab: tab })}>{googleProfileTab === "reviews" ? <ReviewsView business={contextBusiness} reviews={reviews} /> : googleProfileTab === "requests-qr" ? <><RequestsView requests={requests} onAddJob={() => setAddJobOpen(true)} canConfigure={canConfigure} /><AutomationView business={contextBusiness} requests={requests} workflow={selectedWorkflow} onOpenIntegrations={() => navigateToView("settings-billing", { settingsBillingTab: "connections" })} />{qrCodesByBusiness[business.id]?.locationId === selectedLocationId ? <QrCodesView business={contextBusiness} record={qrCodesByBusiness[business.id]} /> : <section className="panel empty-state"><QrCode size={24} /><h2>No QR code for this location.</h2><p>Connect a verified Google review destination before generating location-specific artwork.</p><Button onClick={() => navigateToView("settings-billing", { settingsBillingTab: "connections" })}>Open connections</Button></section>}</> : googleProfileTab === "profile" ? <IntegrationsView business={contextBusiness} onConnect={() => void beginGoogleConnection()} canConfigure={canConfigure && !supportSession} services={services} servicesLoading={servicesLoading} /> : <section className="panel empty-state"><h2>Create posts and media in Content.</h2><p>Publishing stays unavailable until the destination is authorised and proven. Draft, review and keep this location’s content together in one place.</p><Button onClick={() => navigateToView("content", { businessId: business.id, locationId: selectedLocationId, contentTab: "create" })}>Open Content</Button></section>}</GoogleProfileView></>}
+          {!agencyMode && canReadTenant && view === "google-profile" && <><WorkspaceContextBar business={business} locationId={selectedLocationId} onSelectLocation={(locationId) => navigateToView("google-profile", { businessId: business.id, locationId, googleProfileTab })} /><GoogleProfileView businessId={business.id} locationId={selectedLocationId} tab={googleProfileTab} onTabChange={(tab) => navigateToView("google-profile", { googleProfileTab: tab })}>{(snapshot) => googleProfileTab === "reviews" ? <ReviewsView business={contextBusiness} reviews={snapshot.reviews} /> : googleProfileTab === "requests-qr" ? <><RequestsView requests={snapshot.requests} onAddJob={() => setAddJobOpen(true)} canConfigure={canConfigure} /><AutomationView business={contextBusiness} requests={snapshot.requests} workflow={snapshot.workflow ?? undefined} onOpenIntegrations={() => navigateToView("settings-billing", { settingsBillingTab: "connections" })} />{snapshot.qr ? <QrCodesView business={contextBusiness} record={snapshot.qr} /> : <section className="panel empty-state"><QrCode size={24} /><h2>No QR code for this location.</h2><p>Connect a verified Google review destination before generating location-specific artwork.</p><Button onClick={() => navigateToView("settings-billing", { settingsBillingTab: "connections" })}>Open connections</Button></section>}</> : googleProfileTab === "profile" ? <IntegrationsView business={contextBusiness} onConnect={() => void beginGoogleConnection()} canConfigure={canConfigure && !supportSession} services={services} servicesLoading={servicesLoading} /> : <section className="panel empty-state"><h2>Create posts and media in Content.</h2><p>Publishing stays unavailable until the destination is authorised and proven. Draft, review and keep this location’s content together in one place.</p><Button onClick={() => navigateToView("content", { businessId: business.id, locationId: selectedLocationId, contentTab: "create" })}>Open Content</Button></section>}</GoogleProfileView></>}
           {!agencyMode && canReadTenant && view === "content" && <><WorkspaceContextBar business={business} locationId={selectedLocationId} onSelectLocation={(locationId) => navigateToView("content", { businessId: business.id, locationId, contentTab })} /><ContentView tab={contentTab} onTabChange={(tab) => navigateToView("content", { contentTab: tab })} /></>}
           {!agencyMode && canReadTenant && view === "reports" && <ProductReportsView><ReportsView business={business} selectedBusiness={contextBusiness} /></ProductReportsView>}
           {!agencyMode && view === "settings-billing" && <SettingsBillingView tab={settingsBillingTab} canAccessConnections={session.businessRole !== "billing" && canReadTenant} onTabChange={(tab) => navigateToView("settings-billing", { settingsBillingTab: tab })}>{settingsBillingTab === "connections" && canReadTenant ? <IntegrationsView business={contextBusiness} onConnect={() => void beginGoogleConnection()} canConfigure={canConfigure && !supportSession} services={services} servicesLoading={servicesLoading} /> : settingsBillingTab === "billing" && canReadTenantBilling ? <TeamBillingView business={business} canConfigure={canManageTenantBilling} canManageStripe={canManageStripeBilling} canViewTeamMembers={canConfigure} onSaveSmsPolicy={saveSmsOveragePolicy} onStartCheckout={startStripeCheckout} onOpenBillingPortal={openStripeBillingPortal} stripeCheckoutEnabled={stripeCheckoutEnabled} stripePortalEnabled={stripePortalEnabled} /> : null}</SettingsBillingView>}

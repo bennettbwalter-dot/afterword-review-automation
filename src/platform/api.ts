@@ -118,6 +118,13 @@ export interface GoogleProfileSelectionPayload {
   }>;
 }
 
+export type GoogleProfileCapabilityKey = "profileFields" | "services" | "attributes" | "reviewReplies" | "posts" | "images" | "videos";
+
+export interface GoogleProfileCapability {
+  available: false;
+  reason: string;
+}
+
 export interface GoogleProfileSnapshot {
   businessId: string;
   locationId: string;
@@ -127,7 +134,7 @@ export interface GoogleProfileSnapshot {
   requests: RequestRecord[];
   qr: QrCodeRecord | null;
   workflow: LocationWorkflowSummary | null;
-  capabilities: Record<string, { available: false; reason: string }>;
+  capabilities: Record<GoogleProfileCapabilityKey, GoogleProfileCapability>;
 }
 
 export interface AgencyGrantClaimScope {
