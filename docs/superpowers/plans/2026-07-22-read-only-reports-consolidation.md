@@ -42,7 +42,7 @@
 **Interfaces:**
 
 - Consumes `BusinessAccount`, `LocationReportSummary`, and `TenantMetrics` from `src/platform/domain.ts`.
-- Produces `combinedReportMetrics(business): TenantMetrics`, `buildReportProjection(business, selectedBusiness, combined): ReportProjection`, `canCombineReportLocations(business): boolean`, and `combinedScopeAfterLocationSelection(): false`.
+- Produces `combinedReportMetrics(business): TenantMetrics`, `buildReportProjection(business, selectedBusiness, combined): ReportProjection`, `canCombineReportLocations(business): boolean`, and `reportScopeAfterLocationSelection(previousLocationId, nextLocationId, combined): boolean`.
 
 - [ ] **Step 1: Write failing domain tests**
 
@@ -61,7 +61,8 @@ assert.equal(combined.metrics.uniqueClicks, 9);
 assert.equal(combined.metrics.reviewsDetected, 4);
 assert.equal(combined.metrics.totalReviews, 30);
 assert.equal(combined.metrics.rating, 4.5);
-assert.equal(combinedScopeAfterLocationSelection(), false);
+assert.equal(reportScopeAfterLocationSelection("location-a", "location-b", true), false);
+assert.equal(reportScopeAfterLocationSelection("location-a", "location-a", true), true);
 ```
 
 Use location A with `rating: 5, totalReviews: 15` and location B with `rating: 4, totalReviews: 15`; choose remaining metric values that sum to the exact assertions.
@@ -102,8 +103,12 @@ export function canCombineReportLocations(business: BusinessAccount): boolean {
   return (business.locationReports?.length ?? 0) > 1;
 }
 
-export function combinedScopeAfterLocationSelection(): false {
-  return false;
+export function reportScopeAfterLocationSelection(
+  previousLocationId: string | undefined,
+  nextLocationId: string | undefined,
+  combined: boolean,
+): boolean {
+  return previousLocationId === nextLocationId ? combined : false;
 }
 
 export function combinedReportMetrics(business: BusinessAccount): TenantMetrics {
@@ -218,7 +223,7 @@ In `src/features/reports/ReportsView.tsx`:
 3. Define component dependency prop types compatible with the existing `Brand`, `Button`, `DemoNotice`, and `Stars` functions.
 4. Move the entire existing report JSX and operational-copy branches from the inline `App.tsx` `ReportsView` into the feature.
 5. Replace inline combined calculations with `buildReportProjection`.
-6. Initialize `combined` to `false`; on `selectedBusiness.locationId` change call `setCombined(combinedScopeAfterLocationSelection())`.
+6. Initialize `combined` to `false` and keep the previous selected location ID in a ref. On `selectedBusiness.locationId` change, call `setCombined((current) => reportScopeAfterLocationSelection(previousLocationId.current, selectedBusiness.locationId, current))`, then update the ref.
 7. Show the scope toggle only when `canCombineReportLocations(business)`.
 8. Use `onPrint ?? (() => window.print())` for the existing Print report control.
 
