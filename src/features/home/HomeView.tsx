@@ -38,6 +38,16 @@ const HOME_ICONS = {
   billing: Building2,
 } as const;
 
+function isHomeModuleAllowed(module: typeof HOME_MODULES[number], session: SessionContext) {
+  if (!isAppViewAllowed(module.view, session.role, false, session.businessRole)) return false;
+  if (session.role === "business_owner" && session.businessRole === "billing") {
+    return module.view === "settings-billing"
+      && "routeContext" in module
+      && module.routeContext?.settingsBillingTab === "billing";
+  }
+  return true;
+}
+
 export function HomeView({
   business,
   requests,
@@ -50,9 +60,7 @@ export function HomeView({
   onAddJob,
 }: HomeViewProps) {
   const { locations, activeLocation, requestCount } = buildHomeProjection(business, requests, selectedLocationId);
-  const availableModules = HOME_MODULES.filter((module) => (
-    isAppViewAllowed(module.view, session.role, false, session.businessRole)
-  ));
+  const availableModules = HOME_MODULES.filter((module) => isHomeModuleAllowed(module, session));
 
   return (
     <div className="product-feature product-feature--home">

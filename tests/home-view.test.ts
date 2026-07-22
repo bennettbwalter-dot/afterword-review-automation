@@ -101,6 +101,16 @@ test("completed-job action follows configuration permission", () => {
   assert.match(readOnly, /You have read-only access/);
 });
 
+test("billing-only sessions expose Billing without Connections", () => {
+  const markup = render({
+    session: { ...session, businessRole: "billing" },
+    canConfigure: false,
+    canManageBilling: true,
+  });
+  assert.match(markup, /<h4>Billing<\/h4>/);
+  assert.doesNotMatch(markup, /<h4>Connections<\/h4>/);
+});
+
 test("App composes Home without review data and Growth Suite is retired", () => {
   const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
   const homeSource = readFileSync(new URL("../src/features/home/HomeView.tsx", import.meta.url), "utf8");
