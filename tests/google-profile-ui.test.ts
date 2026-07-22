@@ -23,6 +23,5 @@ test("Google Profile review and request tabs render only the selected-location s
   assert.match(profileView, /if \(!snapshot\) return/u);
   assert.match(profileView, /children\(snapshot\)/u);
   assert.match(profileView, /if \(current\) setSnapshot\(next\)/u);
-  assert.match(profileView, /const currentSnapshot = snapshot\?\.businessId === businessId && snapshot\.locationId === locationId \? snapshot : null/u);
-  assert.match(profileView, /const currentSnapshotError = !locationId/u);
+  assert.match(profileView, /googleProfileSnapshotState\(\{ businessId, locationId, snapshot, snapshotError \}\)/u);
 });

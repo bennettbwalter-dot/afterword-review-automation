@@ -25,9 +25,27 @@ export function GoogleProfileSnapshotContent({ snapshot, snapshotError, children
   return <>{children(snapshot)}</>;
 }
 
+export interface GoogleProfileSnapshotError {
+  businessId: string;
+  locationId?: string;
+  message: string;
+}
+
+export type GoogleProfileSnapshotState =
+  | { phase: "loading"; snapshot: null; error: "" }
+  | { phase: "error"; snapshot: null; error: string }
+  | { phase: "ready"; snapshot: GoogleProfileSnapshot; error: "" };
+
+export function googleProfileSnapshotState({ businessId, locationId, snapshot, snapshotError }: { businessId: string; locationId?: string; snapshot: GoogleProfileSnapshot | null; snapshotError: GoogleProfileSnapshotError | null }): GoogleProfileSnapshotState {
+  if (!locationId) return { phase: "error", snapshot: null, error: "Select a location to load its Google Profile data." };
+  if (snapshotError?.businessId === businessId && snapshotError.locationId === locationId) return { phase: "error", snapshot: null, error: snapshotError.message };
+  if (snapshot?.businessId !== businessId || snapshot.locationId !== locationId) return { phase: "loading", snapshot: null, error: "" };
+  return { phase: "ready", snapshot, error: "" };
+}
+
 export function GoogleProfileView({ businessId, locationId, tab, onTabChange, children }: { businessId: string; locationId?: string; tab: GoogleProfileTab; onTabChange: (tab: GoogleProfileTab) => void; children: (snapshot: GoogleProfileSnapshot) => ReactNode }) {
   const [snapshot, setSnapshot] = useState<GoogleProfileSnapshot | null>(null);
-  const [snapshotError, setSnapshotError] = useState<{ businessId: string; locationId?: string; message: string } | null>(null);
+  const [snapshotError, setSnapshotError] = useState<GoogleProfileSnapshotError | null>(null);
 
   useEffect(() => {
     let current = true;
@@ -43,12 +61,9 @@ export function GoogleProfileView({ businessId, locationId, tab, onTabChange, ch
     return () => { current = false; };
   }, [businessId, locationId]);
 
-  const currentSnapshot = snapshot?.businessId === businessId && snapshot.locationId === locationId ? snapshot : null;
-  const currentSnapshotError = !locationId
-    ? "Select a location to load its Google Profile data."
-    : snapshotError?.businessId === businessId && snapshotError.locationId === locationId
-      ? snapshotError.message
-      : "";
+  const snapshotState = googleProfileSnapshotState({ businessId, locationId, snapshot, snapshotError });
+  const currentSnapshot = snapshotState.snapshot;
+  const currentSnapshotError = snapshotState.error;
   const connectionLabel = currentSnapshot?.connection.state === "connected"
     ? "Location data connected"
     : currentSnapshot?.connection.state === "disconnected"
