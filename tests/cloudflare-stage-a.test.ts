@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { access, link, mkdir, mkdtemp, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { access, link, mkdir, mkdtemp, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -1730,8 +1730,10 @@ test("a journal replaced after one update blocks the next artifact or claim unli
           afterRecoveryCleanupJournalUpdate: async (kind: "artifact" | "claim") => {
             if (kind !== replacedAfter || replacementBytes) return;
             replacementBytes = await readFile(lock.recoveryCleanupJournalFile, "utf8");
+            const replacementPath = `${lock.recoveryCleanupJournalFile}.replacement`;
+            await writeFile(replacementPath, replacementBytes, { flag: "wx" });
             await unlink(lock.recoveryCleanupJournalFile);
-            await writeFile(lock.recoveryCleanupJournalFile, replacementBytes, { flag: "wx" });
+            await rename(replacementPath, lock.recoveryCleanupJournalFile);
             replacementBefore = await stat(lock.recoveryCleanupJournalFile);
           },
         },
@@ -1863,8 +1865,10 @@ test("post-install election replacement preserves the CAS next path and fails cl
         afterRecoveryCleanupJournalCasInstalled: async () => {
           if (replacementBytes) return;
           replacementBytes = await readFile(lock.recoveryCleanupOwnerFile, "utf8");
+          const replacementPath = `${lock.recoveryCleanupOwnerFile}.replacement`;
+          await writeFile(replacementPath, replacementBytes, { flag: "wx" });
           await unlink(lock.recoveryCleanupOwnerFile);
-          await writeFile(lock.recoveryCleanupOwnerFile, replacementBytes, { flag: "wx" });
+          await rename(replacementPath, lock.recoveryCleanupOwnerFile);
           replacementBefore = await stat(lock.recoveryCleanupOwnerFile);
         },
       },

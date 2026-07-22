@@ -46,14 +46,14 @@ end $$;
 create or replace function app_private.has_agency_client_permission(p_business_id uuid, p_location_id uuid, p_permission text, p_self_approver_user_id uuid default null)
 returns boolean language sql stable security definer set search_path = pg_catalog as $$
   select app_private.current_user_enabled() and app_private.current_support_session_id() is null and exists (
-    select 1 from public.agency_client_grants grant
-    join public.businesses business on business.id = grant.business_id and business.archived_at is null
-    join public.locations location on location.id = grant.location_id and location.business_id = grant.business_id and location.archived_at is null
-    where grant.business_id = p_business_id and grant.location_id = p_location_id
-      and grant.status = 'active' and (grant.expires_at is null or grant.expires_at > statement_timestamp())
-      and p_permission = any(grant.permissions)
-      and app_private.current_agency_role(grant.agency_id) is not null
-      and (p_permission <> 'content.self_approve' or grant.self_approver_user_id = p_self_approver_user_id and p_self_approver_user_id = app_private.current_user_id())
+    select 1 from public.agency_client_grants agency_grant
+    join public.businesses business on business.id = agency_grant.business_id and business.archived_at is null
+    join public.locations location on location.id = agency_grant.location_id and location.business_id = agency_grant.business_id and location.archived_at is null
+    where agency_grant.business_id = p_business_id and agency_grant.location_id = p_location_id
+      and agency_grant.status = 'active' and (agency_grant.expires_at is null or agency_grant.expires_at > statement_timestamp())
+      and p_permission = any(agency_grant.permissions)
+      and app_private.current_agency_role(agency_grant.agency_id) is not null
+      and (p_permission <> 'content.self_approve' or agency_grant.self_approver_user_id = p_self_approver_user_id and p_self_approver_user_id = app_private.current_user_id())
   )
 $$;
 
@@ -64,12 +64,12 @@ begin
   if p_limit is null or p_limit < 1 or p_limit > 1000 then raise exception 'invalid agency grant expiry limit'; end if;
   if app_private.current_support_session_id() is not null then raise exception 'support sessions cannot mutate agency grants'; end if;
   with candidates as (
-    select grant.id from public.agency_client_grants grant
-    where grant.status in ('requested','active') and grant.expires_at <= statement_timestamp()
-    order by grant.expires_at, grant.id for update skip locked limit p_limit
+    select agency_grant.id from public.agency_client_grants agency_grant
+    where agency_grant.status in ('requested','active') and agency_grant.expires_at <= statement_timestamp()
+    order by agency_grant.expires_at, agency_grant.id for update skip locked limit p_limit
   ), expired as (
-    update public.agency_client_grants grant set status='revoked', revoked_at=statement_timestamp()
-    from candidates where grant.id=candidates.id returning grant.id
+    update public.agency_client_grants agency_grant set status='revoked', revoked_at=statement_timestamp()
+    from candidates where agency_grant.id=candidates.id returning agency_grant.id
   ) select count(*)::integer into v_count from expired;
   return v_count;
 end $$;
@@ -106,13 +106,13 @@ end $$;
 create or replace function app_private.list_agency_client_grant_claim_locations(p_claim_token_hash bytea)
 returns table (grant_id uuid, business_id uuid, location_id uuid, status text, permissions text[], expires_at timestamptz)
 language sql stable security definer set search_path = pg_catalog as $$
-  select grant.id, grant.business_id, grant.location_id, grant.status, grant.permissions, grant.expires_at
+  select agency_grant.id, agency_grant.business_id, agency_grant.location_id, agency_grant.status, agency_grant.permissions, agency_grant.expires_at
   from app_private.agency_grant_email_claims claim
-  join public.agency_client_grants grant on grant.id=claim.grant_id
-  join public.locations location on location.id=grant.location_id and location.business_id=grant.business_id and location.archived_at is null
+  join public.agency_client_grants agency_grant on agency_grant.id=claim.grant_id
+  join public.locations location on location.id=agency_grant.location_id and location.business_id=agency_grant.business_id and location.archived_at is null
   where claim.token_hash=p_claim_token_hash and claim.consumed_by_user_id=app_private.current_user_id()
-    and claim.expires_at > statement_timestamp() and grant.status in ('requested','active')
-    and (grant.expires_at is null or grant.expires_at > statement_timestamp()) and app_private.current_support_session_id() is null
+    and claim.expires_at > statement_timestamp() and agency_grant.status in ('requested','active')
+    and (agency_grant.expires_at is null or agency_grant.expires_at > statement_timestamp()) and app_private.current_support_session_id() is null
 $$;
 
 create or replace function app_private.request_agency_client_grant(p_agency_id uuid, p_business_id uuid, p_location_id uuid, p_permissions text[], p_self_approver_user_id uuid, p_video_soft_monthly_cap integer, p_video_hard_monthly_cap integer, p_expires_at timestamptz, p_correlation_id uuid)
@@ -193,11 +193,11 @@ end $$;
 create or replace function app_private.list_agency_client_claim_locations(p_token_hash bytea)
 returns table (business_id uuid,business_name text,location_id uuid,location_name text,permissions text[])
 language sql stable security definer set search_path=pg_catalog as $$
- select business.id,business.name,location.id,location.name,grant.permissions from app_private.agency_client_access_claims claim
- join public.agency_client_grants grant on grant.id=claim.selected_grant_id
- join public.businesses business on business.id=grant.business_id
- join public.locations location on location.id=grant.location_id
- where claim.token_hash=p_token_hash and claim.consumed_by_user_id=app_private.current_user_id() and claim.selected_grant_id is not null and grant.status='active' and (grant.expires_at is null or grant.expires_at>statement_timestamp())
+ select business.id,business.name,location.id,location.name,agency_grant.permissions from app_private.agency_client_access_claims claim
+ join public.agency_client_grants agency_grant on agency_grant.id=claim.selected_grant_id
+ join public.businesses business on business.id=agency_grant.business_id
+ join public.locations location on location.id=agency_grant.location_id
+ where claim.token_hash=p_token_hash and claim.consumed_by_user_id=app_private.current_user_id() and claim.selected_grant_id is not null and agency_grant.status='active' and (agency_grant.expires_at is null or agency_grant.expires_at>statement_timestamp())
  union all
  select business.id,business.name,location.id,location.name,claim.permissions from app_private.agency_client_access_claims claim
  join public.business_memberships membership on membership.user_id=app_private.current_user_id() and membership.status='active' and membership.role::text in ('owner','admin')
@@ -251,7 +251,7 @@ grant execute on function app_private.issue_agency_client_access_claim(uuid,text
 grant execute on function app_private.consume_agency_client_access_claim(bytea) to afterword_runtime;
 grant execute on function app_private.list_agency_client_claim_locations(bytea) to afterword_runtime;
 grant execute on function app_private.select_agency_client_claim_location(bytea,uuid,uuid) to afterword_runtime;
-create or replace function app_private.list_active_agency_client_grants(p_agency_id uuid) returns table (id uuid,business_id uuid,location_id uuid,permissions text[],expires_at timestamptz,video_soft_monthly_cap integer,video_hard_monthly_cap integer) language sql stable security definer set search_path=pg_catalog as $$ select grant.id,grant.business_id,grant.location_id,grant.permissions,grant.expires_at,grant.video_soft_monthly_cap,grant.video_hard_monthly_cap from public.agency_client_grants grant where grant.agency_id=p_agency_id and grant.status='active' and (grant.expires_at is null or grant.expires_at>statement_timestamp()) and app_private.current_support_session_id() is null and app_private.current_agency_role(p_agency_id)::text in ('owner','admin','operator') $$;
+create or replace function app_private.list_active_agency_client_grants(p_agency_id uuid) returns table (id uuid,business_id uuid,location_id uuid,permissions text[],expires_at timestamptz,video_soft_monthly_cap integer,video_hard_monthly_cap integer) language sql stable security definer set search_path=pg_catalog as $$ select agency_grant.id,agency_grant.business_id,agency_grant.location_id,agency_grant.permissions,agency_grant.expires_at,agency_grant.video_soft_monthly_cap,agency_grant.video_hard_monthly_cap from public.agency_client_grants agency_grant where agency_grant.agency_id=p_agency_id and agency_grant.status='active' and (agency_grant.expires_at is null or agency_grant.expires_at>statement_timestamp()) and app_private.current_support_session_id() is null and app_private.current_agency_role(p_agency_id)::text in ('owner','admin','operator') $$;
 revoke all on function app_private.list_active_agency_client_grants(uuid) from public;
 grant execute on function app_private.list_active_agency_client_grants(uuid) to afterword_runtime;
 create or replace function app_private.revoke_current_agency_client_grant(p_grant_id uuid,p_agency_id uuid,p_correlation_id uuid)
