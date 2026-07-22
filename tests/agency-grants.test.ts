@@ -78,11 +78,19 @@ test("agency permission checks deny support sessions and grant claims are opaque
 
 test("the release evidence requires a zero-row live integrity query before migration 012", async () => {
   const readiness = await readFile(path.resolve("docs", "evidence", "platform-capability-readiness.md"), "utf8");
+  const coverageModule = await import("../scripts/agency-grant-coverage.js").catch(() => ({ agencyGrantCoverageSql: "" }));
+  const sharedCoverageSql = coverageModule.agencyGrantCoverageSql;
   assert.match(readiness, /Agency-grant integrity gate \(before migration 012\)/i);
   assert.match(readiness, /It must return \*\*zero rows\*\*/i);
   assert.match(readiness, /expected_legacy_scopes/i);
   assert.match(readiness, /accepting_member\.role::text in \('owner', 'admin'\)/i);
+  assert.match(readiness, /join public\.agencies as agency[\s\S]+agency\.customer_kind = 'agency'/i);
+  assert.doesNotMatch(readiness, /expected_legacy_scopes[\s\S]+direct_container/i);
   assert.match(readiness, /forward-only migration/i);
+  assert.match(sharedCoverageSql, /join public\.agencies as agency[\s\S]+agency\.customer_kind = 'agency'/i);
+  assert.doesNotMatch(sharedCoverageSql, /expected_legacy_scopes[\s\S]+direct_container/i);
+  const documentedCoverageSql = readiness.match(/```sql\r?\n(with expected_legacy_scopes[\s\S]*?)\r?\n```/i)?.[1] ?? "";
+  assert.equal(documentedCoverageSql.trim(), sharedCoverageSql.trim());
 });
 
 test("claim approval lets only the direct client discover and select a named location, with replay-safe consumption", async () => {

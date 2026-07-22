@@ -44,17 +44,21 @@ where migration_id = '011_agency_client_grants.sql';
 
 No row means the revised 011 can be applied through the normal migrator. One row means it must remain immutable and the forward-only cleanup path is required. Treat an unavailable ledger or an unexpected result as a stop condition.
 
+Direct customer containers (`direct_container`) are deliberately excluded from this agency-grant coverage gate. They are first-party customer boundaries, not agency identities that can receive agency-client grants.
+
 ```sql
 with expected_legacy_scopes as (
   select business.agency_id, business.id as business_id, location.id as location_id
   from public.businesses as business
+  join public.agencies as agency
+    on agency.id = business.agency_id
+   and agency.customer_kind = 'agency'
   join public.locations as location
     on location.business_id = business.id
    and location.archived_at is null
   where business.archived_at is null
     and exists (
-      select 1
-      from public.agency_memberships as agency_member
+      select 1 from public.agency_memberships as agency_member
       where agency_member.agency_id = business.agency_id
         and agency_member.status = 'active'
     )
@@ -75,7 +79,8 @@ left join valid_active_grants as grant
   on grant.agency_id = expected.agency_id
  and grant.business_id = expected.business_id
  and grant.location_id = expected.location_id
-where grant.location_id is null;
+where grant.location_id is null
+order by expected.agency_id, expected.business_id, expected.location_id
 ```
 
 The local suite includes an actor-behaviour probe for the same boundaries, but it cannot establish this live database result without `MIGRATION_DATABASE_URL` and the ability to assume `afterword_migration_owner`.
