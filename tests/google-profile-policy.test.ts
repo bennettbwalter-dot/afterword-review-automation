@@ -5,12 +5,11 @@ import test from "node:test";
 
 test("Google review bodies remain inside the Google Profile review view", async () => {
   const app = await readFile(path.resolve("src", "App.tsx"), "utf8");
+  const reviewsTab = await readFile(path.resolve("src", "features", "google-profile", "ReviewsTab.tsx"), "utf8");
   const reportsStart = app.indexOf("function ReportsView(");
-  const reviewsStart = app.indexOf("function ReviewsView(");
   const reportsSource = app.slice(reportsStart, app.indexOf("function GoogleProfileSelectionDialog(", reportsStart));
 
-  assert.ok(reviewsStart >= 0, "Google review rendering must stay explicit");
-  assert.match(app.slice(reviewsStart, reportsStart), /review\.body/);
+  assert.match(reviewsTab, /review\.body/);
   assert.doesNotMatch(reportsSource, /review\.body/);
   assert.match(reportsSource, /Review detection is not exact job-level attribution/);
 });
