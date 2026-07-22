@@ -5,11 +5,11 @@ Review Anchor connects a Google Business Profile to completed-job events and tur
 This branch contains one connected product surface:
 
 - `/` is the public landing page only.
-- `/app/growth` is the authenticated Growth Suite dashboard.
-- Review Anchor is the native reviews and reputation module inside that dashboard, with stable routes for reviews, requests, workflow, QR codes, reports, integrations, and team/billing.
+- `/app/home` is the authenticated product home. Google profile data, reviews, and neutral request/QR workflows use `/app/google-profile`; content, reports, connections, and billing retain their own scoped routes.
+- Google reviews remain inside Google Profile. Posts & media routes to the single Content editor rather than creating a second publishing surface.
 - Every application route uses the same opaque session, tenant/location context, Fastify API, capability-separated PostgreSQL roles, and Supabase-managed PostgreSQL data. The public QR review flow remains a deliberately unauthenticated ingress surface.
 
-It is a backend foundation, not a production launch. Migrations 001–007 and the SQL tenant-isolation suite were previously executed successfully against the dedicated Review Anchor Supabase project, including an idempotent second migration pass and a clean Supabase Security Advisor rerun. Migration 008 adds the business membership role to authenticated sessions and must be applied before deploying this branch. Google Business Profile, Twilio, SendGrid and Stripe have not been exercised end to end with real provider events, and no real-business pilot has run.
+It is a backend foundation, not a production launch. Migrations 001–007 and the SQL tenant-isolation suite were previously executed successfully against the dedicated Review Anchor Supabase project. Migrations 008 through 011 are present on this branch but are not live-environment proof. Migration 012 is paused and must not be applied until the target ledger and documented zero-row agency-grant integrity query have been checked. Google Business Profile, Twilio, SendGrid and Stripe have not been exercised end to end with real provider events, and no real-business pilot has run.
 
 ## Run locally
 

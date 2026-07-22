@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - "database/**"
+      - "server/**"
+      - "scripts/test-database-isolation.ts"
+      - "tests/**"
       - "server/repository/postgres.ts"
       - "server/types.ts"
       - "tests/database-contract.test.ts"
@@ -12,6 +15,9 @@ on:
     branches: [master, main, "codex/**"]
     paths:
       - "database/**"
+      - "server/**"
+      - "scripts/test-database-isolation.ts"
+      - "tests/**"
       - "server/repository/postgres.ts"
       - "server/types.ts"
       - "tests/database-contract.test.ts"

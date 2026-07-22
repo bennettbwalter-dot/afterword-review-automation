@@ -96,7 +96,7 @@ const config = loadConfig({
   FIELD_ENCRYPTION_KEY: encryptionKey,
 });
 
-function workspace(actor: ActorContext, accessibleBusinessIds: string[] = [businessId]): WorkspacePayload {
+function workspace(actor: ActorContext, accessibleBusinessIds: string[] = [businessId], selectedBusinessId?: string, canManageBusiness = true): WorkspacePayload {
   const businesses: WorkspacePayload["businesses"] = accessibleBusinessIds.map((accessibleBusinessId) => ({
     id: accessibleBusinessId,
     agencyId: randomUUID(),
@@ -131,6 +131,7 @@ function workspace(actor: ActorContext, accessibleBusinessIds: string[] = [busin
       jobIntake: { status: "Listening", tone: "success" as const, lastEvent: "Now" },
     },
   }));
+  const accessBusinessId = selectedBusinessId ?? actor.businessId;
   return {
     session: {
       userId: actor.userId,
@@ -149,6 +150,14 @@ function workspace(actor: ActorContext, accessibleBusinessIds: string[] = [busin
     reviewsByBusiness: Object.fromEntries(accessibleBusinessIds.map((id) => [id, []])),
     qrCodesByBusiness: {},
     workflowsByLocation: {},
+    access: accessBusinessId && accessibleBusinessIds.includes(accessBusinessId) ? {
+      businessId: accessBusinessId,
+      canReadTenant: true,
+      canManageBusiness,
+      canReadBilling: true,
+      canManageBilling: canManageBusiness,
+      canManageStripeBilling: canManageBusiness,
+    } : undefined,
     exceptions: [],
     auditEvents: [],
   };
@@ -156,11 +165,13 @@ function workspace(actor: ActorContext, accessibleBusinessIds: string[] = [busin
 
 interface TestActorOptions {
   role?: ActorContext["role"];
+  agencyRole?: ActorContext["agencyRole"];
   mfaVerified?: boolean;
   agencyId?: string;
   initialBusinessId?: string | null;
   accessibleBusinessIds?: string[];
   businessRoles?: Partial<Record<string, BusinessRole>>;
+  canManageBusiness?: boolean;
 }
 
 function createRepository(actorOptions: TestActorOptions = {}) {
@@ -184,12 +195,13 @@ function createRepository(actorOptions: TestActorOptions = {}) {
         userName: "Owner",
         email: "owner@example.com",
         role: actorOptions.role ?? "business_owner",
-        businessId: actorOptions.role === "agency_admin"
+        businessId: actorOptions.role === "agency_admin" || actorOptions.role === "agency_user"
           ? undefined
           : actorOptions.initialBusinessId === null
             ? undefined
             : actorOptions.initialBusinessId ?? businessId,
-        agencyId: actorOptions.role === "agency_admin" ? actorOptions.agencyId ?? randomUUID() : undefined,
+        agencyId: actorOptions.role === "agency_admin" || actorOptions.role === "agency_user" ? actorOptions.agencyId ?? randomUUID() : undefined,
+        agencyRole: actorOptions.agencyRole ?? (actorOptions.role === "agency_admin" ? "admin" : undefined),
         mfaVerified: actorOptions.mfaVerified ?? false,
         sessionId,
         sessionTokenHash: input.tokenHash,
@@ -212,7 +224,7 @@ function createRepository(actorOptions: TestActorOptions = {}) {
             businessRole: actorOptions.businessRoles?.[selectedBusinessId],
           }
         : actor;
-      return workspace(projectedActor, accessibleBusinessIds);
+      return workspace(projectedActor, accessibleBusinessIds, selectedBusinessId, actorOptions.canManageBusiness ?? true);
     },
     async updateSmsOveragePolicy(_actor, _businessId, policy) {
       capturedSmsPolicy = policy;
@@ -878,6 +890,51 @@ test("agency support context can be restored after a browser refresh and explici
   const after = await app.inject({ method: "GET", url: "/api/v1/support-sessions/active", headers: { cookie } });
   assert.equal(after.statusCode, 200);
   assert.equal(after.json().data.session, null);
+});
+
+test("agency support-role operators can start only view sessions", async (t) => {
+  const { app, cookie } = await authenticatedApp({ role: "agency_user", agencyRole: "support", mfaVerified: true });
+  t.after(() => app.close());
+
+  const configuration = await app.inject({
+    method: "POST",
+    url: "/api/v1/support-sessions",
+    headers: { cookie, origin: appOrigin },
+    payload: { businessId, scope: "configuration", reason: "Inspect configuration safely", durationMinutes: 15 },
+  });
+  assert.equal(configuration.statusCode, 403);
+  assert.equal(configuration.json().error.code, "SUPPORT_VIEW_ONLY");
+
+  const tooShort = await app.inject({
+    method: "POST",
+    url: "/api/v1/support-sessions",
+    headers: { cookie, origin: appOrigin },
+    payload: { businessId, scope: "view", reason: "12345678901", durationMinutes: 15 },
+  });
+  assert.equal(tooShort.statusCode, 400);
+
+  const view = await app.inject({
+    method: "POST",
+    url: "/api/v1/support-sessions",
+    headers: { cookie, origin: appOrigin },
+    payload: { businessId, scope: "view", reason: "123456789012", durationMinutes: 15 },
+  });
+  assert.equal(view.statusCode, 201);
+  const active = await app.inject({ method: "GET", url: "/api/v1/support-sessions/active", headers: { cookie } });
+  assert.equal(active.statusCode, 200);
+  assert.equal(active.json().data.session.scope, "view");
+});
+
+test("Google mutations reject summary-visible actors without business management", async (t) => {
+  const { app, cookie } = await authenticatedApp({ canManageBusiness: false });
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "POST",
+    url: `/api/v1/businesses/${businessId}/locations/${locationId}/integrations/google/oauth/start`,
+    headers: { cookie, origin: appOrigin },
+  });
+  assert.equal(response.statusCode, 403);
+  assert.equal(response.json().error.code, "BUSINESS_MANAGEMENT_REQUIRED");
 });
 
 test("origin guard and path-derived tenant prevent browser-selected authority", async (t) => {

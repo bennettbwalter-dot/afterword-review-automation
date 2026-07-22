@@ -65,6 +65,19 @@ export async function requireBusinessAccess(
   return business;
 }
 
+export async function requireBusinessManagement(
+  repository: PlatformRepository,
+  actor: ActorContext,
+  businessId: string,
+): Promise<BusinessSummary> {
+  const business = await requireBusinessAccess(repository, actor, businessId);
+  const workspace = await repository.getWorkspace(actor, businessId);
+  if (workspace.access?.businessId !== businessId || workspace.access?.canManageBusiness !== true) {
+    throw new ApiError(403, "BUSINESS_MANAGEMENT_REQUIRED", "Business management access is required.");
+  }
+  return business;
+}
+
 export function sendData<T>(reply: FastifyReply, data: T, statusCode = 200) {
   return reply.code(statusCode).send({ data });
 }

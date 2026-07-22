@@ -28,7 +28,8 @@ set role afterword_migration_owner;
 
 insert into public.users (id, auth_subject, email, display_name) values
   ('60000000-0000-4000-8000-000000000001', 'first-party:grant-agency-owner', 'grant-agency-owner@example.test', 'Grant Agency Owner'),
-  ('60000000-0000-4000-8000-000000000002', 'first-party:grant-client-admin', 'grant-client-admin@example.test', 'Grant Client Admin');
+  ('60000000-0000-4000-8000-000000000002', 'first-party:grant-client-admin', 'grant-client-admin@example.test', 'Grant Client Admin'),
+  ('60000000-0000-4000-8000-000000000003', 'first-party:grant-agency-support', 'grant-agency-support@example.test', 'Grant Agency Support');
 insert into public.agencies (id, name) values
   ('60000000-0000-4000-8000-000000000010', 'Grant Test Agency');
 insert into public.businesses (id, agency_id, name, slug, default_timezone, country_code) values
@@ -38,12 +39,15 @@ insert into public.locations (id, business_id, name, timezone) values
   ('60000000-0000-4000-8000-000000000030', '60000000-0000-4000-8000-000000000020', 'Authorised location', 'UTC'),
   ('60000000-0000-4000-8000-000000000031', '60000000-0000-4000-8000-000000000020', 'Sibling location', 'UTC');
 insert into public.agency_memberships (agency_id, user_id, role) values
-  ('60000000-0000-4000-8000-000000000010', '60000000-0000-4000-8000-000000000001', 'owner');
+  ('60000000-0000-4000-8000-000000000010', '60000000-0000-4000-8000-000000000001', 'owner'),
+  ('60000000-0000-4000-8000-000000000010', '60000000-0000-4000-8000-000000000003', 'support');
 insert into public.business_memberships (business_id, user_id, role) values
-  ('60000000-0000-4000-8000-000000000020', '60000000-0000-4000-8000-000000000002', 'admin');
+  ('60000000-0000-4000-8000-000000000020', '60000000-0000-4000-8000-000000000002', 'admin'),
+  ('60000000-0000-4000-8000-000000000020', '60000000-0000-4000-8000-000000000001', 'owner');
 insert into app_private.auth_sessions (id, user_id, token_hash, idle_expires_at, absolute_expires_at) values
   ('60000000-0000-4000-8000-000000000040', '60000000-0000-4000-8000-000000000001', decode(repeat('61', 32), 'hex'), statement_timestamp() + interval '1 hour', statement_timestamp() + interval '1 day'),
-  ('60000000-0000-4000-8000-000000000041', '60000000-0000-4000-8000-000000000002', decode(repeat('62', 32), 'hex'), statement_timestamp() + interval '1 hour', statement_timestamp() + interval '1 day');
+  ('60000000-0000-4000-8000-000000000041', '60000000-0000-4000-8000-000000000002', decode(repeat('62', 32), 'hex'), statement_timestamp() + interval '1 hour', statement_timestamp() + interval '1 day'),
+  ('60000000-0000-4000-8000-000000000043', '60000000-0000-4000-8000-000000000003', decode(repeat('63', 32), 'hex'), statement_timestamp() + interval '1 hour', statement_timestamp() + interval '1 day');
 insert into public.support_sessions (
   id, agency_id, business_id, actor_user_id, scope, reason, mfa_verified_at,
   step_up_verified_at, started_at, last_activity_at, expires_at
@@ -61,6 +65,20 @@ select not app_private.has_agency_client_permission(
   '60000000-0000-4000-8000-000000000020', '60000000-0000-4000-8000-000000000030', 'content.create', null
 ) as agency_membership_alone_exposes_nothing;
 \assert
+do $$ begin
+  begin
+    perform app_private.issue_agency_client_access_claim(
+      '60000000-0000-4000-8000-000000000010', 'grant-client-admin@example.test',
+      array['content.self_approve']::text[], '60000000-0000-4000-8000-000000000003',
+      null, null, null, decode(repeat('66', 32), 'hex'),
+      statement_timestamp() + interval '1 hour', '60000000-0000-4000-8000-000000000058'
+    );
+    raise exception 'assertion failed: support role was accepted as a named self approver';
+  exception when others then
+    if sqlerrm = 'assertion failed: support role was accepted as a named self approver' then raise; end if;
+    if position('self approver must be an active content-capable agency user' in sqlerrm) = 0 then raise; end if;
+  end;
+end $$;
 select * from app_private.request_agency_client_grant(
   '60000000-0000-4000-8000-000000000010', '60000000-0000-4000-8000-000000000020',
   '60000000-0000-4000-8000-000000000030',
@@ -73,6 +91,47 @@ select set_config('app.test_grant_id', :'grant_id', true);
 select app_private.set_request_context_from_session(decode(repeat('62', 32), 'hex'), null);
 select * from app_private.accept_agency_client_grant(:'grant_id', '60000000-0000-4000-8000-000000000051') \gset accepted_
 select :'accepted_status' = 'active' as client_activated_requested_scope;
+\assert
+
+select app_private.set_request_context_from_session(decode(repeat('63', 32), 'hex'), null);
+select not app_private.has_agency_client_permission(
+  '60000000-0000-4000-8000-000000000020', '60000000-0000-4000-8000-000000000030', 'content.create', null
+) as support_role_without_session_denies_all_agency_permissions;
+\assert
+
+-- selected_claim_expiry_and_support_session_fail_closed: both selected-claim
+-- branches share the same expiry, enabled-user and no-support-session gate.
+reset role;
+set role afterword_migration_owner;
+insert into app_private.agency_client_access_claims (
+  token_hash, agency_id, email, permissions, expires_at, issued_by_user_id,
+  consumed_by_user_id, consumed_at, selected_grant_id
+) values
+(
+  decode(repeat('64', 32), 'hex'), '60000000-0000-4000-8000-000000000010',
+  'grant-client-admin@example.test', array['content.create']::text[], statement_timestamp() + interval '1 hour',
+  '60000000-0000-4000-8000-000000000001', '60000000-0000-4000-8000-000000000002', statement_timestamp(), :'grant_id'::uuid
+),
+(
+  decode(repeat('65', 32), 'hex'), '60000000-0000-4000-8000-000000000010',
+  'grant-agency-owner@example.test', array['content.create']::text[], statement_timestamp() + interval '1 hour',
+  '60000000-0000-4000-8000-000000000001', '60000000-0000-4000-8000-000000000001', statement_timestamp(), :'grant_id'::uuid
+);
+reset role;
+set role afterword_runtime;
+select app_private.set_request_context_from_session(decode(repeat('62', 32), 'hex'), null);
+select count(*) = 1 as selected_claim_is_visible_before_expiry from app_private.list_agency_client_claim_locations(decode(repeat('64', 32), 'hex'));
+\assert
+select app_private.set_request_context_from_session(decode(repeat('61', 32), 'hex'), '60000000-0000-4000-8000-000000000042');
+select count(*) = 0 as selected_claim_is_hidden_during_support from app_private.list_agency_client_claim_locations(decode(repeat('65', 32), 'hex'));
+\assert
+reset role;
+set role afterword_migration_owner;
+update app_private.agency_client_access_claims set expires_at=statement_timestamp() - interval '1 minute' where token_hash=decode(repeat('64', 32), 'hex');
+reset role;
+set role afterword_runtime;
+select app_private.set_request_context_from_session(decode(repeat('62', 32), 'hex'), null);
+select count(*) = 0 as selected_claim_is_hidden_after_expiry from app_private.list_agency_client_claim_locations(decode(repeat('64', 32), 'hex'));
 \assert
 
 select app_private.set_request_context_from_session(decode(repeat('61', 32), 'hex'), null);

@@ -52,7 +52,7 @@ returns boolean language sql stable security definer set search_path = pg_catalo
     where agency_grant.business_id = p_business_id and agency_grant.location_id = p_location_id
       and agency_grant.status = 'active' and (agency_grant.expires_at is null or agency_grant.expires_at > statement_timestamp())
       and p_permission = any(agency_grant.permissions)
-      and app_private.current_agency_role(agency_grant.agency_id) is not null
+      and app_private.current_agency_role(agency_grant.agency_id)::text in ('owner','admin','operator')
       and (p_permission <> 'content.self_approve' or agency_grant.self_approver_user_id = p_self_approver_user_id and p_self_approver_user_id = app_private.current_user_id())
   )
 $$;
@@ -126,7 +126,7 @@ begin
      or not exists (select 1 from public.locations where id = p_location_id and business_id = p_business_id and archived_at is null) then raise exception 'business location scope is invalid'; end if;
   if coalesce(array_length(p_permissions, 1), 0) = 0 or p_permissions <@ array['content.create','content.submit','content.approve','content.self_approve','content.schedule','content.publish','video.spend']::text[] is false then raise exception 'invalid agency grant permissions'; end if;
   if ('content.self_approve' = any(p_permissions)) <> (p_self_approver_user_id is not null) then raise exception 'self approval requires a named user'; end if;
-  if p_self_approver_user_id is not null and not exists (select 1 from public.agency_memberships where agency_id=p_agency_id and user_id=p_self_approver_user_id and status='active') then raise exception 'self approver must be an active agency user'; end if;
+  if p_self_approver_user_id is not null and not exists (select 1 from public.agency_memberships where agency_id=p_agency_id and user_id=p_self_approver_user_id and status='active' and role::text in ('owner','admin','operator')) then raise exception 'self approver must be an active content-capable agency user'; end if;
   if p_expires_at is not null and p_expires_at <= statement_timestamp() then raise exception 'grant expiry must be in the future'; end if;
   insert into public.agency_client_grants(agency_id,business_id,location_id,status,permissions,self_approver_user_id,video_soft_monthly_cap,video_hard_monthly_cap,requested_by_user_id,expires_at)
   values(p_agency_id,p_business_id,p_location_id,'requested',p_permissions,p_self_approver_user_id,p_video_soft_monthly_cap,p_video_hard_monthly_cap,v_actor,p_expires_at) returning * into v_grant;
@@ -173,6 +173,7 @@ begin
  perform app_private.reject_agency_grant_support_mutation();
  if app_private.current_agency_role(p_agency_id)::text not in ('owner','admin','operator') or p_token_hash is null or length(p_token_hash)<>32 or v_email='' or coalesce(array_length(p_permissions,1),0)=0 or p_expires_at<=statement_timestamp() or p_expires_at>statement_timestamp()+interval '7 days' then raise exception 'invalid agency client claim'; end if;
  if ('content.self_approve'=any(p_permissions))<>(p_self_approver_user_id is not null) then raise exception 'self approval requires a named user'; end if;
+ if p_self_approver_user_id is not null and not exists (select 1 from public.agency_memberships where agency_id=p_agency_id and user_id=p_self_approver_user_id and status='active' and role::text in ('owner','admin','operator')) then raise exception 'self approver must be an active content-capable agency user'; end if;
  insert into app_private.agency_client_access_claims(token_hash,agency_id,email,permissions,self_approver_user_id,video_soft_monthly_cap,video_hard_monthly_cap,grant_expires_at,expires_at,issued_by_user_id) values(p_token_hash,p_agency_id,v_email,p_permissions,p_self_approver_user_id,p_video_soft_monthly_cap,p_video_hard_monthly_cap,p_grant_expires_at,p_expires_at,app_private.current_user_id());
  perform app_private.write_audit_event('user',p_agency_id,null,null,null,'agency.grant.claim.issue','agency_client_claim',encode(p_token_hash,'hex'),'completed',null,p_correlation_id,array['email_claim'],'{}'::jsonb);
 end $$;
@@ -193,17 +194,23 @@ end $$;
 create or replace function app_private.list_agency_client_claim_locations(p_token_hash bytea)
 returns table (business_id uuid,business_name text,location_id uuid,location_name text,permissions text[])
 language sql stable security definer set search_path=pg_catalog as $$
- select business.id,business.name,location.id,location.name,agency_grant.permissions from app_private.agency_client_access_claims claim
+ with eligible_claim as (
+  select claim.* from app_private.agency_client_access_claims claim
+  where claim.token_hash=p_token_hash and claim.consumed_by_user_id=app_private.current_user_id()
+    and claim.expires_at>statement_timestamp() and app_private.current_user_enabled()
+    and app_private.current_support_session_id() is null
+ )
+ select business.id,business.name,location.id,location.name,agency_grant.permissions from eligible_claim claim
  join public.agency_client_grants agency_grant on agency_grant.id=claim.selected_grant_id
- join public.businesses business on business.id=agency_grant.business_id
- join public.locations location on location.id=agency_grant.location_id
- where claim.token_hash=p_token_hash and claim.consumed_by_user_id=app_private.current_user_id() and claim.selected_grant_id is not null and agency_grant.status='active' and (agency_grant.expires_at is null or agency_grant.expires_at>statement_timestamp())
+ join public.businesses business on business.id=agency_grant.business_id and business.archived_at is null
+ join public.locations location on location.id=agency_grant.location_id and location.business_id=business.id and location.archived_at is null
+ where claim.selected_grant_id is not null and agency_grant.status='active' and (agency_grant.expires_at is null or agency_grant.expires_at>statement_timestamp())
  union all
- select business.id,business.name,location.id,location.name,claim.permissions from app_private.agency_client_access_claims claim
+ select business.id,business.name,location.id,location.name,claim.permissions from eligible_claim claim
  join public.business_memberships membership on membership.user_id=app_private.current_user_id() and membership.status='active' and membership.role::text in ('owner','admin')
  join public.businesses business on business.id=membership.business_id and business.archived_at is null
  join public.locations location on location.business_id=business.id and location.archived_at is null
- where claim.token_hash=p_token_hash and claim.consumed_by_user_id=app_private.current_user_id() and claim.selected_grant_id is null and claim.expires_at>statement_timestamp() and app_private.current_support_session_id() is null
+ where claim.selected_grant_id is null
  order by 2,4
 $$;
 

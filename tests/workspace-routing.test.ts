@@ -114,6 +114,12 @@ test("role routing keeps Agency, operations, and tenant modules separated", () =
   assert.equal(defaultWorkspaceRoute("business_owner", false, "billing"), "/app/settings-billing/billing");
 });
 
+test("onboarding completion navigates with canonical workspace query keys", () => {
+  const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(appSource, /workspaceRoute\("settings-billing",\s*\{[\s\S]{0,240}businessId:\s*result\.businessId[\s\S]{0,240}locationId:\s*result\.locationId[\s\S]{0,240}settingsBillingTab:\s*"connections"/u);
+  assert.doesNotMatch(appSource, /settings-billing\/connections\?businessId=/u);
+});
+
 test("every legacy redirect retains context, replaces history, and cannot loop", () => {
   const cases = [
     ["/app", "/app/home"],

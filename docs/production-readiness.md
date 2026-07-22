@@ -9,8 +9,8 @@ and no one-business pilot, has been completed for this branch.
 **This application is not yet ready to serve real paying customers.** The
 security foundation, tenancy model and billing data model have prior live and
 current local test evidence. Customer-facing message delivery, Google
-connectivity and self-service signup are not available because they depend on
-provider credentials and approvals that this deployment does not have. The
+connectivity and public self-service signup are not available because they depend on
+provider credentials and approvals that this deployment does not have. Signup and onboarding endpoints are implemented locally, but verified transactional email is a launch gate. The
 detail below separates what has been proven from what has not.
 
 ## Verified working
@@ -22,22 +22,22 @@ webhook journey proof. Current branch evidence is recorded separately below;
 do not infer that migration 008, the new routed UI or any provider journey has
 been deployed or rerun from the older live result.
 
-## Growth Suite integration (current branch)
+## Simplified product integration (current branch)
 
 - The marketing page is `/`; all product modules live under `/app/*`.
-- `/app/growth` is the connected dashboard and `/app/reviews` is Review Anchor's native review feed. Business and location remain in one canonical query context across module navigation.
+- `/app/home` is the connected home and `/app/google-profile` owns profile, reviews, requests and QR. Business and location remain in one canonical query context across module navigation.
 - Direct routes have server and Cloudflare history fallbacks. Unknown app routes get an explicit not-found state instead of silently opening dashboard home.
 - The old nested router, localStorage store, sample-only modules, dead routes, fake workflow mutations, fake QR mutations, and placeholder agency controls were removed.
 - Active agency support context is restored from the authenticated backend after refresh; tenant access remains unavailable unless the session contains the required MFA evidence.
 - Support permissions now fail closed in the browser when step-up or the locally observed 15-minute activity window expires, while PostgreSQL remains the final authority. Google OAuth and Stripe account changes require a directly signed-in business user rather than a support session.
 - Stripe return routes preserve business/location context, refresh verified workspace billing data on a bounded retry, and do not treat a query parameter as proof of payment.
 - The review workflow is a read-only projection of the selected location's real messaging policies, current approved templates, compliance evidence and dispatch-eligible Google destination. SMS and email policies remain separately selectable.
-- Migration 008 exposes `owner`, `admin`, `operator`, `viewer`, and `billing` membership roles so the UI fails closed before PostgreSQL re-authorises every action. This migration is present locally but has not been applied to the live Supabase project in this review.
+- Migrations 008 through 011 add membership roles, signup/onboarding, support sessions and agency-client grants. They are present locally but have not been applied to the live Supabase project in this review. Migration 012 is paused and must not be applied before the ledger and zero-row agency-grant integrity checks documented in the capability evidence.
 
-Local acceptance on 20 July 2026 passed `npm run check` with 75/75 tests,
-the production build, the Cloudflare demo build, the repository secret scan,
-`git diff --check`, and a production-dependency audit with zero reported
-vulnerabilities. The built Cloudflare artifact contains explicit SPA fallbacks
+Local acceptance on 22 July 2026 passed `npm run check` with 252/252 tests,
+the production build, the Cloudflare demo build, 28/28 Cloudflare tests and type checks,
+four Wrangler dry-runs, the repository secret scan, `git diff --check`, and a
+production-dependency audit with zero reported vulnerabilities. The built Cloudflare artifact contains explicit SPA fallbacks
 for `/app/*`, `/workspace`, and `/r/*`.
 
 An earlier browser acceptance pass on this branch covered 146 assertions across
@@ -104,7 +104,7 @@ cannot be enabled with a credential.
 
 | Feature | Status |
 | --- | --- |
-| Self-service registration and onboarding | **No signup endpoint exists.** Accounts are provisioned by `npm run db:bootstrap`. Public signup also needs verified email delivery before it can be exposed safely. |
+| Self-service registration and onboarding | Signup and onboarding endpoints are implemented on this branch. Public exposure remains blocked until transactional email delivery, staging isolation and recovery journeys are verified. |
 | Multi-factor authentication | No enrolment or challenge path. Accounts with `mfa_required` fail closed. Agency support sessions must stay disabled until this exists. |
 | WhatsApp review requests | Not implemented. Supported channels are SMS, email and QR codes. |
 | AI-assisted review replies | Not implemented; no model provider is configured. |

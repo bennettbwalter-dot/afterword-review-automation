@@ -43,6 +43,7 @@ test("agency permission checks deny support sessions and grant claims are opaque
   const databaseTest = await readFile(path.resolve("database", "tests", "006_agency_grants.sql"), "utf8");
   const workflow = await readFile(path.resolve(".github", "workflows", "database-security.yml"), "utf8");
   assert.match(schema, /function\s+app_private\.has_agency_client_permission[\s\S]{0,900}current_support_session_id\(\)\s+is\s+null/is);
+  assert.match(schema, /function\s+app_private\.has_agency_client_permission[\s\S]{0,1100}current_agency_role\(agency_grant\.agency_id\)::text\s+in\s*\('owner','admin','operator'\)/is);
   for (const command of ["issue_agency_client_grant_claim", "consume_agency_client_grant_claim", "list_agency_client_grant_claim_locations", "expire_stale_agency_client_grants"]) {
     assert.match(schema, new RegExp(`function\\s+app_private\\.${command}\\s*\\(`, "i"));
   }
@@ -57,12 +58,17 @@ test("agency permission checks deny support sessions and grant claims are opaque
   assert.match(databaseTest, /revoke_current_client_agency_grant/i);
   assert.match(databaseTest, /revoked_grant_loses_permission_immediately/i);
   assert.match(databaseTest, /support_session_denies_all_agency_permissions/i);
+  assert.match(databaseTest, /support_role_without_session_denies_all_agency_permissions/i);
+  assert.match(databaseTest, /support role was accepted as a named self approver/i);
   assert.match(databaseTest, /permissions_are_independent_named_and_location_bound/i);
   assert.match(databaseTest, /agency_membership_alone_exposes_nothing/i);
   assert.match(databaseTest, /expired_active_grant_loses_permission_immediately/i);
   assert.match(databaseTest, /limited_grant_cannot_gain_ungranted_permissions/i);
   assert.match(databaseTest, /support session accepted an agency grant/i);
   assert.match(workflow, /npm run db:test:isolation/i);
+  assert.match(workflow, /server\/\*\*/i);
+  assert.match(workflow, /scripts\/test-database-isolation\.ts/i);
+  assert.match(workflow, /tests\/\*\*/i);
   assert.doesNotMatch(workflow, /--file database\/tests\/003_tenant_isolation\.sql/i);
   assert.match(databaseTest, /Grant Client Admin/i);
   for (const block of databaseTest.match(/do \$\$[\s\S]*?end \$\$;/gi) ?? []) {
@@ -81,10 +87,13 @@ test("the release evidence requires a zero-row live integrity query before migra
 
 test("claim approval lets only the direct client discover and select a named location, with replay-safe consumption", async () => {
   const schema = await readFile(path.resolve("database", "migrations", "011_agency_client_grants.sql"), "utf8");
+  const databaseTest = await readFile(path.resolve("database", "tests", "006_agency_grants.sql"), "utf8");
   const app = await readFile(path.resolve("src", "App.tsx"), "utf8");
   const runner = await readFile(path.resolve("scripts", "test-database-isolation.ts"), "utf8");
   assert.ok(schema.includes("order by 2,4"));
   assert.match(schema, /function\s+app_private\.list_agency_client_claim_locations[\s\S]+business_memberships/i);
+  assert.match(schema, /function\s+app_private\.list_agency_client_claim_locations[\s\S]+claim\.expires_at\s*>\s*statement_timestamp\(\)[\s\S]+current_user_enabled\(\)[\s\S]+current_support_session_id\(\)\s+is\s+null/i);
+  assert.match(databaseTest, /selected_claim_expiry_and_support_session_fail_closed/i);
   assert.match(schema, /function\s+app_private\.select_agency_client_claim_location[\s\S]+membership\.user_id\s*=\s*app_private\.current_user_id\(\)/i);
   assert.match(schema, /select\s+lower\(btrim\(email\)\)/i);
   assert.match(schema, /get diagnostics v_found = row_count/i);
@@ -105,10 +114,12 @@ test("self approval requires a named agency approver through the UI and API cont
   const dialog = await readFile(path.resolve("src", "features", "agency", "AgencyGrantDialog.tsx"), "utf8");
   const routes = await readFile(path.resolve("server", "routes", "agency-grants.ts"), "utf8");
   const repository = await readFile(path.resolve("server", "agency", "postgres.ts"), "utf8");
+  const schema = await readFile(path.resolve("database", "migrations", "011_agency_client_grants.sql"), "utf8");
   assert.match(dialog, /content\.self_approve/);
   assert.match(dialog, /Named self-approver user ID/);
   assert.match(routes, /Self approval requires one named agency user/i);
   assert.match(repository, /selfApproverUserId \?\? null/);
+  assert.match(schema, /function\s+app_private\.issue_agency_client_access_claim[\s\S]+self_approver_user_id[\s\S]+agency_memberships[\s\S]+role::text\s+in\s*\('owner','admin','operator'\)/i);
 });
 
 test("client location choice is pending until an explicit permission confirmation", async () => {

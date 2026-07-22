@@ -8,7 +8,7 @@ import {
   validateGoogleReviewUri,
 } from "../providers/google.js";
 import { encryptField, decryptField, hashOpaqueToken } from "../security/crypto.js";
-import { ApiError, requireActor, requireBusinessAccess, requireSameOrigin, sendData } from "./shared.js";
+import { ApiError, requireActor, requireBusinessAccess, requireBusinessManagement, requireSameOrigin, sendData } from "./shared.js";
 import type { ActorContext, PlatformRepository } from "../types.js";
 
 interface GoogleCommandRepository extends PlatformRepository {
@@ -122,7 +122,7 @@ export async function registerGoogleRoutes(app: FastifyInstance, options: BuildA
         );
       }
       const { businessId, locationId } = oauthParamsSchema.parse(request.params);
-      await requireBusinessAccess(options.repository, actor, businessId);
+      await requireBusinessManagement(options.repository, actor, businessId);
       const googleClient = googleUnavailable(options);
 
       const state = randomBytes(32).toString("base64url");
@@ -300,7 +300,7 @@ export async function registerGoogleRoutes(app: FastifyInstance, options: BuildA
     const tokenHash = hashOpaqueToken(selectionToken, options.config.SESSION_PEPPER);
     const pending = await repository.peekGoogleProfileSelection(actor, tokenHash);
     if (!pending) throw new ApiError(404, "GOOGLE_SELECTION_EXPIRED", "This Google profile selection is invalid or expired.");
-    await requireBusinessAccess(options.repository, actor, pending.businessId);
+    await requireBusinessManagement(options.repository, actor, pending.businessId);
     const state = await repository.consumeGoogleProfileSelection(actor, tokenHash);
     if (!state || state.businessId !== pending.businessId || state.locationId !== pending.locationId) {
       throw new ApiError(409, "GOOGLE_SELECTION_ALREADY_USED", "This Google profile selection has already been completed.");
@@ -331,7 +331,7 @@ export async function registerGoogleRoutes(app: FastifyInstance, options: BuildA
     requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production");
     const actor = requireActor(request);
     const businessId = pathBusinessId ?? syncBodySchema.parse(request.body).businessId;
-    await requireBusinessAccess(options.repository, actor, businessId);
+    await requireBusinessManagement(options.repository, actor, businessId);
     googleUnavailable(options);
     const syncRepository = options.repository as GoogleCommandRepository;
     if (!syncRepository.requestGoogleReviewSync) {
@@ -353,7 +353,7 @@ export async function registerGoogleRoutes(app: FastifyInstance, options: BuildA
       requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production");
       const actor = requireActor(request);
       const { businessId, locationId } = oauthParamsSchema.parse(request.params);
-      await requireBusinessAccess(options.repository, actor, businessId);
+      await requireBusinessManagement(options.repository, actor, businessId);
       const repository = options.repository as GoogleCommandRepository;
       if (!repository.disconnectGoogleConnection) {
         throw new ApiError(503, "GOOGLE_DISCONNECT_UNAVAILABLE", "Google disconnect is not configured.");
