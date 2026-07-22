@@ -3096,6 +3096,10 @@ textarea[aria-invalid="true"] {
   min-width: 0;
 }
 
+.integration-card__status-note {
+  grid-column: 1 / -1;
+}
+
 .agency-grant-controls__body {
   display: grid;
   gap: var(--space-sm);
