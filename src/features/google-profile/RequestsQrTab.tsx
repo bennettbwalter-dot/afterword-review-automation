@@ -18,10 +18,9 @@ import {
   Webhook,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { QrCodesView } from "../../platform/QrCodesView";
+import { useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
 import { IS_DEMO_MODE, type GoogleProfileSnapshot } from "../../platform/api";
-import type { BusinessAccount, LocationWorkflowSummary, RequestRecord, RequestStatus } from "../../platform/domain";
+import type { BusinessAccount, LocationWorkflowSummary, QrCodeRecord, RequestRecord, RequestStatus } from "../../platform/domain";
 import { requestDataForGoogleProfileSnapshot } from "./google-profile-domain";
 
 const STATUS_TONES: Record<RequestStatus, string> = {
@@ -218,7 +217,9 @@ function AutomationStatus({
   );
 }
 
-export function RequestsQrTab({ business, snapshot, onAddJob, canConfigure, onOpenIntegrations }: { business: BusinessAccount; snapshot: GoogleProfileSnapshot; onAddJob: () => void; canConfigure: boolean; onOpenIntegrations: () => void }) {
+export type GoogleProfileQrRenderer = ComponentType<{ business: BusinessAccount; record: QrCodeRecord }>;
+
+export function RequestsQrTab({ business, snapshot, onAddJob, canConfigure, onOpenIntegrations, QrRenderer }: { business: BusinessAccount; snapshot: GoogleProfileSnapshot; onAddJob: () => void; canConfigure: boolean; onOpenIntegrations: () => void; QrRenderer: GoogleProfileQrRenderer }) {
   const { requests, workflow, qr } = requestDataForGoogleProfileSnapshot(snapshot);
-  return <><RequestsList requests={requests} onAddJob={onAddJob} canConfigure={canConfigure} /><AutomationStatus business={business} requests={requests} workflow={workflow ?? undefined} onOpenIntegrations={onOpenIntegrations} />{qr ? <QrCodesView business={business} record={qr} /> : <section className="panel empty-state"><QrCode size={24} /><h2>No QR code for this location.</h2><p>Connect a verified Google review destination before generating location-specific artwork.</p><Button onClick={onOpenIntegrations}>Open connections</Button></section>}</>;
+  return <><RequestsList requests={requests} onAddJob={onAddJob} canConfigure={canConfigure} /><AutomationStatus business={business} requests={requests} workflow={workflow ?? undefined} onOpenIntegrations={onOpenIntegrations} />{qr ? <QrRenderer business={business} record={qr} /> : <section className="panel empty-state"><QrCode size={24} /><h2>No QR code for this location.</h2><p>Connect a verified Google review destination before generating location-specific artwork.</p><Button onClick={onOpenIntegrations}>Open connections</Button></section>}</>;
 }

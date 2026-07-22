@@ -48,7 +48,7 @@ import {
   ExceptionsView,
   TeamBillingView,
 } from "./platform/AgencyViews";
-import { LivePublicReviewFlow, PublicReviewFlow } from "./platform/QrCodesView";
+import { LivePublicReviewFlow, PublicReviewFlow, QrCodesView } from "./platform/QrCodesView";
 import GrowthSuite from "./growth/GrowthSuite";
 import { AgencyView } from "./features/agency/AgencyView";
 import { ClientLocationSelector } from "./features/agency/ClientLocationSelector";
@@ -2225,7 +2225,7 @@ function AppShell() {
           {!agencyMode && canReadTenant && view === "google-profile" && <><WorkspaceContextBar business={business} locationId={selectedLocationId} onSelectLocation={(locationId) => navigateToView("google-profile", { businessId: business.id, locationId, googleProfileTab })} /><GoogleProfileView businessId={business.id} locationId={selectedLocationId} tab={googleProfileTab} onTabChange={(tab) => navigateToView("google-profile", { googleProfileTab: tab })}>{(snapshot) => {
             if (googleProfileTab === "profile") return <ProfileTab business={contextBusiness} snapshot={snapshot} onConnect={() => void beginGoogleConnection()} canConfigure={canConfigure && !supportSession} services={services} servicesLoading={servicesLoading} />;
             if (googleProfileTab === "reviews") return <ReviewsTab business={contextBusiness} snapshot={snapshot} />;
-            if (googleProfileTab === "requests-qr") return <RequestsQrTab business={contextBusiness} snapshot={snapshot} onAddJob={() => setAddJobOpen(true)} canConfigure={canConfigure} onOpenIntegrations={() => navigateToView("settings-billing", { settingsBillingTab: "connections" })} />;
+            if (googleProfileTab === "requests-qr") return <RequestsQrTab business={contextBusiness} snapshot={snapshot} onAddJob={() => setAddJobOpen(true)} canConfigure={canConfigure} onOpenIntegrations={() => navigateToView("settings-billing", { settingsBillingTab: "connections" })} QrRenderer={QrCodesView} />;
             return <PostsMediaTab snapshot={snapshot} onOpenContent={({ businessId, locationId }) => navigateToView("content", { businessId, locationId, contentTab: "create" })} />;
           }}</GoogleProfileView></>}
           {!agencyMode && canReadTenant && view === "content" && <><WorkspaceContextBar business={business} locationId={selectedLocationId} onSelectLocation={(locationId) => navigateToView("content", { businessId: business.id, locationId, contentTab })} /><ContentView tab={contentTab} onTabChange={(tab) => navigateToView("content", { contentTab: tab })} /></>}
