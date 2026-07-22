@@ -18,7 +18,6 @@ import {
   MessageSquareText,
   Moon,
   Plus,
-  Printer,
   Send,
   ShieldCheck,
   Smartphone,
@@ -59,7 +58,7 @@ import { ReviewsTab } from "./features/google-profile/ReviewsTab";
 import { RequestsQrTab } from "./features/google-profile/RequestsQrTab";
 import { PostsMediaTab } from "./features/google-profile/PostsMediaTab";
 import { HomeView } from "./features/home/HomeView";
-import { ReportsView as ProductReportsView } from "./features/reports/ReportsView";
+import { ReportsView } from "./features/reports/ReportsView";
 import { SettingsBillingView } from "./features/settings/SettingsBillingView";
 import { SignupView } from "./features/onboarding/SignupView";
 import { VerifyEmailView } from "./features/onboarding/VerifyEmailView";
@@ -988,58 +987,6 @@ function WorkspaceAuthScreen({
   );
 }
 
-
-function ReportsView({ business, selectedBusiness }: { business: BusinessAccount; selectedBusiness: BusinessAccount }) {
-  const [combined, setCombined] = useState(false);
-  const locationReports = business.locationReports ?? [];
-  useEffect(() => setCombined(false), [selectedBusiness.locationId]);
-  const combinedMetrics = useMemo(() => {
-    const totalReviews = locationReports.reduce((sum, location) => sum + location.totalReviews, 0);
-    const weightedRating = totalReviews > 0
-      ? locationReports.reduce((sum, location) => sum + (location.rating * location.totalReviews), 0) / totalReviews
-      : 0;
-    return {
-      ...business.metrics,
-      completedJobs: locationReports.reduce((sum, location) => sum + location.completedJobs, 0),
-      delivered: locationReports.reduce((sum, location) => sum + location.delivered, 0),
-      uniqueClicks: locationReports.reduce((sum, location) => sum + location.uniqueClicks, 0),
-      reviewsDetected: locationReports.reduce((sum, location) => sum + location.reviewsDetected, 0),
-      rating: weightedRating,
-      totalReviews,
-    };
-  }, [business.metrics, locationReports]);
-  const isCombinedReport = combined && locationReports.length > 1;
-  const reportBusiness = isCombinedReport ? { ...business, metrics: combinedMetrics } : selectedBusiness;
-  const metrics = reportBusiness.metrics;
-  const operationalTone = reportBusiness.healthTone === "success" ? "success" : "warning";
-  const generatedOn = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "long", year: "numeric" }).format(new Date());
-  const integrationChecks = [
-    { label: "Completed-job intake", state: reportBusiness.integrations.jobIntake },
-    { label: "Google review sync", state: reportBusiness.integrations.google },
-    { label: "Messaging delivery", state: reportBusiness.integrations.messaging },
-  ];
-  return (
-    <div className="view-stack">
-      <DemoNotice />
-      <section className="report-shell">
-        <header className="report-toolbar"><div><span>{IS_DEMO_MODE ? "Monthly report" : "Operational snapshot"}</span><strong>{IS_DEMO_MODE ? "July 2026" : generatedOn}</strong></div><div className="report-toolbar__actions">{locationReports.length > 1 && <div className="report-scope-toggle" aria-label="Report scope"><button type="button" className={!combined ? "is-active" : undefined} onClick={() => setCombined(false)}>Selected location</button><button type="button" className={combined ? "is-active" : undefined} onClick={() => setCombined(true)}>All locations</button></div>}<Button variant="secondary" onClick={() => window.print()}><Printer size={16} /> Print report</Button></div></header>
-        <article className="report-paper">
-          <header><Brand /><span>{reportBusiness.name} · {isCombinedReport ? `Combined ${locationReports.length}-location report` : reportBusiness.locationName}</span><small>{IS_DEMO_MODE ? "1–31 July 2026 · Sample report" : `Generated ${generatedOn} · Authenticated current totals`}</small></header>
-          <section className="report-intro"><p>{IS_DEMO_MODE ? reportBusiness.healthTone === "success" ? "Your review-request system ran without an integration failure this month." : `The system protected customer messaging while ${reportBusiness.health.toLowerCase()} needs attention.` : reportBusiness.healthTone === "success" ? "Current durable records show the configured review-request system operating without a reported integration failure." : `Customer messaging remains protected while ${reportBusiness.health.toLowerCase()} needs attention.`}</p><span className={`status-pill status-pill--${operationalTone}`}>{reportBusiness.healthTone === "success" ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />} {reportBusiness.health}</span></section>
-          <section className="report-metrics"><div><span>Completed jobs</span><strong>{metrics.completedJobs}</strong></div><div><span>Requests delivered</span><strong>{metrics.delivered}</strong></div><div><span>Unique link clicks</span><strong>{metrics.uniqueClicks}</strong></div><div><span>{IS_DEMO_MODE ? "New reviews detected" : "Reviews cached"}</span><strong>{metrics.reviewsDetected}</strong></div></section>
-          <section className="report-rating"><div><span>Google rating</span><strong>{metrics.rating.toFixed(1)}</strong><Stars rating={Math.round(metrics.rating)} size={17} /></div><p>{IS_DEMO_MODE ? `${metrics.totalReviews} total reviews at month end.` : `${metrics.totalReviews} total Google reviews in the current snapshot.`} Review detection is not exact job-level attribution; estimated conversion is reported separately.</p></section>
-          {isCombinedReport && <section className="report-locations"><h2>Location performance</h2><div className="report-locations__table" role="table" aria-label="Location-level report"><div className="report-locations__head" role="row"><span role="columnheader">Location</span><span role="columnheader">Jobs</span><span role="columnheader">Delivered</span><span role="columnheader">Clicks</span><span role="columnheader">Reviews</span><span role="columnheader">Rating</span><span role="columnheader">SMS</span></div>{locationReports.map((location) => <div role="row" key={location.id}><strong role="cell">{location.name}</strong><span role="cell">{location.completedJobs}</span><span role="cell">{location.delivered}</span><span role="cell">{location.uniqueClicks}</span><span role="cell">{location.reviewsDetected}</span><span role="cell">{location.rating.toFixed(1)}</span><span role="cell">{location.smsSegments}</span></div>)}</div><p>Combined totals appear above. Each row is calculated from records scoped to that location.</p></section>}
-          {IS_DEMO_MODE ? (
-            <section className="report-events"><h2>Operational checks</h2><div><span><CheckCircle2 size={16} /> Completed-job trigger</span><strong>Healthy</strong></div><div><span>{reportBusiness.healthTone === "success" ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />} Google review sync</span><strong>{reportBusiness.healthTone === "success" ? "Healthy" : "Attention"}</strong></div><div><span><CheckCircle2 size={16} /> Suppression list</span><strong>4 contacts</strong></div><div><span><AlertTriangle size={16} /> Failed delivery rate</span><strong>2.4%</strong></div></section>
-          ) : (
-            <section className="report-events"><h2>Operational checks</h2>{integrationChecks.map((check) => <div key={check.label}><span>{check.state.tone === "success" ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />} {check.label}</span><strong>{check.state.status}</strong></div>)}<div><span><AlertTriangle size={16} /> Review attribution</span><strong>Estimated</strong></div></section>
-          )}
-          <footer><span>Review Anchor · Review automation</span><span>{IS_DEMO_MODE ? "Sample data · Not a live client report" : "Authenticated tenant report"}</span></footer>
-        </article>
-      </section>
-    </div>
-  );
-}
 
 function IntegrationsView({ business, onConnect, canConfigure, services, servicesLoading }: { business: BusinessAccount; onConnect: () => void; canConfigure: boolean; services: ServiceStatus[]; servicesLoading: boolean }) {
   const integrations = [
@@ -2229,7 +2176,15 @@ function AppShell() {
             return <PostsMediaTab snapshot={snapshot} onOpenContent={({ businessId, locationId }) => navigateToView("content", { businessId, locationId, contentTab: "create" })} />;
           }}</GoogleProfileView></>}
           {!agencyMode && canReadTenant && view === "content" && <><WorkspaceContextBar business={business} locationId={selectedLocationId} onSelectLocation={(locationId) => navigateToView("content", { businessId: business.id, locationId, contentTab })} /><ContentView tab={contentTab} onTabChange={(tab) => navigateToView("content", { contentTab: tab })} /></>}
-          {!agencyMode && canReadTenant && view === "reports" && <ProductReportsView><ReportsView business={business} selectedBusiness={contextBusiness} /></ProductReportsView>}
+          {!agencyMode && canReadTenant && view === "reports" && <ReportsView
+            business={business}
+            selectedBusiness={contextBusiness}
+            demoMode={IS_DEMO_MODE}
+            BrandComponent={Brand}
+            ButtonComponent={Button}
+            DemoNoticeComponent={DemoNotice}
+            StarsComponent={Stars}
+          />}
           {!agencyMode && view === "settings-billing" && <SettingsBillingView tab={settingsBillingTab} canAccessConnections={session.businessRole !== "billing" && canReadTenant} onTabChange={(tab) => navigateToView("settings-billing", { settingsBillingTab: tab })}>{settingsBillingTab === "connections" && canReadTenant ? <IntegrationsView business={contextBusiness} onConnect={() => void beginGoogleConnection()} canConfigure={canConfigure && !supportSession} services={services} servicesLoading={servicesLoading} /> : settingsBillingTab === "billing" && canReadTenantBilling ? <TeamBillingView business={business} canConfigure={canManageTenantBilling} canManageStripe={canManageStripeBilling} canViewTeamMembers={canConfigure} onSaveSmsPolicy={saveSmsOveragePolicy} onStartCheckout={startStripeCheckout} onOpenBillingPortal={openStripeBillingPortal} stripeCheckoutEnabled={stripeCheckoutEnabled} stripePortalEnabled={stripePortalEnabled} /> : null}</SettingsBillingView>}
           {!agencyMode && canReadTenant && view === "home" && <HomeView><GrowthSuite
             business={business}

@@ -6,12 +6,18 @@ import test from "node:test";
 test("Google review bodies remain inside the Google Profile review view", async () => {
   const app = await readFile(path.resolve("src", "App.tsx"), "utf8");
   const reviewsTab = await readFile(path.resolve("src", "features", "google-profile", "ReviewsTab.tsx"), "utf8");
-  const reportsStart = app.indexOf("function ReportsView(");
-  const reportsSource = app.slice(reportsStart, app.indexOf("function GoogleProfileSelectionDialog(", reportsStart));
+  const reportsView = await readFile(path.resolve("src", "features", "reports", "ReportsView.tsx"), "utf8");
 
   assert.match(reviewsTab, /review\.body/);
-  assert.doesNotMatch(reportsSource, /review\.body/);
-  assert.match(reportsSource, /Review detection is not exact job-level attribution/);
+  assert.doesNotMatch(reportsView, /review\.body/);
+  assert.match(reportsView, /Review detection is not exact job-level attribution/);
+  assert.doesNotMatch(app, /function ReportsView\(/);
+
+  const route = app.match(/<ReportsView\b[\s\S]*?\/>/)?.[0];
+  assert.ok(route, "Reports route should render a self-closing ReportsView");
+  assert.match(route, /business=\{business\}/);
+  assert.match(route, /selectedBusiness=\{contextBusiness\}/);
+  assert.doesNotMatch(route, /\b(?:reviews|requests|prompts|receipts|oauth|provider|destination|children)\w*\s*=/iu);
 });
 
 test("Content does not offer Google reviews as a creation source and write capabilities fail closed", async () => {
