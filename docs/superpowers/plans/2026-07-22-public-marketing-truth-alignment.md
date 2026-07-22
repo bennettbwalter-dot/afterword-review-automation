@@ -85,7 +85,7 @@ function hasConnectedFaqCaveat(after: string, claim: string): boolean {
   if (/upload/iu.test(claim) && /media|images?|photos?|videos?/iu.test(claim)) references.push("uploads?", "uploading", "(?:media|image|photo|video) uploads?");
   if (/reviews?/iu.test(claim) && /repl|respond/iu.test(claim)) references.push("review (?:replies|responses)", "replying", "responding");
   const capabilityState = new RegExp(
-    `\\b(?:${references.join("|")})\\b\\s+(?:is|are|remains?)\\s+(?:(?:currently|yet)\\s+)?(?:not available|unavailable|blocked|disabled)\\b`,
+    `\\b(?:${references.join("|")})\\b\\s+(?:is|are|remains?)\\s+(?:(?:currently|yet)\\s+)?(?:not (?:available|supported|enabled|offered|included)|unavailable|blocked|disabled)\\b`,
     "iu",
   );
   return capabilityState.test(answer);
@@ -94,10 +94,10 @@ function hasConnectedFaqCaveat(after: string, claim: string): boolean {
 function hasExplicitCaveat(source: string, index: number, length: number, claim: string): boolean {
   const before = source.slice(Math.max(0, index - 80), index);
   const after = source.slice(index + length, index + length + 160);
-  const internalNegation = /\b(?:(?:is|are|was|were)\s+(?:(?:currently|yet)\s+)?not|can(?:not|['’]t)\s+be|(?:do|does|did)\s+not\s+(?:include|support)|(?:don|doesn|didn)['’]t\s+(?:include|support))\b/iu;
+  const internalNegation = /\b(?:(?:is|are|was|were)\s+(?:(?:currently|yet)\s+)?not\s+(?:uploaded|published|posted|replied(?:\s+to)?|responded(?:\s+to)?|available|supported|enabled|offered|included)|can(?:not|['’]t)\s+be\s+(?:uploaded|published|posted|replied(?:\s+to)?|responded(?:\s+to)?|included|supported|enabled|offered)|(?:do|does|did)\s+not\s+(?:include|support)|(?:don|doesn|didn)['’]t\s+(?:include|support))\b/iu;
   const immediatePrefix = /(?:\b(?:(?:do|does|did)\s+not\s+(?:include|support)|(?:don|doesn|didn)['’]t\s+(?:include|support)|can(?:not|['’]t)|do not|don['’]t|does not|doesn['’]t|will not|won['’]t|never|unable to|not able to)\s+(?:(?:currently|yet)\s+)?|\bno\s+)$/iu;
-  const immediateNegatedSuffix = /^\s+(?:(?:is|are|was|were)\s+(?:(?:currently|yet)\s+)?not\b|can(?:not|['’]t)\s+be\b)/iu;
-  const immediateStateSuffix = /^\s+(?:is|are|remains?)\s+(?:(?:currently|yet)\s+)?(?:not available|unavailable|blocked|disabled)\b/iu;
+  const immediateNegatedSuffix = /^\s+(?:(?:is|are|was|were)\s+(?:(?:currently|yet)\s+)?not\s+(?:uploaded|published|posted|replied(?:\s+to)?|responded(?:\s+to)?|available|supported|enabled|offered|included)|can(?:not|['’]t)\s+be\s+(?:uploaded|published|posted|replied(?:\s+to)?|responded(?:\s+to)?|included|supported|enabled|offered))\b/iu;
+  const immediateStateSuffix = /^\s+(?:is|are|remains?)\s+(?:(?:currently|yet)\s+)?(?:not (?:available|supported|enabled|offered|included)|unavailable|blocked|disabled)\b/iu;
   return internalNegation.test(claim)
     || immediatePrefix.test(before)
     || immediateNegatedSuffix.test(after)
@@ -209,6 +209,10 @@ test("unsupported claim detection distinguishes availability claims from caveats
     "Review replies are included",
     "Publish directly to Google",
     "Can we publish Google posts? No. Email is unavailable.",
+    "Images are not compressed when you upload media",
+    "Uploaded media is not compressed",
+    "Google posts are not delayed",
+    "Review replies are not delayed",
     "Double your reviews and revenue",
     "Boost your rankings",
     "Guarantee more reviews",
