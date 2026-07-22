@@ -204,7 +204,7 @@ language sql stable security definer set search_path=pg_catalog as $$
  join public.businesses business on business.id=membership.business_id and business.archived_at is null
  join public.locations location on location.business_id=business.id and location.archived_at is null
  where claim.token_hash=p_token_hash and claim.consumed_by_user_id=app_private.current_user_id() and claim.selected_grant_id is null and claim.expires_at>statement_timestamp() and app_private.current_support_session_id() is null
- order by business_name,location_name
+ order by 2,4
 $$;
 
 create or replace function app_private.select_agency_client_claim_location(p_token_hash bytea,p_location_id uuid,p_correlation_id uuid)
