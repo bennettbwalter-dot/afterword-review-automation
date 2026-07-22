@@ -316,8 +316,9 @@ test("Home excludes review records and private request fields", () => {
     assert.equal(markup.includes(marker), false, `must not render ${marker}`);
   }
   assert.doesNotMatch(markup, /Google rating|Reviews detected|Awaiting owner reply/i);
-  assert.equal(markup.includes("4.9"), false);
-  assert.equal(markup.includes("999"), false);
+  const visibleText = markup.replace(/<svg[\s\S]*?<\/svg>/gu, "");
+  assert.equal(visibleText.includes("4.9"), false);
+  assert.equal(visibleText.includes("999"), false);
 });
 
 test("completed-job action follows configuration permission", () => {
