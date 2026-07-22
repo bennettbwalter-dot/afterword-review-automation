@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-22
 
-**Status:** Design direction approved; written-spec review pending
+**Status:** Approved for implementation planning
 
 ## Purpose
 
