@@ -67,7 +67,7 @@ test("agency permission checks deny support sessions and grant claims are opaque
   assert.match(databaseTest, /support session accepted an agency grant/i);
   assert.match(workflow, /npm run db:test:isolation/i);
   assert.match(workflow, /server\/\*\*/i);
-  assert.match(workflow, /scripts\/test-database-isolation\.ts/i);
+  assert.match(workflow, /scripts\/\*\*/i);
   assert.match(workflow, /tests\/\*\*/i);
   assert.doesNotMatch(workflow, /--file database\/tests\/003_tenant_isolation\.sql/i);
   assert.match(databaseTest, /Grant Client Admin/i);

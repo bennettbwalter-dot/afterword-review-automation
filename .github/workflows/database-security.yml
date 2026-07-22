@@ -5,22 +5,16 @@ on:
     paths:
       - "database/**"
       - "server/**"
-      - "scripts/test-database-isolation.ts"
+      - "scripts/**"
       - "tests/**"
-      - "server/repository/postgres.ts"
-      - "server/types.ts"
-      - "tests/database-contract.test.ts"
       - ".github/workflows/database-security.yml"
   push:
     branches: [master, main, "codex/**"]
     paths:
       - "database/**"
       - "server/**"
-      - "scripts/test-database-isolation.ts"
+      - "scripts/**"
       - "tests/**"
-      - "server/repository/postgres.ts"
-      - "server/types.ts"
-      - "tests/database-contract.test.ts"
       - ".github/workflows/database-security.yml"
 
 permissions:
@@ -32,7 +26,7 @@ jobs:
     timeout-minutes: 10
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16.13-alpine@sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -50,8 +44,8 @@ jobs:
       PGUSER: postgres
       PGPASSWORD: postgres
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
