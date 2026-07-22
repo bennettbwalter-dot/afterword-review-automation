@@ -3,16 +3,51 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 
 const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
-const marketingStart = appSource.indexOf("function MarketingNav");
-const marketingEnd = appSource.indexOf("function AppSidebar");
 
-assert.ok(marketingStart >= 0, "MarketingNav source boundary is missing");
-assert.ok(marketingEnd > marketingStart, "AppSidebar source boundary is missing");
+function extractPublicMarketingSource(source: string): string {
+  const dataStart = source.indexOf("const STORY_STEPS");
+  const dataEnd = source.indexOf("const CLIENT_NAV");
+  const componentStart = source.indexOf("function MarketingNav");
+  const componentEnd = source.indexOf("function AppSidebar");
 
-const marketingSource = appSource.slice(marketingStart, marketingEnd);
+  assert.ok(dataStart >= 0, "STORY_STEPS source boundary is missing");
+  assert.ok(dataEnd > dataStart, "CLIENT_NAV source boundary is missing");
+  assert.ok(componentStart >= 0, "MarketingNav source boundary is missing");
+  assert.ok(componentEnd > componentStart, "AppSidebar source boundary is missing");
 
-function count(source: string, text: string): number {
-  return source.split(text).length - 1;
+  return `${source.slice(dataStart, dataEnd)}\n${source.slice(componentStart, componentEnd)}`;
+}
+
+const marketingSource = extractPublicMarketingSource(appSource);
+
+const unsupportedClaimPatterns = [
+  /\bsocial(?: media)? (?:publishing|posting)\b/iu,
+  /\bautomatic(?:ally)? (?:social(?: media)? )?post(?:ing|s)?\b/iu,
+  /\bupload (?:your )?(?:photos?|images?|videos?|media)\b/iu,
+  /\bAI (?:content|video) generation\b/iu,
+  /\bgenerate (?:a |your )?(?:social(?: media)? posts?|videos?)\b/iu,
+  /\b(?:publish|post)(?: (?:posts?|updates?))? (?:to |on )?Google(?: (?:Business Profile )?(?:posts?|updates?))?\b/iu,
+  /\b(?:reply|respond) to (?:Google )?reviews?\b/iu,
+  /\b(?:double|increase|boost|grow|get more|win more)\b[^.!?\r\n]{0,80}\b(?:reviews?|ratings?|rankings?|enquiries|customers?|revenue)\b/iu,
+  /\b(?:guarantee|promise)\b[^.!?\r\n]{0,80}\b(?:more reviews?|higher ratings?|rankings?|enquiries|customers?|revenue)\b/iu,
+];
+
+const explicitCaveatPattern = /\b(?:cannot|can't|do not|don't|does not|doesn't|will not|won't|never|not available|unavailable|no (?:ability|support|guarantee)|without)\b/iu;
+
+function findUnsupportedClaims(source: string): string[] {
+  return source
+    .split(/[\r\n.!?;]+|\bbut\b/iu)
+    .flatMap((clause) => explicitCaveatPattern.test(clause)
+      ? []
+      : unsupportedClaimPatterns.flatMap((pattern) => clause.match(pattern) ?? []));
+}
+
+function sourceRange(source: string, startMarker: string, endMarker: string): string {
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker);
+  assert.ok(start >= 0, `${startMarker} source boundary is missing`);
+  assert.ok(end > start, `${endMarker} source boundary is missing`);
+  return source.slice(start, end).replace(/\s+/gu, " ").trim();
 }
 
 test("public hero describes the proven Google-first product", () => {
@@ -27,14 +62,16 @@ test("public hero describes the proven Google-first product", () => {
 });
 
 test("workspace calls to action retain callbacks and derive labels from demo mode", () => {
-  assert.equal(count(marketingSource, '{IS_DEMO_MODE ? "Product demo" : "Workspace"}'), 1);
-  assert.equal(count(marketingSource, '{IS_DEMO_MODE ? "Preview workspace" : "Open workspace"}'), 2);
-  assert.ok(marketingSource.includes('className="nav-demo-link" onClick={onOpenDemo}'));
-  assert.ok(marketingSource.includes('<Button onClick={onStartSetup}>'));
-  assert.ok(marketingSource.includes('<Button variant="secondary" onClick={onOpenDemo}>'));
-  assert.ok(marketingSource.includes('{IS_DEMO_MODE ? "Open product" : "Sign in"}'));
-  assert.ok(marketingSource.includes('onOpenDemo(); }}>Preview the workspace</Button>'));
-  assert.ok(marketingSource.includes('{IS_DEMO_MODE ? "Open demo" : "Sign in"}'));
+  const navigation = sourceRange(appSource, "function MarketingNav", "function HeroJourney");
+  const planDialog = sourceRange(appSource, "function PlanSelectionDialog", "function MarketingSite");
+  const marketingSite = sourceRange(appSource, "function MarketingSite", "function AppSidebar");
+
+  assert.ok(navigation.includes('<button type="button" className="nav-demo-link" onClick={onOpenDemo}> {IS_DEMO_MODE ? "Product demo" : "Workspace"} </button>'));
+  assert.ok(navigation.includes('<Button variant="primary" className="marketing-nav__cta" onClick={onOpenDemo}> {IS_DEMO_MODE ? "Open product" : "Sign in"} </Button>'));
+  assert.ok(planDialog.includes('<Button onClick={() => { onClose(); onOpenDemo(); }}>Preview the workspace</Button>'));
+  assert.ok(marketingSite.includes('<Button onClick={onStartSetup}>{IS_DEMO_MODE ? "Preview workspace" : "Open workspace"} <ArrowRight size={17} aria-hidden="true" /></Button>'));
+  assert.ok(marketingSite.includes('<Button variant="secondary" onClick={onOpenDemo}>{IS_DEMO_MODE ? "Preview workspace" : "Open workspace"} <ArrowRight size={17} /></Button>'));
+  assert.ok(marketingSite.includes('<Button onClick={onOpenDemo}>{IS_DEMO_MODE ? "Open demo" : "Sign in"} <ArrowRight size={16} /></Button>'));
 });
 
 test("demo journey states are labelled as sample data", () => {
@@ -71,10 +108,47 @@ test("retired and unsupported public claims are absent", () => {
     "Exception alerts",
   ]) assert.equal(appSource.includes(retired), false, `retired claim remains: ${retired}`);
 
-  assert.doesNotMatch(
-    marketingSource,
-    /social publishing|automatic social post(?:ing|s)?|upload (?:your )?(?:image|video|media)|AI (?:content|video) generation|generate (?:a )?(?:social post|video)|publish (?:to|on) Google|reply to (?:Google )?reviews?/iu,
+  assert.deepEqual(findUnsupportedClaims(marketingSource), []);
+});
+
+test("unsupported claims in public marketing data are detected", () => {
+  const fixture = appSource.replace(
+    "const CLIENT_NAV",
+    'const REVIEW_FIXTURE = "Social media publishing";\n\nconst CLIENT_NAV',
   );
+
+  assert.deepEqual(findUnsupportedClaims(extractPublicMarketingSource(fixture)), ["Social media publishing"]);
+});
+
+test("unsupported claim detection distinguishes availability claims from caveats", () => {
+  const prohibited = [
+    "Social media publishing",
+    "Automatically post on social media",
+    "Upload photos",
+    "AI video generation",
+    "Generate a social media post",
+    "Publish Google posts",
+    "Post updates to Google",
+    "Respond to Google reviews",
+    "Double your reviews and revenue",
+    "Boost your rankings",
+    "Guarantee more reviews",
+  ];
+  const permitted = [
+    "We cannot publish to Google",
+    "We do not reply to Google reviews",
+    "Social media publishing is not available",
+    "No guarantee of more reviews or revenue",
+    "We do not guarantee review counts, ratings, search rankings, enquiries or revenue.",
+    "Sample Google review data",
+  ];
+
+  for (const claim of prohibited) {
+    assert.ok(findUnsupportedClaims(claim).length > 0, `missed unsupported claim: ${claim}`);
+  }
+  for (const caveat of permitted) {
+    assert.deepEqual(findUnsupportedClaims(caveat), [], `rejected permitted caveat: ${caveat}`);
+  }
 });
 
 test("honesty guardrails and Google access caveat remain", () => {

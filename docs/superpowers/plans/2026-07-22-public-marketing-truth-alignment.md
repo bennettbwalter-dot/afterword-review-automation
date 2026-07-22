@@ -4,9 +4,9 @@
 
 **Goal:** Align the public marketing page with Review Anchor's proven Google-first product and prevent obsolete or unsupported claims from returning.
 
-**Architecture:** Keep the existing public marketing components, layout, callbacks, and routes in `src/App.tsx`. Add one source-level contract test that isolates the marketing section of that file, checks the approved copy and runtime-mode labels, and rejects complete unsupported claims without banning generic words used in factual sample or no-guarantee text.
+**Architecture:** Keep the existing public marketing components, layout, callbacks, and routes in `src/App.tsx`. Add one source-level contract test that combines the public marketing data range (`STORY_STEPS` through `PRICING_OFFERS`) with the public marketing component range, checks approved copy and callback-bound runtime labels, and rejects complete unsupported claims without banning factual sample or explicit unavailability/no-guarantee text.
 
-**Tech Stack:** React 18, TypeScript, Node.js built-in test runner, `node:assert/strict`, Vite
+**Tech Stack:** React 19, TypeScript, Node.js built-in test runner, `node:assert/strict`, Vite
 
 ## Global Constraints
 
@@ -18,7 +18,7 @@
 - Preserve the existing components, layout, CSS, heading hierarchy, landmarks, controls, callbacks, routes, menu behavior, theme behavior, and reduced-motion scrolling.
 - Demo/authenticated CTA labels derive only from the existing `IS_DEMO_MODE` constant.
 - Do not add a CMS, copy registry, API request, readiness lookup, dependency, or provider integration.
-- The implementation diff is limited to `src/App.tsx` and `tests/marketing-truth.test.ts`; this plan document and the approved design spec are documentation checkpoints, not implementation files.
+- Runtime implementation remains limited to `src/App.tsx` and `tests/marketing-truth.test.ts`; final-review contract hardening may also correct this plan document, while the approved product copy and design spec remain unchanged.
 - Do not mutate a live database, provider, Storage bucket, billing account, social destination, Google connection, or MobileWAN resource.
 - Browser rendering and live provider behavior are not proven by local source tests or builds and must not be claimed as verified.
 
@@ -38,9 +38,9 @@
 - Consumes: the existing file-level `IS_DEMO_MODE: boolean`, `onOpenDemo: () => void`, and `onStartSetup: () => void` behavior in `src/App.tsx`.
 - Produces: exact public copy enforced by `tests/marketing-truth.test.ts`; no new runtime export, prop, route, or API.
 
-- [ ] **Step 1: Write the failing marketing contract test**
+- [ ] **Step 1: Write the failing marketing contract test, including final-review coverage**
 
-Create `tests/marketing-truth.test.ts` with exactly this content:
+Create `tests/marketing-truth.test.ts` from this final strengthened example. It supersedes the original component-only extraction and single context-blind regex.
 
 ```ts
 import assert from "node:assert/strict";
@@ -48,16 +48,45 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 
 const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
-const marketingStart = appSource.indexOf("function MarketingNav");
-const marketingEnd = appSource.indexOf("function AppSidebar");
 
-assert.ok(marketingStart >= 0, "MarketingNav source boundary is missing");
-assert.ok(marketingEnd > marketingStart, "AppSidebar source boundary is missing");
+function extractPublicMarketingSource(source: string): string {
+  const dataStart = source.indexOf("const STORY_STEPS");
+  const dataEnd = source.indexOf("const CLIENT_NAV");
+  const componentStart = source.indexOf("function MarketingNav");
+  const componentEnd = source.indexOf("function AppSidebar");
+  assert.ok(dataStart >= 0 && dataEnd > dataStart, "marketing data boundaries are missing");
+  assert.ok(componentStart >= 0 && componentEnd > componentStart, "marketing component boundaries are missing");
+  return `${source.slice(dataStart, dataEnd)}\n${source.slice(componentStart, componentEnd)}`;
+}
 
-const marketingSource = appSource.slice(marketingStart, marketingEnd);
+const marketingSource = extractPublicMarketingSource(appSource);
 
-function count(source: string, text: string): number {
-  return source.split(text).length - 1;
+const unsupportedClaimPatterns = [
+  /\bsocial(?: media)? (?:publishing|posting)\b/iu,
+  /\bautomatic(?:ally)? (?:social(?: media)? )?post(?:ing|s)?\b/iu,
+  /\bupload (?:your )?(?:photos?|images?|videos?|media)\b/iu,
+  /\bAI (?:content|video) generation\b/iu,
+  /\bgenerate (?:a |your )?(?:social(?: media)? posts?|videos?)\b/iu,
+  /\b(?:publish|post)(?: (?:posts?|updates?))? (?:to |on )?Google(?: (?:Business Profile )?(?:posts?|updates?))?\b/iu,
+  /\b(?:reply|respond) to (?:Google )?reviews?\b/iu,
+  /\b(?:double|increase|boost|grow|get more|win more)\b[^.!?\r\n]{0,80}\b(?:reviews?|ratings?|rankings?|enquiries|customers?|revenue)\b/iu,
+  /\b(?:guarantee|promise)\b[^.!?\r\n]{0,80}\b(?:more reviews?|higher ratings?|rankings?|enquiries|customers?|revenue)\b/iu,
+];
+const explicitCaveatPattern = /\b(?:cannot|can't|do not|don't|does not|doesn't|will not|won't|never|not available|unavailable|no (?:ability|support|guarantee)|without)\b/iu;
+
+function findUnsupportedClaims(source: string): string[] {
+  return source
+    .split(/[\r\n.!?;]+|\bbut\b/iu)
+    .flatMap((clause) => explicitCaveatPattern.test(clause)
+      ? []
+      : unsupportedClaimPatterns.flatMap((pattern) => clause.match(pattern) ?? []));
+}
+
+function sourceRange(source: string, startMarker: string, endMarker: string): string {
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker);
+  assert.ok(start >= 0 && end > start, `${startMarker} source range is missing`);
+  return source.slice(start, end).replace(/\s+/gu, " ").trim();
 }
 
 test("public hero describes the proven Google-first product", () => {
@@ -72,14 +101,15 @@ test("public hero describes the proven Google-first product", () => {
 });
 
 test("workspace calls to action retain callbacks and derive labels from demo mode", () => {
-  assert.equal(count(marketingSource, '{IS_DEMO_MODE ? "Product demo" : "Workspace"}'), 1);
-  assert.equal(count(marketingSource, '{IS_DEMO_MODE ? "Preview workspace" : "Open workspace"}'), 2);
-  assert.ok(marketingSource.includes('className="nav-demo-link" onClick={onOpenDemo}'));
-  assert.ok(marketingSource.includes('<Button onClick={onStartSetup}>'));
-  assert.ok(marketingSource.includes('<Button variant="secondary" onClick={onOpenDemo}>'));
-  assert.ok(marketingSource.includes('{IS_DEMO_MODE ? "Open product" : "Sign in"}'));
-  assert.ok(marketingSource.includes('onOpenDemo(); }}>Preview the workspace</Button>'));
-  assert.ok(marketingSource.includes('{IS_DEMO_MODE ? "Open demo" : "Sign in"}'));
+  const navigation = sourceRange(appSource, "function MarketingNav", "function HeroJourney");
+  const planDialog = sourceRange(appSource, "function PlanSelectionDialog", "function MarketingSite");
+  const marketingSite = sourceRange(appSource, "function MarketingSite", "function AppSidebar");
+  assert.ok(navigation.includes('<button type="button" className="nav-demo-link" onClick={onOpenDemo}> {IS_DEMO_MODE ? "Product demo" : "Workspace"} </button>'));
+  assert.ok(navigation.includes('<Button variant="primary" className="marketing-nav__cta" onClick={onOpenDemo}> {IS_DEMO_MODE ? "Open product" : "Sign in"} </Button>'));
+  assert.ok(planDialog.includes('<Button onClick={() => { onClose(); onOpenDemo(); }}>Preview the workspace</Button>'));
+  assert.ok(marketingSite.includes('<Button onClick={onStartSetup}>{IS_DEMO_MODE ? "Preview workspace" : "Open workspace"} <ArrowRight size={17} aria-hidden="true" /></Button>'));
+  assert.ok(marketingSite.includes('<Button variant="secondary" onClick={onOpenDemo}>{IS_DEMO_MODE ? "Preview workspace" : "Open workspace"} <ArrowRight size={17} /></Button>'));
+  assert.ok(marketingSite.includes('<Button onClick={onOpenDemo}>{IS_DEMO_MODE ? "Open demo" : "Sign in"} <ArrowRight size={16} /></Button>'));
 });
 
 test("demo journey states are labelled as sample data", () => {
@@ -116,10 +146,41 @@ test("retired and unsupported public claims are absent", () => {
     "Exception alerts",
   ]) assert.equal(appSource.includes(retired), false, `retired claim remains: ${retired}`);
 
-  assert.doesNotMatch(
-    marketingSource,
-    /social publishing|automatic social post(?:ing|s)?|upload (?:your )?(?:image|video|media)|AI (?:content|video) generation|generate (?:a )?(?:social post|video)|publish (?:to|on) Google|reply to (?:Google )?reviews?/iu,
+  assert.deepEqual(findUnsupportedClaims(marketingSource), []);
+});
+
+test("unsupported claims in public marketing data are detected", () => {
+  const fixture = appSource.replace(
+    "const CLIENT_NAV",
+    'const REVIEW_FIXTURE = "Social media publishing";\n\nconst CLIENT_NAV',
   );
+  assert.deepEqual(findUnsupportedClaims(extractPublicMarketingSource(fixture)), ["Social media publishing"]);
+});
+
+test("unsupported claim detection distinguishes availability claims from caveats", () => {
+  const prohibited = [
+    "Social media publishing",
+    "Automatically post on social media",
+    "Upload photos",
+    "AI video generation",
+    "Generate a social media post",
+    "Publish Google posts",
+    "Post updates to Google",
+    "Respond to Google reviews",
+    "Double your reviews and revenue",
+    "Boost your rankings",
+    "Guarantee more reviews",
+  ];
+  const permitted = [
+    "We cannot publish to Google",
+    "We do not reply to Google reviews",
+    "Social media publishing is not available",
+    "No guarantee of more reviews or revenue",
+    "We do not guarantee review counts, ratings, search rankings, enquiries or revenue.",
+    "Sample Google review data",
+  ];
+  for (const claim of prohibited) assert.ok(findUnsupportedClaims(claim).length > 0);
+  for (const caveat of permitted) assert.deepEqual(findUnsupportedClaims(caveat), []);
 });
 
 test("honesty guardrails and Google access caveat remain", () => {
@@ -138,7 +199,7 @@ Run:
 node --import tsx --test tests/marketing-truth.test.ts
 ```
 
-Expected: FAIL in the hero, CTA, sample-state, oversight, footer, and retired-claim tests because `src/App.tsx` still contains the old Growth Suite and outcome-promising copy. The source-boundary assertions and honesty-guardrail test should pass.
+Expected during the initial copy-alignment RED: failures in the hero, CTA, sample-state, oversight, footer, and retired-claim tests. During final-review hardening, the synthetic data-range and table-driven claim fixtures must first fail against the component-only/context-blind implementation, then pass after the strengthened extraction and helper are in place.
 
 - [ ] **Step 3: Replace only the approved public copy in `src/App.tsx`**
 
@@ -213,7 +274,7 @@ Run:
 node --import tsx --test tests/marketing-truth.test.ts
 ```
 
-Expected: PASS with 7 tests, 0 failures.
+Expected: PASS with 9 tests, 0 failures after final-review hardening.
 
 - [ ] **Step 5: Run focused adjacent workflow and security regression tests**
 
@@ -246,6 +307,8 @@ git commit -m "feat: align public marketing with Google-first product"
 ```
 
 Expected: one focused implementation commit; no CSS, API, provider, database, billing, Storage, or MobileWAN file is included.
+
+For final-review hardening, stage only `tests/marketing-truth.test.ts` and this plan correction, then create a separate focused test commit. `src/App.tsx` should remain unchanged because the approved runtime copy and callbacks already satisfy the strengthened contract.
 
 ---
 
@@ -286,7 +349,7 @@ git show --stat --oneline HEAD
 git status --short --branch
 ```
 
-Expected: the implementation commit changes only `src/App.tsx` and `tests/marketing-truth.test.ts`; the planning commit changes only this plan document and the design spec's approval status; the worktree is clean after both commits. No CSS, API, server, provider, database, migration, billing, Storage, moderation, GPU, social, or MobileWAN file appears.
+Expected: the implementation commit changes only `src/App.tsx` and `tests/marketing-truth.test.ts`; the final-review fix commit changes only the hardened contract test and this corrected plan; the earlier planning commit changes only this plan document and the design spec's approval status. The worktree is clean after the commits. No CSS, API, server, provider, database, migration, billing, Storage, moderation, GPU, social, or MobileWAN file appears.
 
 - [ ] **Step 3: Perform the required two-stage independent review**
 
