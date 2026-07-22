@@ -1,7 +1,7 @@
 # Provider-Independent Launch Candidate Design
 
-**Date:** 22 July 2026  
-**Status:** Written for user review  
+**Date:** 22 July 2026
+**Status:** Approved
 **Branch:** `codex/provider-independent-launch`
 
 ## Objective
