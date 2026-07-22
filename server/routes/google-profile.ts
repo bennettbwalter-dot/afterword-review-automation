@@ -97,8 +97,12 @@ export function projectGoogleProfileSnapshot(workspace: WorkspacePayload, busine
 }
 
 export async function registerGoogleProfileRoutes(app: FastifyInstance, options: BuildAppOptions) {
-  app.get("/api/v1/businesses/:businessId/locations/:locationId/google-profile", async (request, reply) => {
-    reply.header("cache-control", "no-store");
+  app.get("/api/v1/businesses/:businessId/locations/:locationId/google-profile", {
+    onSend: async (_request, reply, payload) => {
+      reply.header("cache-control", "no-store");
+      return payload;
+    },
+  }, async (request, reply) => {
     const actor = requireActor(request);
     const { businessId, locationId } = paramsSchema.parse(request.params);
     await requireBusinessAccess(options.repository, actor, businessId);

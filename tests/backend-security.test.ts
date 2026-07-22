@@ -597,6 +597,24 @@ test("support sessions cannot begin Google Business Profile OAuth", async (t) =>
   assert.match(response.json().error.message, /direct business owner or administrator/i);
 });
 
+test("Google Profile responses remain no-store when the global support pre-handler rejects", async (t) => {
+  const { app, cookie } = await authenticatedApp();
+  t.after(() => app.close());
+
+  const response = await app.inject({
+    method: "GET",
+    url: `/api/v1/businesses/${businessId}/locations/${locationId}/google-profile`,
+    headers: {
+      cookie,
+      "x-support-session-id": randomUUID(),
+    },
+  });
+
+  assert.equal(response.statusCode, 403);
+  assert.equal(response.json().error.code, "SUPPORT_SESSION_FORBIDDEN");
+  assert.equal(response.headers["cache-control"], "no-store");
+});
+
 test("Stripe webhook route verifies first and persists the exact raw body", async (t) => {
   const state = createRepository();
   let persistedRawBody: Buffer | undefined;
