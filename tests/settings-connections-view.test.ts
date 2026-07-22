@@ -66,6 +66,13 @@ test("keeps publication readiness separate and unavailable despite healthy Googl
   assert.doesNotMatch(ledger, /oauth|token|secret|page id|channel id|connected|healthy|publish now|schedule/i);
 });
 
+test("gives publication ledger copy its own full-width card layout", () => {
+  const viewSource = readFileSync(new URL("../src/features/settings/ConnectionsView.tsx", import.meta.url), "utf8");
+  const stylesSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+  assert.match(viewSource, /className="integration-card integration-card--publication-readiness"/u);
+  assert.match(stylesSource, /\.integration-card--publication-readiness\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\);\s*\}/u);
+});
+
 test("Google setup follows configured, loading, authorization, and demo rules", () => {
   assert.match(render(), />Review setup<\/button>/);
   assert.doesNotMatch(render(), /<button[^>]*disabled=""[^>]*>Review setup<\/button>/);

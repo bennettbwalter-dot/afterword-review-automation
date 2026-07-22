@@ -3067,6 +3067,10 @@ textarea[aria-invalid="true"] {
   padding: var(--space-md);
 }
 
+.integration-card--publication-readiness {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .integration-card__icon {
   width: 2.75rem;
   height: 2.75rem;

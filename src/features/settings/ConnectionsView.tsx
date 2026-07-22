@@ -77,7 +77,7 @@ export function ConnectionsView({
         </header>
         <div className="integration-grid">
           {PUBLICATION_CAPABILITIES.map((capability) => (
-            <article className="integration-card" key={capability.id}>
+            <article className="integration-card integration-card--publication-readiness" key={capability.id}>
               <div><h3>{capability.label}</h3><p>{capability.prerequisites}</p></div>
               <span className="status-pill status-pill--warning">Unavailable</span>
             </article>
