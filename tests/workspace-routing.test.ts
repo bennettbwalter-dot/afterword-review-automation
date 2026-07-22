@@ -166,10 +166,13 @@ test("billing tabs expose selected state and omit inaccessible Connections", () 
 });
 
 test("QR test links use a non-recording preview context", () => {
+  const qrSource = readFileSync(new URL("../src/platform/QrCodesView.tsx", import.meta.url), "utf8");
   assert.equal(publicReviewPreviewUrl("https://reviews.example/r/abc"), "https://reviews.example/r/abc?preview=1");
   assert.equal(publicReviewPreviewUrl("https://reviews.example/r/abc?placement=card"), "https://reviews.example/r/abc?placement=card&preview=1");
   assert.equal(isPublicReviewPreview("?preview=1"), true);
   assert.equal(isPublicReviewPreview("?preview=0"), false);
+  assert.match(qrSource, /if \(previewMode\) return;[\s\S]*platformApi\.recordPublicReviewScan/u);
+  assert.match(qrSource, /if \(scanIdRef\.current\) await platformApi\.markPublicReviewContinue/u);
 });
 
 test("static hosting falls back to the SPA for workspace and public review routes", () => {

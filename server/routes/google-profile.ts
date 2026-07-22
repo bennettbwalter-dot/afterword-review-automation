@@ -31,22 +31,48 @@ export interface GoogleProfileSnapshot {
   capabilities: Record<"profileFields" | "services" | "attributes" | "reviewReplies" | "posts" | "images" | "videos", { available: false; reason: string }>;
 }
 
-const unavailableCapability = { available: false as const, reason: "Unavailable until the Google capability is approved and proven in a controlled pilot." };
+function googleConnectionState(google: WorkspacePayload["businesses"][number]["integrations"]["google"]): GoogleProfileSnapshot["connection"]["state"] {
+  const evidence = `${google.status} ${google.lastEvent}`.toLowerCase();
+  if (/(?:disconnect|reconnect required|revoked|permission[ _-](?:loss|lost|denied)|authentication[ _-]required|disabled)/u.test(evidence)) {
+    return "disconnected";
+  }
+  return google.tone === "success" ? "connected" : "attention";
+}
+
+function unavailableCapabilityFor(state: GoogleProfileSnapshot["connection"]["state"]) {
+  const reason = state === "connected"
+    ? "Unavailable until the Google capability is approved and proven in a controlled pilot."
+    : state === "disconnected"
+      ? "Reconnect the selected Google Business Profile location first."
+      : "Resolve the selected location's Google connection issue first.";
+  return { available: false as const, reason };
+}
 
 export function projectGoogleProfileSnapshot(workspace: WorkspacePayload, businessId: string, locationId: string): GoogleProfileSnapshot {
   const business = workspace.businesses.find((candidate) => candidate.id === businessId);
   const locationKnown = business?.locationId === locationId || business?.locationReports.some((location) => location.id === locationId);
-  if (!business || !locationKnown || workspace.access?.businessId !== businessId || workspace.access.canReadTenant !== true) {
+  if (
+    !business
+    || !locationKnown
+    || workspace.access?.businessId !== businessId
+    || workspace.access.locationId !== locationId
+    || workspace.access.canReadTenant !== true
+  ) {
     throw new ApiError(404, "GOOGLE_PROFILE_NOT_FOUND", "This Google Profile location is not available in the current workspace.");
   }
 
   const google = business.integrations.google;
-  const state = google.tone === "success" ? "connected" as const : google.status.toLowerCase().includes("disconnect") ? "disconnected" as const : "attention" as const;
+  const state = googleConnectionState(google);
+  const unavailableCapability = unavailableCapabilityFor(state);
   const reviews = asRows(workspace.reviewsByBusiness[businessId]).filter((review) => locationMatches(review, locationId));
   const requests = asRows(workspace.requestsByBusiness[businessId]).filter((request) => locationMatches(request, locationId));
   const candidateQr = workspace.qrCodesByBusiness[businessId];
   const qr = candidateQr && typeof candidateQr === "object" && candidateQr !== null && (candidateQr as Row).locationId === locationId
     ? candidateQr as Row
+    : null;
+  const candidateWorkflow = workspace.workflowsByLocation[locationId];
+  const workflow = candidateWorkflow?.businessId === businessId && candidateWorkflow.locationId === locationId
+    ? candidateWorkflow
     : null;
 
   return {
@@ -57,7 +83,7 @@ export function projectGoogleProfileSnapshot(workspace: WorkspacePayload, busine
     reviews,
     requests,
     qr,
-    workflow: workspace.workflowsByLocation[locationId] ?? null,
+    workflow,
     capabilities: {
       profileFields: unavailableCapability,
       services: unavailableCapability,

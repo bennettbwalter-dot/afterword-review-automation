@@ -148,9 +148,12 @@ function AutomationStatus({
   const previewName = requests[0]?.customer.split(" ")[0] ?? "Customer";
   const template = channel?.template;
   const runtimeUrl = workflow?.reviewDestination?.runtimeUrl;
+  const verifiedAt = workflow?.reviewDestination?.verifiedAt;
   const connectionHealth = workflow?.reviewDestination?.connectionHealth;
   const destinationReady = Boolean(
     runtimeUrl
+    && verifiedAt
+    && workflow?.reviewDestination?.matchesRuntime === true
     && connectionHealth
     && !BLOCKED_GOOGLE_CONNECTION_HEALTH.has(connectionHealth),
   );

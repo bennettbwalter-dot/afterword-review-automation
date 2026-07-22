@@ -162,3 +162,32 @@ test("RequestsQrTab renders only the supplied request, workflow, and QR snapshot
   assert.match(markup, /data-qr-token="scoped-qr-token"/u);
   assert.doesNotMatch(markup, /REQ-DECOY|Decoy Customer|Business-wide decoy job|decoy-qr-token/u);
 });
+
+test("RequestsQrTab exposes the exact destination only with matching runtime verification evidence", () => {
+  const ScopedQrRenderer = () => createElement("output", null, "Selected QR");
+  const renderDestination = (reviewDestination: LocationWorkflowSummary["reviewDestination"]) => renderToStaticMarkup(createElement(RequestsQrTab, {
+    business,
+    snapshot: { ...snapshot, workflow: { ...scopedWorkflow, reviewDestination } },
+    onAddJob: () => {},
+    canConfigure: false,
+    onOpenIntegrations: () => {},
+    QrRenderer: ScopedQrRenderer,
+  }));
+
+  const ready = renderDestination(scopedWorkflow.reviewDestination);
+  assert.match(ready, /Configured/u);
+  assert.match(ready, /https:\/\/g\.page\/r\/scoped/u);
+  assert.match(ready, /Google destination: ready/u);
+
+  for (const unavailable of [
+    { ...scopedWorkflow.reviewDestination, matchesRuntime: false },
+    { ...scopedWorkflow.reviewDestination, verifiedAt: undefined },
+    { ...scopedWorkflow.reviewDestination, runtimeUrl: undefined },
+  ]) {
+    const markup = renderDestination(unavailable);
+    assert.match(markup, /Incomplete/u);
+    assert.match(markup, /\[review destination unavailable\]/u);
+    assert.match(markup, /Google destination: unavailable/u);
+    assert.doesNotMatch(markup, /Scoped workflow marker[^<]*https:\/\/g\.page\/r\/scoped/u);
+  }
+});
