@@ -53,7 +53,7 @@ begin
   if p_duration_minutes is null or p_duration_minutes not in (15, 30) then
     raise exception 'support session duration must be 15 or 30 minutes';
   end if;
-  if pg_catalog.length(pg_catalog.trim(p_reason)) < 12 then
+  if pg_catalog.length(pg_catalog.btrim(p_reason)) < 12 then
     raise exception 'a support reason or ticket reference is required';
   end if;
   if v_mfa_verified_at is null
@@ -83,14 +83,14 @@ begin
     agency_id, business_id, actor_user_id, scope, reason, mfa_verified_at,
     step_up_verified_at, started_at, last_activity_at, expires_at
   ) values (
-    v_agency_id, p_business_id, v_actor_user_id, p_scope, pg_catalog.trim(p_reason), v_mfa_verified_at,
+    v_agency_id, p_business_id, v_actor_user_id, p_scope, pg_catalog.btrim(p_reason), v_mfa_verified_at,
     v_step_up_verified_at, pg_catalog.statement_timestamp(), pg_catalog.statement_timestamp(),
     pg_catalog.statement_timestamp() + pg_catalog.make_interval(mins => p_duration_minutes)
   ) returning id into v_session_id;
 
   perform app_private.write_audit_event(
     'user', v_agency_id, p_business_id, null, v_session_id,
-    'support.session.start', 'support_session', v_session_id::text, 'completed', pg_catalog.trim(p_reason),
+    'support.session.start', 'support_session', v_session_id::text, 'completed', pg_catalog.btrim(p_reason),
     p_correlation_id, array['scope', 'expires_at'], '{}'::jsonb
   );
   return v_session_id;
