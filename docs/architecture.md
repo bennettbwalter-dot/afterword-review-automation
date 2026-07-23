@@ -8,7 +8,20 @@ This is code-complete foundation work, not current-branch production evidence. T
 
 The system is one multi-tenant SaaS application. Client workspaces and the agency portfolio share one identity system and PostgreSQL database. The authenticated application, public ingress and worker are separate least-privilege processes. Navigation is derived from memberships and capabilities; there is no separate, implicitly trusted admin application.
 
-Migrations 001 through 011 target PostgreSQL 15.9 or newer. `scripts/migrate.ts` applies them in filename order, stores SHA-256 checksums and refuses to alter an already-applied migration. Migration 008 adds membership roles; migrations 009 through 011 add signup/onboarding, support sessions and agency-client grants. Migration 012 is paused and must not be applied until the target ledger and documented zero-row agency-grant integrity query are checked. `database/tests/003_tenant_isolation.sql`, the later database suites, and `.github/workflows/database-security.yml` define executable security checks. A clean target-environment run and two-connection concurrency tests remain launch blockers.
+Migrations 001 through 011 target PostgreSQL 15.9 or newer. `scripts/migrate.ts` applies them in filename order, stores SHA-256 checksums and refuses to alter an already-applied migration. Each migration body and its ledger row commit in one transaction. Migration 008 adds membership roles; migrations 009 through 011 add signup/onboarding, support sessions and agency-client grants. Every migration after 011 requires `MIGRATION_APPROVAL_MANIFEST`, a short-lived deployment-specific JSON manifest binding the exact target fingerprint, evidence ID, migration filename and checksum. Migration 012 is paused and additionally requires the expected migration 011 ledger checksum plus the documented zero-row agency-grant integrity query. `database/tests/003_tenant_isolation.sql`, the later database suites, and `.github/workflows/database-security.yml` define executable security checks. A clean target-environment run and two-connection concurrency tests remain launch blockers.
+
+The approval value is not a credential, but it must never be reused across targets. Generate the target SHA-256 from `hostname:port/database` with `migrationTargetFingerprint`, calculate each reviewed migration checksum with `migrationChecksum`, and pass compact JSON through the deployment secret/environment manager. In PowerShell, assign the compact JSON directly to `$env:MIGRATION_APPROVAL_MANIFEST`; do not add the database URL, username or password to the manifest. Absence, target mismatch, missing evidence, an unlisted filename or checksum drift fails closed before migration execution.
+
+```powershell
+$targetSha = node --import tsx --eval "import { migrationTargetFingerprint } from './scripts/migration-policy.ts'; process.stdout.write(migrationTargetFingerprint(process.env.MIGRATION_DATABASE_URL));"
+$migrationSha = node --import tsx --eval "import { readFileSync } from 'node:fs'; import { migrationChecksum } from './scripts/migration-checksum.ts'; process.stdout.write(migrationChecksum(readFileSync('./database/migrations/019_provider_independent_security.sql', 'utf8')));"
+$approval = @{
+  targetSha256 = $targetSha
+  evidenceId = "reviewed-release-evidence-id"
+  migrations = @{ "019_provider_independent_security.sql" = $migrationSha }
+} | ConvertTo-Json -Compress
+$env:MIGRATION_APPROVAL_MANIFEST = $approval
+```
 
 The migrations require a dedicated database owned by `afterword_migration_owner`. The `public` schema must belong to that role or PostgreSQL 15's `pg_database_owner` role. Those ownership rules let the migration revoke public schema creation; a plain `CREATE` grant does not satisfy the bootstrap contract. The `afterword_*` database roles and other lowercase prefixes remain stable legacy implementation identifiers after the product rename.
 

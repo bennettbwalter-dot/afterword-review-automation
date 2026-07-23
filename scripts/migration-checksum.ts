@@ -20,3 +20,25 @@ export function migrationChecksumVariants(sql: string) {
     sha256(canonical.replace(/\n/g, "\r\n")),
   ]);
 }
+
+export function unwrapMigrationTransaction(sql: string) {
+  const lines = canonicalMigrationSql(sql).split("\n");
+  const beginIndex = lines.findIndex((line) => {
+    const trimmed = line.trim();
+    return trimmed.length > 0 && !trimmed.startsWith("--");
+  });
+  if (beginIndex < 0 || !/^begin\s*;$/iu.test(lines[beginIndex].trim())) {
+    throw new Error("Migration outer transaction must contain BEGIN and COMMIT.");
+  }
+
+  let commitIndex = lines.length - 1;
+  while (commitIndex > beginIndex && lines[commitIndex].trim().length === 0) {
+    commitIndex -= 1;
+  }
+  if (commitIndex <= beginIndex || !/^commit\s*;$/iu.test(lines[commitIndex].trim())) {
+    throw new Error("Migration outer transaction must contain BEGIN and COMMIT with no SQL after COMMIT.");
+  }
+
+  const body = lines.slice(beginIndex + 1, commitIndex).join("\n");
+  return `${body.replace(/\n*$/u, "")}\n`;
+}
