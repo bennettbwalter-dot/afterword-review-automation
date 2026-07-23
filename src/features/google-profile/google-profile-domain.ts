@@ -1,5 +1,12 @@
 import type { GoogleProfileTab } from "../../routing";
 import type { GoogleProfileSnapshot } from "../../platform/api";
+import type {
+  BusinessAccount,
+  LocationWorkflowSummary,
+  QrCodeRecord,
+  RequestRecord,
+  ReviewRecord,
+} from "../../platform/domain";
 
 export const GOOGLE_PROFILE_TABS: ReadonlyArray<{ id: GoogleProfileTab; label: string }> = [
   { id: "profile", label: "Profile" },
@@ -51,4 +58,56 @@ export function googleProfileWriteCapabilityLedger(snapshot: GoogleProfileSnapsh
 
 export function requestDataForGoogleProfileSnapshot(snapshot: GoogleProfileSnapshot) {
   return { requests: snapshot.requests, workflow: snapshot.workflow, qr: snapshot.qr };
+}
+
+export type GoogleProfileSnapshotSource =
+  | { kind: "demo"; revision: number; snapshot: GoogleProfileSnapshot | null }
+  | {
+    kind: "live";
+    revision: number;
+    load: (businessId: string, locationId: string) => Promise<GoogleProfileSnapshot>;
+  };
+
+const DEMO_CAPABILITY_REASON = "Unavailable in the seeded demo. Production access requires an approved controlled pilot.";
+
+export function buildDemoGoogleProfileSnapshot({
+  business,
+  locationId,
+  requests,
+  reviews,
+  qr,
+  workflow,
+}: {
+  business: BusinessAccount;
+  locationId: string;
+  requests: RequestRecord[];
+  reviews: ReviewRecord[];
+  qr: QrCodeRecord | null;
+  workflow: LocationWorkflowSummary | null;
+}): GoogleProfileSnapshot {
+  return {
+    businessId: business.id,
+    locationId,
+    connection: { state: "connected", lastSyncedAt: "Seeded sample" },
+    profile: null,
+    reviews: reviews.filter((review) => review.businessId === business.id && review.locationId === locationId),
+    requests: requests.filter((request) => request.businessId === business.id && request.locationId === locationId),
+    qr: qr?.businessId === business.id && qr.locationId === locationId ? qr : null,
+    workflow: workflow?.businessId === business.id && workflow.locationId === locationId ? workflow : null,
+    capabilities: Object.fromEntries(
+      GOOGLE_PROFILE_CAPABILITIES.map(({ key }) => [key, { available: false, reason: DEMO_CAPABILITY_REASON }]),
+    ) as GoogleProfileSnapshot["capabilities"],
+  };
+}
+
+export async function resolveGoogleProfileSnapshotSource(
+  source: GoogleProfileSnapshotSource,
+  businessId: string,
+  locationId: string,
+) {
+  if (source.kind === "live") return source.load(businessId, locationId);
+  if (source.snapshot?.businessId !== businessId || source.snapshot.locationId !== locationId) {
+    throw new Error("The selected demo location snapshot is unavailable.");
+  }
+  return source.snapshot;
 }
