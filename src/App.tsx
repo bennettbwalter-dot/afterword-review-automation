@@ -49,7 +49,9 @@ import { LivePublicReviewFlow, PublicReviewFlow, QrCodesView } from "./platform/
 import { AgencyView } from "./features/agency/AgencyView";
 import { ClientLocationSelector } from "./features/agency/ClientLocationSelector";
 import { ContentView } from "./features/content/ContentView";
-import { GoogleProfileView } from "./features/google-profile/GoogleProfileView";
+import { createCompletedJobAndRefreshWorkspace } from "./features/google-profile/completed-job-refresh";
+import { GoogleProfileView, type GoogleProfileSnapshotSource } from "./features/google-profile/GoogleProfileView";
+import { buildDemoGoogleProfileSnapshot } from "./features/google-profile/google-profile-domain";
 import { ProfileTab } from "./features/google-profile/ProfileTab";
 import { ReviewsTab } from "./features/google-profile/ReviewsTab";
 import { RequestsQrTab } from "./features/google-profile/RequestsQrTab";
@@ -78,10 +80,13 @@ import {
 import {
   ADMIN_SESSION,
   BUSINESSES,
+  DEMO_WORKFLOWS_BY_LOCATION,
   INITIAL_AUDIT_EVENTS,
+  INITIAL_QR_CODES_BY_BUSINESS,
   INITIAL_REQUESTS_BY_BUSINESS,
   OWNER_SESSION,
   PLATFORM_EXCEPTIONS,
+  REVIEWS_BY_BUSINESS,
   canConfigureTenant,
   canManageBilling,
   canReadTenantData,
@@ -1250,6 +1255,7 @@ function AppShell() {
   const [servicesLoading, setServicesLoading] = useState(!IS_DEMO_MODE);
   const [servicesError, setServicesError] = useState("");
   const [servicesVersion, setServicesVersion] = useState(0);
+  const [googleProfileRevision, setGoogleProfileRevision] = useState(0);
   const sessionRef = useRef<SessionContext | null>(session);
   const previousDemoRoleRef = useRef<ActorRole | null>(session?.role ?? null);
 
@@ -1463,7 +1469,6 @@ function AppShell() {
       .then((loaded) => { if (active) setServices(loaded); })
       .catch((caught: unknown) => {
         if (active) {
-          setServices([]);
           setServicesError(caught instanceof Error ? caught.message : "Service availability could not be loaded.");
         }
       })
@@ -1779,6 +1784,24 @@ function AppShell() {
   const requests = (requestsByBusiness[business.id] ?? []).filter(
     (request) => !selectedLocationId || request.locationId === selectedLocationId,
   );
+  const googleProfileSnapshotSource: GoogleProfileSnapshotSource = IS_DEMO_MODE
+    ? {
+      kind: "demo",
+      revision: googleProfileRevision,
+      snapshot: selectedLocationId ? buildDemoGoogleProfileSnapshot({
+        business: contextBusiness,
+        locationId: selectedLocationId,
+        requests: requestsByBusiness[business.id] ?? [],
+        reviews: REVIEWS_BY_BUSINESS[business.id] ?? [],
+        qr: INITIAL_QR_CODES_BY_BUSINESS[business.id] ?? null,
+        workflow: DEMO_WORKFLOWS_BY_LOCATION[selectedLocationId] ?? null,
+      }) : null,
+    }
+    : {
+      kind: "live",
+      revision: googleProfileRevision,
+      load: platformApi.getGoogleProfileSnapshot,
+    };
   const accessMatchesContext = workspaceAccess?.businessId === business.id
     && (!workspaceAccess.locationId || workspaceAccess.locationId === selectedLocationId);
   const canReadTenant = IS_DEMO_MODE
@@ -1983,9 +2006,13 @@ function AppShell() {
   const addRequest = async (draft: CompletedJobDraft) => {
     if (!canConfigure) throw new Error("You do not have permission to add a completed job.");
     if (!IS_DEMO_MODE) {
-      await platformApi.createCompletedJob(business.id, draft);
-      const refreshed = await platformApi.getWorkspace(business.id, draft.locationId);
-      applyWorkspace(refreshed);
+      await createCompletedJobAndRefreshWorkspace({
+        create: () => platformApi.createCompletedJob(business.id, draft),
+        invalidateSnapshot: () => setGoogleProfileRevision((value) => value + 1),
+        refreshWorkspace: () => platformApi.getWorkspace(business.id, draft.locationId),
+        applyWorkspace,
+        reportRefreshError: setWorkspaceError,
+      });
       navigateToView("google-profile", { businessId: business.id, locationId: draft.locationId, googleProfileTab: "requests-qr" });
       return;
     }
@@ -2008,6 +2035,7 @@ function AppShell() {
       consentWordingVersion: draft.consent.status === "granted" ? draft.consent.wordingVersion : "Not supplied",
     };
     setRequestsByBusiness((current) => ({ ...current, [business.id]: [request, ...(current[business.id] ?? [])] }));
+    setGoogleProfileRevision((value) => value + 1);
     recordAudit({
       occurredAt: "Just now",
       actor: session.userName,
@@ -2099,8 +2127,8 @@ function AppShell() {
           {agencyMode && view === "operations-audit" && <AuditLogView businesses={businesses} events={auditEvents} />}
           {!agencyMode && !canReadTenant && view !== "settings-billing" && <section className="panel access-expired"><ShieldCheck size={26} /><h2>Tenant access is unavailable.</h2><p>{supportSession ? "Support access expired or no longer satisfies the required security evidence." : "Your business role does not include customer or location data."}</p>{supportSession && <Button onClick={endSupportSession}>Return to portfolio</Button>}</section>}
           {!agencyMode && view === "settings-billing" && settingsBillingTab === "billing" && !canReadTenantBilling && <section className="panel access-expired"><ShieldCheck size={26} /><h2>Billing access is unavailable.</h2><p>{supportSession ? "Support sessions cannot open or change tenant billing." : "Your signed-in business role does not include billing access."}</p>{supportSession && <Button onClick={endSupportSession}>Return to portfolio</Button>}</section>}
-          {!agencyMode && canReadTenant && view === "google-profile" && <><WorkspaceContextBar business={business} locationId={selectedLocationId} onSelectLocation={(locationId) => navigateToView("google-profile", { businessId: business.id, locationId, googleProfileTab })} /><GoogleProfileView businessId={business.id} locationId={selectedLocationId} tab={googleProfileTab} onTabChange={(tab) => navigateToView("google-profile", { googleProfileTab: tab })}>{(snapshot) => {
-            if (googleProfileTab === "profile") return <ProfileTab business={contextBusiness} snapshot={snapshot} onConnect={() => void beginGoogleConnection()} canConfigure={canConfigure && !supportSession} services={services} servicesLoading={servicesLoading} />;
+          {!agencyMode && canReadTenant && view === "google-profile" && <><WorkspaceContextBar business={business} locationId={selectedLocationId} onSelectLocation={(locationId) => navigateToView("google-profile", { businessId: business.id, locationId, googleProfileTab })} /><GoogleProfileView businessId={business.id} locationId={selectedLocationId} source={googleProfileSnapshotSource} tab={googleProfileTab} onTabChange={(tab) => navigateToView("google-profile", { googleProfileTab: tab })}>{(snapshot) => {
+            if (googleProfileTab === "profile") return <ProfileTab business={contextBusiness} snapshot={snapshot} onConnect={() => void beginGoogleConnection()} canConfigure={canConfigure && !supportSession} services={services} servicesLoading={servicesLoading} servicesError={servicesError} onRetryServices={() => setServicesVersion((value) => value + 1)} />;
             if (googleProfileTab === "reviews") return <ReviewsTab business={contextBusiness} snapshot={snapshot} />;
             if (googleProfileTab === "requests-qr") return <RequestsQrTab business={contextBusiness} snapshot={snapshot} onAddJob={() => setAddJobOpen(true)} canConfigure={canConfigure} onOpenIntegrations={() => navigateToView("settings-billing", { settingsBillingTab: "connections" })} QrRenderer={QrCodesView} />;
             return <PostsMediaTab snapshot={snapshot} onOpenContent={({ businessId, locationId }) => navigateToView("content", { businessId, locationId, contentTab: "create" })} />;

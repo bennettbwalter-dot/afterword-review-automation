@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import React, { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
+import { createCompletedJobAndRefreshWorkspace } from "../src/features/google-profile/completed-job-refresh.js";
 import type { GoogleProfileSnapshot } from "../src/platform/api.js";
 
 (globalThis as typeof globalThis & { React: typeof React }).React = React;
@@ -33,4 +35,52 @@ test("Google Profile snapshot content remains fail-closed until the selected loc
     children: (selected: GoogleProfileSnapshot) => createElement("p", null, `${selected.businessId}/${selected.locationId}`),
   }));
   assert.match(ready, /business-a\/location-a/u);
+});
+
+test("App supplies an explicit demo or live snapshot source and invalidates it after completed-job creation", () => {
+  const source = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(source, /<GoogleProfileView\b[\s\S]{0,600}source=\{googleProfileSnapshotSource\}/u);
+  assert.match(source, /kind:\s*"demo",[\s\S]{0,120}revision:\s*googleProfileRevision/u);
+  assert.match(source, /kind:\s*"live"/u);
+  assert.match(source, /createCompletedJobAndRefreshWorkspace/u);
+});
+
+test("completed-job creation invalidates Google Profile before a secondary workspace refresh and does not invite duplicate submission", async () => {
+  const events: string[] = [];
+  let refreshError = "";
+  await createCompletedJobAndRefreshWorkspace({
+    create: async () => { events.push("created"); },
+    invalidateSnapshot: () => { events.push("invalidated"); },
+    refreshWorkspace: async () => {
+      events.push("refresh");
+      throw new Error("refresh offline");
+    },
+    applyWorkspace: () => { events.push("applied"); },
+    reportRefreshError: (message) => {
+      events.push("reported");
+      refreshError = message;
+    },
+  });
+  assert.deepEqual(events, ["created", "invalidated", "refresh", "reported"]);
+  assert.match(refreshError, /completed job was saved/i);
+  assert.match(refreshError, /refresh offline/i);
+});
+
+test("completed-job creation applies a successful secondary workspace refresh", async () => {
+  const events: string[] = [];
+  const workspace = { id: "workspace-a" };
+  await createCompletedJobAndRefreshWorkspace({
+    create: async () => { events.push("created"); },
+    invalidateSnapshot: () => { events.push("invalidated"); },
+    refreshWorkspace: async () => {
+      events.push("refresh");
+      return workspace;
+    },
+    applyWorkspace: (loaded) => {
+      assert.equal(loaded, workspace);
+      events.push("applied");
+    },
+    reportRefreshError: () => { events.push("reported"); },
+  });
+  assert.deepEqual(events, ["created", "invalidated", "refresh", "applied"]);
 });

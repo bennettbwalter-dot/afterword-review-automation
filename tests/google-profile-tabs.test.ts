@@ -119,6 +119,36 @@ test("Google Profile tabs expose selected identity and individually fail-closed 
   assert.ok(markup.indexOf("google-capability-ledger") < markup.indexOf("integration-grid"));
 });
 
+test("Google Profile reports service-status transport failures without calling the deployment unconfigured", () => {
+  const markup = renderToStaticMarkup(createElement(ProfileTab, {
+    business,
+    snapshot,
+    onConnect: () => {},
+    canConfigure: true,
+    services: [],
+    servicesLoading: false,
+    servicesError: "Service availability could not be loaded.",
+    onRetryServices: () => {},
+  }));
+  assert.match(markup, /Status unavailable/u);
+  assert.match(markup, /Retry status/u);
+  assert.doesNotMatch(markup, /Not configured/u);
+});
+
+test("Google Profile reports service-status loading without calling the deployment unconfigured", () => {
+  const markup = renderToStaticMarkup(createElement(ProfileTab, {
+    business,
+    snapshot,
+    onConnect: () => {},
+    canConfigure: true,
+    services: [],
+    servicesLoading: true,
+  }));
+  assert.match(markup, /Checking status/u);
+  assert.match(markup, /Checking availability/u);
+  assert.doesNotMatch(markup, /Not configured/u);
+});
+
 test("Google Profile tab contracts retain only the selected snapshot records and Content context", () => {
   assert.equal(reviewsForGoogleProfileSnapshot(snapshot), snapshot.reviews);
   assert.deepEqual(requestDataForGoogleProfileSnapshot(snapshot), {

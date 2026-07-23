@@ -17,7 +17,7 @@ function DemoNotice() {
   return <div className="demo-notice"><span className="demo-label">Sample data</span><p>This workspace is interactive but simulated. No Google account is connected and no message will be sent.</p></div>;
 }
 
-export function ProfileTab({ business, snapshot, onConnect, canConfigure, services, servicesLoading }: { business: BusinessAccount; snapshot: GoogleProfileSnapshot; onConnect: () => void; canConfigure: boolean; services: ServiceStatus[]; servicesLoading: boolean }) {
+export function ProfileTab({ business, snapshot, onConnect, canConfigure, services, servicesLoading, servicesError = "", onRetryServices = () => undefined }: { business: BusinessAccount; snapshot: GoogleProfileSnapshot; onConnect: () => void; canConfigure: boolean; services: ServiceStatus[]; servicesLoading: boolean; servicesError?: string; onRetryServices?: () => void }) {
   const integrations = [
     { key: "google", name: "Google Business Profile", detail: "Review sync and direct review destination", state: business.integrations.google, icon: MapPin },
     { key: "messaging", name: "Messaging provider", detail: "SMS and email delivery events", state: business.integrations.messaging, icon: Send },
@@ -25,6 +25,7 @@ export function ProfileTab({ business, snapshot, onConnect, canConfigure, servic
   ];
   const attentionCount = integrations.filter((integration) => integration.state.tone !== "success").length;
   const googleAvailable = services.find((service) => service.key === "google")?.configured ?? false;
+  const statusUnavailable = !IS_DEMO_MODE && Boolean(servicesError);
 
   return <>
     <section className="google-capability-ledger" aria-label="Google write capabilities"><header><span>Write capabilities</span><small>Each action is enabled only after its own approval and controlled pilot.</small></header><div>{googleProfileWriteCapabilityLedger(snapshot).map((capability) => <article key={capability.key}><div><strong>{capability.label}</strong><small>{capability.reason}</small></div><span>{capability.status}</span></article>)}</div></section>
@@ -34,12 +35,20 @@ export function ProfileTab({ business, snapshot, onConnect, canConfigure, servic
       {integrations.map((integration) => {
         const Icon = integration.icon;
         const isGoogle = integration.key === "google";
-        const blocked = isGoogle && !IS_DEMO_MODE && (servicesLoading || !googleAvailable);
+        const blocked = isGoogle && !IS_DEMO_MODE && (servicesLoading || statusUnavailable || !googleAvailable);
+        const statusLabel = isGoogle && servicesLoading
+          ? "Checking status"
+          : statusUnavailable && isGoogle
+            ? "Status unavailable"
+            : blocked
+              ? "Not configured"
+              : integration.state.status;
         return <article className="integration-card" key={integration.name}>
           <span className="integration-card__icon"><Icon size={22} /></span>
           <div><h2>{integration.name}</h2><p>{integration.detail}</p></div>
-          <StatusPill tone={blocked ? "warning" : integration.state.tone}>{blocked ? "Not configured" : integration.state.status}</StatusPill>
+          <StatusPill tone={blocked ? "warning" : integration.state.tone}>{statusLabel}</StatusPill>
           {isGoogle && IS_DEMO_MODE ? <small className="integration-card__status-note">Connection setup requires an authenticated deployment and is unavailable in the seeded demo.</small>
+            : isGoogle && statusUnavailable ? <Button onClick={onRetryServices}>Retry status</Button>
             : isGoogle ? <Button disabled={!canConfigure || blocked} onClick={!blocked ? onConnect : undefined}>{servicesLoading ? "Checking availability…" : blocked ? "Unavailable" : "Review setup"}</Button>
               : <small className="integration-card__status-note">Status is read from the shared workspace backend.</small>}
         </article>;

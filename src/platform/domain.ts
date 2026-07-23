@@ -686,6 +686,34 @@ export const INITIAL_QR_CODES_BY_BUSINESS: Record<string, QrCodeRecord> = Object
   }),
 );
 
+export const DEMO_WORKFLOWS_BY_LOCATION: Record<string, LocationWorkflowSummary> = Object.fromEntries(
+  BUSINESSES.flatMap((business) => business.locationId ? [[business.locationId, {
+    businessId: business.id,
+    locationId: business.locationId,
+    channels: [{
+      channel: "sms" as const,
+      enabled: true,
+      timezone: business.timezone,
+      allowedWeekdays: [1, 2, 3, 4, 5],
+      sendWindowStart: "09:00",
+      sendWindowEnd: "17:00",
+      maxMessages: 2,
+      minimumGapSeconds: 86_400,
+      ruleVersion: "seeded-demo-v1",
+      template: {
+        id: `demo-template-${business.id}`,
+        key: "review_request",
+        version: 1,
+        body: "Hi {{first_name}}, thanks for choosing {{business_name}}. Would you mind leaving an honest Google review? {{review_link}} Reply STOP to opt out.",
+        includesBusinessIdentity: true,
+        includesUnsubscribe: true,
+        approvedAt: "Seeded sample",
+      },
+    }],
+    reviewDestination: null,
+  } satisfies LocationWorkflowSummary]] : []),
+);
+
 export function getQrCodeByToken(publicToken: string) {
   return Object.values(INITIAL_QR_CODES_BY_BUSINESS).find((record) => record.publicToken === publicToken);
 }
