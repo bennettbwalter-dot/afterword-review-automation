@@ -281,10 +281,8 @@ try {
       await concurrentWriter.query("set lock_timeout = '250ms'");
       await guardedClient.query("begin");
       await guardedClient.query(agencyGrantCoverageLockSql);
-      const coverage = await guardedClient.query<{ uncovered_agency_grants: string }>(
-        agencyGrantCoverageSql,
-      );
-      assert.equal(coverage.rows[0]?.uncovered_agency_grants, "0");
+      const coverage = await guardedClient.query(agencyGrantCoverageSql);
+      assert.equal(coverage.rowCount, 0);
 
       let writerError: unknown;
       try {
