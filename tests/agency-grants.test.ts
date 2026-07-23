@@ -89,6 +89,8 @@ test("the release evidence requires a zero-row live integrity query before migra
   assert.match(readiness, /forward-only migration/i);
   assert.match(sharedCoverageSql, /join public\.agencies as agency[\s\S]+agency\.customer_kind = 'agency'/i);
   assert.doesNotMatch(sharedCoverageSql, /expected_legacy_scopes[\s\S]+direct_container/i);
+  assert.match(sharedCoverageSql, /public\.agency_client_grants as agency_grant/i);
+  assert.doesNotMatch(sharedCoverageSql, /public\.agency_client_grants as grant\b/i);
   const documentedCoverageSql = readiness.match(/```sql\r?\n(with expected_legacy_scopes[\s\S]*?)\r?\n```/i)?.[1] ?? "";
   assert.equal(documentedCoverageSql.trim(), sharedCoverageSql.trim());
 });

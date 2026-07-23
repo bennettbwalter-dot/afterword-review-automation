@@ -15,22 +15,22 @@ with expected_legacy_scopes as (
         and agency_member.status = 'active'
     )
 ), valid_active_grants as (
-  select grant.agency_id, grant.business_id, grant.location_id
-  from public.agency_client_grants as grant
+  select agency_grant.agency_id, agency_grant.business_id, agency_grant.location_id
+  from public.agency_client_grants as agency_grant
   join public.business_memberships as accepting_member
-    on accepting_member.business_id = grant.business_id
-   and accepting_member.user_id = grant.accepted_by_user_id
+    on accepting_member.business_id = agency_grant.business_id
+   and accepting_member.user_id = agency_grant.accepted_by_user_id
    and accepting_member.status = 'active'
    and accepting_member.role::text in ('owner', 'admin')
-  where grant.status = 'active'
-    and (grant.expires_at is null or grant.expires_at > statement_timestamp())
+  where agency_grant.status = 'active'
+    and (agency_grant.expires_at is null or agency_grant.expires_at > statement_timestamp())
 )
 select expected.agency_id, expected.business_id, expected.location_id
 from expected_legacy_scopes as expected
-left join valid_active_grants as grant
-  on grant.agency_id = expected.agency_id
- and grant.business_id = expected.business_id
- and grant.location_id = expected.location_id
-where grant.location_id is null
+left join valid_active_grants as agency_grant
+  on agency_grant.agency_id = expected.agency_id
+ and agency_grant.business_id = expected.business_id
+ and agency_grant.location_id = expected.location_id
+where agency_grant.location_id is null
 order by expected.agency_id, expected.business_id, expected.location_id
 `;
