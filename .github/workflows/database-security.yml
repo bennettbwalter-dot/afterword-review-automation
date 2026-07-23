@@ -80,6 +80,7 @@ jobs:
           const manifest = {
             targetSha256: migrationTargetFingerprint(process.env.MIGRATION_DATABASE_URL),
             evidenceId: "github-database-security",
+            expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
             migrations: {
               [file]: migrationChecksum(readFileSync(`database/migrations/${file}`, "utf8")),
             },

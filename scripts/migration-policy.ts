@@ -6,6 +6,7 @@ const migrationFilePattern = /^\d{3}_.+\.sql$/u;
 export interface MigrationApprovalManifest {
   targetSha256: string;
   evidenceId: string;
+  expiresAt: string;
   migrations: Record<string, string>;
 }
 
@@ -18,6 +19,7 @@ export function migrationTargetFingerprint(connectionString: string) {
 
 export function parseMigrationApprovalManifest(
   raw: string | undefined,
+  now = new Date(),
 ): MigrationApprovalManifest | undefined {
   if (!raw) {
     return undefined;
@@ -34,14 +36,23 @@ export function parseMigrationApprovalManifest(
   }
 
   const manifest = value as Partial<MigrationApprovalManifest>;
+  const expiresAt = new Date(manifest.expiresAt ?? "");
   if (
     !sha256Pattern.test(manifest.targetSha256 ?? "")
     || !manifest.evidenceId?.trim()
+    || !manifest.expiresAt
+    || Number.isNaN(expiresAt.getTime())
     || !manifest.migrations
     || typeof manifest.migrations !== "object"
     || Array.isArray(manifest.migrations)
   ) {
     throw new Error("Migration approval manifest is invalid.");
+  }
+  if (expiresAt.getTime() <= now.getTime()) {
+    throw new Error("Migration approval manifest has expired.");
+  }
+  if (expiresAt.getTime() > now.getTime() + 30 * 60 * 1000) {
+    throw new Error("Migration approval manifest must be short-lived.");
   }
   for (const [file, checksum] of Object.entries(manifest.migrations)) {
     if (!migrationFilePattern.test(file) || !sha256Pattern.test(checksum)) {

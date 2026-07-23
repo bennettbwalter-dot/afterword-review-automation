@@ -6,6 +6,10 @@ import path from "node:path";
 import pg from "pg";
 import { databaseTlsOptions } from "../server/database-tls.js";
 import { loadLocalEnvironment } from "../server/load-env.js";
+import {
+  agencyGrantCoverageLockSql,
+  agencyGrantCoverageSql,
+} from "./agency-grant-coverage.js";
 import { migrationChecksum } from "./migration-checksum.js";
 import { migrationTargetFingerprint } from "./migration-policy.js";
 
@@ -51,6 +55,7 @@ function approvalManifest(
   return JSON.stringify({
     targetSha256: migrationTargetFingerprint(connectionString),
     evidenceId,
+    expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
     migrations,
   });
 }
@@ -148,7 +153,7 @@ try {
     );
     assert.equal(Number(firstLedger.rows[0]?.count), expectedMigrationCount);
 
-    const secondRun = await runMigrator({ connectionString: coreConnection, manifest: coreManifest });
+    const secondRun = await runMigrator({ connectionString: coreConnection });
     assert.equal(secondRun.code, 0, secondRun.output);
     assert.match(secondRun.output, /already applied 019_provider_independent_security\.sql/u);
     const secondLedger = await coreClient.query<{ count: string }>(
@@ -268,6 +273,40 @@ try {
       values ('81000000-0000-4000-8000-000000000010', 'Migration 012 Agency', 'agency');
       insert into public.agency_memberships (agency_id, user_id, role)
       values ('81000000-0000-4000-8000-000000000010', '81000000-0000-4000-8000-000000000001', 'owner');
+    `);
+
+    const concurrentWriter = await connect(guardedDatabase);
+    try {
+      await concurrentWriter.query("set role afterword_migration_owner");
+      await concurrentWriter.query("set lock_timeout = '250ms'");
+      await guardedClient.query("begin");
+      await guardedClient.query(agencyGrantCoverageLockSql);
+      const coverage = await guardedClient.query<{ uncovered_agency_grants: string }>(
+        agencyGrantCoverageSql,
+      );
+      assert.equal(coverage.rows[0]?.uncovered_agency_grants, "0");
+
+      let writerError: unknown;
+      try {
+        await concurrentWriter.query(`
+          insert into public.businesses (id, agency_id, name, slug, default_timezone, country_code)
+          values ('81000000-0000-4000-8000-000000000020', '81000000-0000-4000-8000-000000000010', 'Migration 012 Business', 'migration-012', 'UTC', 'GB')
+        `);
+      } catch (error) {
+        writerError = error;
+      }
+      assert.equal(
+        (writerError as { code?: string } | undefined)?.code,
+        "55P03",
+        "The migration coverage lock must block a concurrent conflicting tenant write.",
+      );
+      await guardedClient.query("rollback");
+    } finally {
+      await guardedClient.query("rollback").catch(() => undefined);
+      await concurrentWriter.end();
+    }
+
+    await guardedClient.query(`
       insert into public.businesses (id, agency_id, name, slug, default_timezone, country_code)
       values ('81000000-0000-4000-8000-000000000020', '81000000-0000-4000-8000-000000000010', 'Migration 012 Business', 'migration-012', 'UTC', 'GB');
       insert into public.locations (id, business_id, name, timezone)

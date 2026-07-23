@@ -3,7 +3,10 @@ import path from "node:path";
 import pg from "pg";
 import { databaseTlsOptions } from "../server/database-tls.js";
 import { loadLocalEnvironment } from "../server/load-env.js";
-import { agencyGrantCoverageSql } from "./agency-grant-coverage.js";
+import {
+  agencyGrantCoverageLockSql,
+  agencyGrantCoverageSql,
+} from "./agency-grant-coverage.js";
 import {
   migrationChecksum,
   migrationChecksumVariants,
@@ -52,6 +55,7 @@ async function assertMigration012Ready(evidenceId: string) {
   ) {
     throw new Error("Migration 012 requires the expected migration 011 ledger entry.");
   }
+  await client.query(agencyGrantCoverageLockSql);
   const uncoveredAgencyGrants = await client.query(agencyGrantCoverageSql);
   if (uncoveredAgencyGrants.rowCount !== 0) {
     throw new Error("Migration 012 requires zero uncovered agency-client grants.");
@@ -77,7 +81,6 @@ try {
   for (const file of files) {
     const sql = await readFile(path.join(migrationsDirectory, file), "utf8");
     const checksum = migrationChecksum(sql);
-    assertMigrationApproved(file, checksum, targetFingerprint, approvalManifest);
     const previous = await client.query<{ checksum_sha256: string }>(
       "select checksum_sha256 from public.schema_migrations where migration_id = $1",
       [file],
@@ -90,13 +93,14 @@ try {
       continue;
     }
 
-    if (file.startsWith("012_")) {
-      await assertMigration012Ready(approvalManifest?.evidenceId ?? "");
-    }
+    assertMigrationApproved(file, checksum, targetFingerprint, approvalManifest);
 
     process.stdout.write(`applying ${file}\n`);
     await client.query("begin");
     try {
+      if (file.startsWith("012_")) {
+        await assertMigration012Ready(approvalManifest?.evidenceId ?? "");
+      }
       await client.query(unwrapMigrationTransaction(sql));
       await client.query(
         "insert into public.schema_migrations (migration_id, checksum_sha256) values ($1, $2)",

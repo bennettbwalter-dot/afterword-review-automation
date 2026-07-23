@@ -78,7 +78,11 @@ test("agency permission checks deny support sessions and grant claims are opaque
 
 test("the release evidence requires a zero-row live integrity query before migration 012", async () => {
   const readiness = await readFile(path.resolve("docs", "evidence", "platform-capability-readiness.md"), "utf8");
-  const coverageModule = await import("../scripts/agency-grant-coverage.js").catch(() => ({ agencyGrantCoverageSql: "" }));
+  const coverageModule = await import("../scripts/agency-grant-coverage.js").catch(() => ({
+    agencyGrantCoverageLockSql: "",
+    agencyGrantCoverageSql: "",
+  }));
+  const coverageLockSql = coverageModule.agencyGrantCoverageLockSql;
   const sharedCoverageSql = coverageModule.agencyGrantCoverageSql;
   assert.match(readiness, /Agency-grant integrity gate \(before migration 012\)/i);
   assert.match(readiness, /It must return \*\*zero rows\*\*/i);
@@ -91,6 +95,10 @@ test("the release evidence requires a zero-row live integrity query before migra
   assert.doesNotMatch(sharedCoverageSql, /expected_legacy_scopes[\s\S]+direct_container/i);
   assert.match(sharedCoverageSql, /public\.agency_client_grants as agency_grant/i);
   assert.doesNotMatch(sharedCoverageSql, /public\.agency_client_grants as grant\b/i);
+  assert.match(
+    coverageLockSql,
+    /lock table[\s\S]+public\.agencies[\s\S]+public\.businesses[\s\S]+public\.locations[\s\S]+public\.agency_memberships[\s\S]+public\.agency_client_grants[\s\S]+public\.business_memberships[\s\S]+in share mode/i,
+  );
   const documentedCoverageSql = readiness.match(/```sql\r?\n(with expected_legacy_scopes[\s\S]*?)\r?\n```/i)?.[1] ?? "";
   assert.equal(documentedCoverageSql.trim(), sharedCoverageSql.trim());
 });

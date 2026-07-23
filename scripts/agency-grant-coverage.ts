@@ -1,3 +1,14 @@
+export const agencyGrantCoverageLockSql = `
+lock table
+  public.agencies,
+  public.businesses,
+  public.locations,
+  public.agency_memberships,
+  public.agency_client_grants,
+  public.business_memberships
+in share mode
+`;
+
 export const agencyGrantCoverageSql = `
 with expected_legacy_scopes as (
   select business.agency_id, business.id as business_id, location.id as location_id
