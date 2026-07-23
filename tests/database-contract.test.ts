@@ -185,3 +185,19 @@ test("location QR reporting derives location through the QR code", async () => {
     /from\s+public\.qr_scan_events\s+scan\s+join\s+public\.qr_codes\s+scan_code[\s\S]+scan_code\.location_id\s*=\s*location\.id/i,
   );
 });
+
+test("database CI exercises the real migrator and two-connection isolation", async () => {
+  const workflow = await readFile(path.resolve(".github", "workflows", "database-security.yml"), "utf8");
+  const packageJson = await readFile(path.resolve("package.json"), "utf8");
+  const isolationScript = await readFile(path.resolve("scripts", "test-database-isolation.ts"), "utf8");
+  const concurrencyScript = await readFile(path.resolve("scripts", "test-database-concurrency.ts"), "utf8");
+
+  assert.match(workflow, /npm run db:test:migrator/u);
+  assert.match(workflow, /npm run db:test:concurrency/u);
+  assert.doesNotMatch(workflow, /for migration in database\/migrations\/\*\.sql/u);
+  assert.match(packageJson, /"db:test:migrator"/u);
+  assert.match(packageJson, /"db:test:concurrency"/u);
+  for (const source of [isolationScript, concurrencyScript]) {
+    assert.match(source, /endsWith\("_test"\)[\s\S]+startsWith\("afterword_test_"\)/u);
+  }
+});

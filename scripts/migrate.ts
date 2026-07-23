@@ -26,7 +26,13 @@ if (!connectionString) {
 
 const ssl = databaseTlsOptions(process.env.DATABASE_SSL === "require");
 const client = new Client({ connectionString, ssl, application_name: "afterword-migrator" });
-const migrationsDirectory = path.resolve("database", "migrations");
+const migrationsDirectoryOverride = process.env.MIGRATIONS_DIRECTORY;
+if (migrationsDirectoryOverride && process.env.NODE_ENV !== "test") {
+  throw new Error("MIGRATIONS_DIRECTORY is available only when NODE_ENV=test.");
+}
+const migrationsDirectory = migrationsDirectoryOverride
+  ? path.resolve(migrationsDirectoryOverride)
+  : path.resolve("database", "migrations");
 const targetFingerprint = migrationTargetFingerprint(connectionString);
 const approvalManifest = parseMigrationApprovalManifest(process.env.MIGRATION_APPROVAL_MANIFEST);
 

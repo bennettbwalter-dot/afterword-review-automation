@@ -64,14 +64,37 @@ jobs:
           create role afterword_auth nologin nobypassrls;
           SQL
           createdb --owner afterword_migration_owner afterword_test
-      - name: Apply migrations as migration owner
+      - name: Prove migrator safety and idempotency
+        env:
+          MIGRATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+        run: npm run db:test:migrator
+      - name: Generate the target-bound migration approval
+        env:
+          MIGRATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/afterword_test
         run: |
-          for migration in database/migrations/*.sql; do
-            psql --dbname afterword_test --set ON_ERROR_STOP=1 \
-              --command "set role afterword_migration_owner" \
-              --file "$migration"
-          done
+          node --import tsx --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from "node:fs";
+          import { migrationChecksum } from "./scripts/migration-checksum.ts";
+          import { migrationTargetFingerprint } from "./scripts/migration-policy.ts";
+          const file = "019_provider_independent_security.sql";
+          const manifest = {
+            targetSha256: migrationTargetFingerprint(process.env.MIGRATION_DATABASE_URL),
+            evidenceId: "github-database-security",
+            migrations: {
+              [file]: migrationChecksum(readFileSync(`database/migrations/${file}`, "utf8")),
+            },
+          };
+          appendFileSync(process.env.GITHUB_ENV, `MIGRATION_APPROVAL_MANIFEST=${JSON.stringify(manifest)}\n`);
+          NODE
+      - name: Apply reviewed migrations through the real migrator
+        env:
+          MIGRATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/afterword_test
+        run: npm run db:migrate
       - name: Prove every database-security contract
         env:
           MIGRATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/afterword_test
         run: npm run db:test:isolation
+      - name: Prove pooled and concurrent context isolation
+        env:
+          MIGRATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/afterword_test
+        run: npm run db:test:concurrency

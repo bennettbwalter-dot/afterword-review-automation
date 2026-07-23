@@ -10,6 +10,10 @@ const connectionString = process.env.MIGRATION_DATABASE_URL;
 if (!connectionString) {
   throw new Error("MIGRATION_DATABASE_URL is required and must be able to SET ROLE afterword_migration_owner.");
 }
+const databaseName = new URL(connectionString).pathname.slice(1);
+if (!databaseName.endsWith("_test") && !databaseName.startsWith("afterword_test_")) {
+  throw new Error("Database isolation tests require a dedicated test database.");
+}
 
 const databaseTests = (await readdir(path.resolve("database", "tests")))
   .filter((file) => /^\d{3}_.+\.sql$/.test(file))
