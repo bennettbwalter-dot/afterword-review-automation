@@ -62,7 +62,11 @@ const baseEnvironmentSchema = z.object({
   TWILIO_MESSAGING_SERVICE_SID: optionalEnvironmentValue(z.string().min(1)),
   SENDGRID_API_KEY: optionalEnvironmentValue(z.string().min(1)),
   SENDGRID_FROM_EMAIL: optionalEnvironmentValue(z.string().email()),
-  SIGNUP_EMAIL_ENABLED: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
+  SIGNUP_EMAIL_ENABLED: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
+  TRANSACTIONAL_EMAIL_PROVIDER: z.enum(["brevo"]).optional(),
+  BREVO_API_KEY: optionalEnvironmentValue(z.string().min(20)),
+  BREVO_ACCOUNT_SENDER_EMAIL: optionalEnvironmentValue(z.string().email()),
+  BREVO_ACCOUNT_SENDER_NAME: optionalEnvironmentValue(z.string().trim().min(1).max(120)),
   SENDGRID_ASM_GROUP_ID: optionalEnvironmentValue(z.coerce.number().int().positive()),
   SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY: optionalEnvironmentValue(z.string().min(1)),
   STRIPE_CHECKOUT_ENABLED: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
@@ -175,8 +179,15 @@ function environmentSchema(requiredCapabilities: readonly ProcessCapability[]) {
       });
     }
   }
-  if (value.NODE_ENV === "production" && value.SIGNUP_EMAIL_ENABLED && (!value.SENDGRID_API_KEY || !value.SENDGRID_FROM_EMAIL)) {
-    context.addIssue({ code: "custom", message: "Production signup email requires SENDGRID_API_KEY and SENDGRID_FROM_EMAIL.", path: ["SENDGRID_API_KEY"] });
+  if (value.NODE_ENV === "production" && value.SIGNUP_EMAIL_ENABLED) {
+    if (value.TRANSACTIONAL_EMAIL_PROVIDER !== "brevo") {
+      context.addIssue({ code: "custom", message: "Production signup email requires TRANSACTIONAL_EMAIL_PROVIDER=brevo.", path: ["TRANSACTIONAL_EMAIL_PROVIDER"] });
+    }
+    for (const field of ["BREVO_API_KEY", "BREVO_ACCOUNT_SENDER_EMAIL", "BREVO_ACCOUNT_SENDER_NAME"] as const) {
+      if (!value[field]) {
+        context.addIssue({ code: "custom", message: `Production signup email requires ${field}.`, path: [field] });
+      }
+    }
   }
   if (value.STRIPE_CHECKOUT_ENABLED && requiredCapabilities.includes("stripeCheckout")) {
     const requiredStripeKeys = [

@@ -8,7 +8,8 @@ import type { AppConfig } from "./config.js";
 import { isProduction } from "./config.js";
 import type { GoogleBusinessProfileClient } from "./providers/google.js";
 import type { StripeBillingClient, StripeWebhookVerifier } from "./providers/stripe.js";
-import type { TransactionalEmailProvider } from "./providers/transactional-email.js";
+import type { TransactionalEmailProvider } from "./onboarding/signup-email.js";
+import { createBrevoTransactionalEmailProvider } from "./providers/brevo.js";
 import type { WebhookSecurity } from "./providers/webhook-security.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerAgencyGrantRoutes } from "./routes/agency-grants.js";
@@ -58,6 +59,7 @@ function safeJsonParse(value: Buffer) {
 }
 
 export async function buildApp(options: BuildAppOptions): Promise<FastifyInstance> {
+  const transactionalEmail = options.transactionalEmail ?? createBrevoTransactionalEmailProvider(options.config);
   const surface = options.surface ?? "all";
   const app = Fastify({
     logger: isProduction(options.config)
@@ -132,7 +134,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   if (surface !== "ingress") {
     await registerAuthRoutes(app, options);
     await registerAgencyGrantRoutes(app, options);
-    await registerOnboardingRoutes(app, options);
+    await registerOnboardingRoutes(app, { ...options, transactionalEmail });
     await registerBillingRoutes(app, options);
     await registerWorkspaceRoutes(app, options);
     await registerGoogleRoutes(app, options);

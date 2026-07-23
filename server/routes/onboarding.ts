@@ -3,7 +3,6 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { BuildAppOptions } from "../app.js";
 import type { RegistrationInput, SignupAccountType } from "../onboarding/types.js";
-import { createTransactionalEmailProvider } from "../providers/transactional-email.js";
 import { createSessionToken, hashOpaqueToken, hashPassword } from "../security/crypto.js";
 import { ApiError, requireSameOrigin, sendData } from "./shared.js";
 
@@ -27,7 +26,7 @@ function readVerifiedSignup(value: string | undefined, pepper: string): string |
 function userAgent(value: string | undefined) { return value?.match(/(Edg|Chrome|Firefox|Version)\/[\d.]+/i)?.[0]?.slice(0, 80) ?? undefined; }
 
 export async function registerOnboardingRoutes(app: FastifyInstance, options: BuildAppOptions) {
-  const email = options.transactionalEmail ?? createTransactionalEmailProvider(options.config);
+  const email = options.transactionalEmail;
   app.post("/api/v1/auth/signup-intents", { config: { rateLimit: { max: 4, timeWindow: "15 minutes" } } }, async (request, reply) => {
     requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production");
     const body = signupSchema.parse(request.body);
@@ -35,12 +34,15 @@ export async function registerOnboardingRoutes(app: FastifyInstance, options: Bu
     const expiresAt = new Date(Date.now() + options.config.SIGNUP_VERIFICATION_TTL_MINUTES * 60 * 1000);
     const created = await options.repository.createSignupIntent?.({ ...body, tokenHash: hashOpaqueToken(token, options.config.SESSION_PEPPER), expiresAt });
     if (!created) throw new ApiError(503, "SIGNUP_UNAVAILABLE", "Signup is not available.");
-    if (created.shouldSendEmail) {
+    if (created.shouldSendEmail && email?.availability().available) {
       const url = new URL("/signup/verify", options.config.APP_ORIGIN); url.searchParams.set("token", token);
       try {
-        await email.sendAccountVerification({ to: body.email, displayName: body.displayName, verificationUrl: url.toString(), expiresAt });
+        await email?.sendAccountVerification({ to: body.email, displayName: body.displayName, verificationUrl: url.toString(), expiresAt });
       } catch (error) {
-        request.log.error({ err: error, requestId: request.id }, "signup verification email delivery failed");
+        request.log.error({
+          deliveryError: error instanceof Error && "kind" in error ? error.kind : "unknown",
+          requestId: request.id,
+        }, "signup verification email delivery failed");
       }
     }
     reply.header("cache-control", "no-store");
