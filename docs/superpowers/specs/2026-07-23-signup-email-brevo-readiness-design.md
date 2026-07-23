@@ -1,7 +1,7 @@
 # Review Anchor Signup Email and Brevo Readiness Design
 
-**Date:** 23 July 2026  
-**Status:** Proposed — awaiting written spec review  
+**Date:** 23 July 2026
+**Status:** Approved
 **Branch:** `codex/signup-email-readiness`
 
 ## Objective
@@ -72,11 +72,11 @@ Review-request email will reuse the same provider boundary in the later neutral 
 5. The server creates or safely suppresses an opaque signup request under the existing enumeration-resistant rules.
 6. For a deliverable request, the server sends a short-lived verification link through Brevo.
 7. The browser moves to Check Email using an opaque request receipt, not the raw email as authority.
-8. The screen states that delivery was requested; it never claims delivery when Brevo rejected the message.
+8. The screen states that the request was accepted but delivery cannot be confirmed. It never claims an email was sent, and provider acceptance or failure remains internal to prevent account enumeration.
 9. When the server permits it, the visitor can request another link. The command is rate-limited, rotates the verification token, and returns a bounded next-attempt time.
 10. Verification remains single-use. Registration continues through the existing signed, short-lived cookie.
 
-An existing account, suppressed address, and new address receive equivalent public response shapes. Internal delivery outcomes remain server-only.
+An existing account, suppressed address, and new address receive equivalent public response values and shapes. Internal delivery outcomes remain server-only.
 
 ## Architecture
 
@@ -99,7 +99,7 @@ The application injects the provider for tests. Production constructs a Brevo ad
 
 ### Brevo adapter
 
-The adapter calls Brevo’s documented `POST https://api.brevo.com/v3/smtp/email` endpoint with a server-only `api-key` header. It uses a verified sender, a Review Anchor verification template, the recipient, and the short-lived verification URL.
+The adapter calls Brevo’s documented `POST https://api.brevo.com/v3/smtp/email` endpoint with a server-only `api-key` header. It uses a verified sender, version-controlled Review Anchor HTML and text content, the recipient, and the short-lived verification URL. No Brevo dashboard template identifier is required.
 
 The adapter:
 
@@ -121,7 +121,6 @@ Provider settings use server-only environment variables:
 - `BREVO_API_KEY`
 - `BREVO_ACCOUNT_SENDER_EMAIL`
 - `BREVO_ACCOUNT_SENDER_NAME`
-- `BREVO_ACCOUNT_VERIFICATION_TEMPLATE_ID`
 
 Production may start with signup email disabled. Enabling the capability with incomplete Brevo settings fails configuration validation. No variable uses a `VITE_` prefix.
 
@@ -171,7 +170,8 @@ Requires same origin and existing rate limiting. When globally unavailable it re
 When accepted, it returns an enumeration-resistant response with:
 
 - `accepted`;
-- conditional, honest copy;
+- `delivery: "unconfirmed"`;
+- honest copy stating that delivery cannot be confirmed;
 - opaque resend receipt;
 - next resend time when applicable.
 
@@ -187,7 +187,7 @@ The verification route continues hashing the supplied token, consuming it once, 
 
 ## Enumeration resistance
 
-Public response status, shape, and copy must not disclose whether an email already has an account. Existing-account suppression and deliverable-intent paths therefore use equivalent generic responses.
+Public response status, values, shape, and copy must not disclose whether an email already has an account. Provider acceptance, provider failure, existing-account suppression, and deliverable-intent paths therefore use the same generic unconfirmed response.
 
 Provider rejection is stored internally. Public copy may say:
 
@@ -212,8 +212,7 @@ Timing-sensitive paths should do comparable bounded work where practical. Exact 
 
 The page no longer claims unconditionally that an email was sent. It shows:
 
-- delivery requested;
-- delivery could not be confirmed;
+- the request was accepted but delivery cannot be confirmed;
 - resend available at a stated time;
 - resend in progress;
 - resend requested;
@@ -249,12 +248,12 @@ Implementation starts with failing tests covering:
 - incomplete enabled Brevo configuration fails closed;
 - successful Brevo contract, headers, template data, timeout, and response validation;
 - provider rejection records failure and never returns sent copy;
-- existing and new addresses retain equivalent public response shapes;
+- existing and new addresses retain equivalent public response values and shapes;
 - resend receipt hashing, cooldown, attempt limit, rotation, concurrency, and replay;
 - old verification token rejection after resend;
 - test-only debug token isolation;
 - signup capability and resend route origin/rate-limit controls;
-- Signup and Check Email loading, unavailable, accepted, failure, and resend states;
+- Signup and Check Email loading, unavailable, unconfirmed, and resend states;
 - secret scan and log redaction.
 
 The slice then runs:
