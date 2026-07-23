@@ -78,6 +78,35 @@ test("content-role migration is forward-only and keeps role projections fail clo
   assert.match(databaseTest, /coalesce\(product_role::text,\s*''\)\s+as\s+product_role/i);
 });
 
+test("provider-independent support sessions require a real agency customer before insertion", async () => {
+  const schema = await readFile(
+    path.resolve("database", "migrations", "019_provider_independent_security.sql"),
+    "utf8",
+  ).catch(() => "");
+  const databaseTest = await readFile(
+    path.resolve("database", "tests", "007_provider_independent_security.sql"),
+    "utf8",
+  );
+
+  assert.match(schema, /create\s+or\s+replace\s+function\s+app_private\.start_support_session\s*\(\s*p_business_id\s+uuid,\s*p_scope\s+public\.support_scope,\s*p_reason\s+text,\s*p_duration_minutes\s+integer,\s*p_correlation_id\s+uuid\s*\)/i);
+  assert.match(schema, /select\s+business\.agency_id[\s\S]+from\s+public\.businesses\s+business[\s\S]+business\.id\s*=\s*p_business_id/i);
+  assert.match(schema, /if\s+not\s+exists\s*\([\s\S]+from\s+public\.agencies\s+agency[\s\S]+agency\.id\s*=\s*v_agency_id[\s\S]+agency\.customer_kind\s*=\s*'agency'[\s\S]+raise exception 'agency customer support identity is required'[\s\S]+insert\s+into\s+public\.support_sessions/i);
+  assert.match(schema, /set\s+search_path\s*=\s*pg_catalog/i);
+  assert.match(schema, /revoke\s+all\s+on\s+function\s+app_private\.start_support_session\(uuid,\s*public\.support_scope,\s*text,\s*integer,\s*uuid\)[\s\S]+from\s+public,\s*afterword_auth,\s*afterword_runtime,\s*afterword_ingress,\s*afterword_worker,\s*afterword_ops/i);
+  assert.match(schema, /grant\s+execute\s+on\s+function\s+app_private\.start_support_session\(uuid,\s*public\.support_scope,\s*text,\s*integer,\s*uuid\)\s+to\s+afterword_runtime/i);
+  for (const assertion of [
+    "direct_container_cannot_start_support_session",
+    "agency_customer_can_start_support_session",
+    "direct_container_is_excluded_from_expected_legacy_scopes",
+    "agency_customer_remains_in_expected_legacy_scopes",
+  ]) {
+    assert.match(databaseTest, new RegExp(assertion, "i"));
+  }
+  for (const block of databaseTest.match(/do \$\$[\s\S]*?end \$\$;/gi) ?? []) {
+    assert.doesNotMatch(block, /:'[A-Za-z_][A-Za-z0-9_]*'/);
+  }
+});
+
 test("SMS billing migration is forward-only, tenant-isolated and worker-fenced", async () => {
   const schema = await readFile(
     path.resolve("database", "migrations", "004_sms_billing_and_location_reporting.sql"),
@@ -155,4 +184,20 @@ test("location QR reporting derives location through the QR code", async () => {
     repository,
     /from\s+public\.qr_scan_events\s+scan\s+join\s+public\.qr_codes\s+scan_code[\s\S]+scan_code\.location_id\s*=\s*location\.id/i,
   );
+});
+
+test("database CI exercises the real migrator and two-connection isolation", async () => {
+  const workflow = await readFile(path.resolve(".github", "workflows", "database-security.yml"), "utf8");
+  const packageJson = await readFile(path.resolve("package.json"), "utf8");
+  const isolationScript = await readFile(path.resolve("scripts", "test-database-isolation.ts"), "utf8");
+  const concurrencyScript = await readFile(path.resolve("scripts", "test-database-concurrency.ts"), "utf8");
+
+  assert.match(workflow, /npm run db:test:migrator/u);
+  assert.match(workflow, /npm run db:test:concurrency/u);
+  assert.doesNotMatch(workflow, /for migration in database\/migrations\/\*\.sql/u);
+  assert.match(packageJson, /"db:test:migrator"/u);
+  assert.match(packageJson, /"db:test:concurrency"/u);
+  for (const source of [isolationScript, concurrencyScript]) {
+    assert.match(source, /endsWith\("_test"\)[\s\S]+startsWith\("afterword_test_"\)/u);
+  }
 });

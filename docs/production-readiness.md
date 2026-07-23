@@ -33,6 +33,7 @@ been deployed or rerun from the older live result.
 - Stripe return routes preserve business/location context, refresh verified workspace billing data on a bounded retry, and do not treat a query parameter as proof of payment.
 - The review workflow is a read-only projection of the selected location's real messaging policies, current approved templates, compliance evidence and dispatch-eligible Google destination. SMS and email policies remain separately selectable.
 - Migrations 008 through 011 add membership roles, signup/onboarding, support sessions and agency-client grants. They are present locally but have not been applied to the live Supabase project in this review. Migration 012 is paused and must not be applied before the ledger and zero-row agency-grant integrity checks documented in the capability evidence.
+- Migration 019 tightens support-session identity for real agency customers. The real migrator now binds every post-011 migration to an exact target/checksum approval manifest and commits each migration body with its ledger row atomically. Migration 012 remains separately fail-closed behind its exact approval, migration-011 ledger checksum and executable zero-row agency-grant coverage query.
 
 Local acceptance on 22 July 2026 passed `npm run check` with 252/252 tests,
 the production build, the Cloudflare demo build, 28/28 Cloudflare tests and type checks,
@@ -52,6 +53,15 @@ viewport coverage or capture the browser console, so the earlier 146-assertion
 pass remains the evidence for those two checks.
 This repository does not currently define a lint command or include a linter,
 so no standalone lint task was available to run.
+
+On 23 July 2026, the provider-independent launch branch passed `npm run check`
+with 263/263 tests, the secret scan, TypeScript checks and production build.
+GitHub Application Security passed on commit `9db1656`. GitHub Database Security
+passed against ephemeral PostgreSQL 16.13 and exercised the real migrator,
+idempotent replay, checksum drift refusal, target/checksum approval refusal,
+atomic rollback, the guarded migration-012 policy, every SQL isolation script,
+and simultaneous two-connection tenant/support-context isolation. This is CI
+evidence only: no live Supabase migration, provider event or pilot was run.
 
 | Area | Result |
 | --- | --- |
@@ -121,12 +131,10 @@ cannot be enabled with a credential.
 2. **Stripe webhooks have not been received.** Signature verification, replay
    protection and paid-setup fencing are implemented but unexercised against
    real events.
-3. **Two-connection race and pooled-connection reuse tests remain outstanding**
-   for the request-context binding, as noted in `docs/architecture.md`.
-4. **`schema_migrations` has no RLS.** It is migration bookkeeping rather than
+3. **`schema_migrations` has no RLS.** It is migration bookkeeping rather than
    tenant data, and the runtime role is denied by table privilege, but a DBA
    should confirm this on the production instance.
-5. **Estimated conversion is not deterministic attribution.** Google review
+4. **Estimated conversion is not deterministic attribution.** Google review
    objects carry no Review Anchor request identifier; reporting says so.
 
 ## Go-live checklist

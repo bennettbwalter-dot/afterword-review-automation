@@ -3,7 +3,20 @@ import path from "node:path";
 import pg from "pg";
 import { databaseTlsOptions } from "../server/database-tls.js";
 import { loadLocalEnvironment } from "../server/load-env.js";
-import { migrationChecksum, migrationChecksumVariants } from "./migration-checksum.js";
+import {
+  agencyGrantCoverageLockSql,
+  agencyGrantCoverageSql,
+} from "./agency-grant-coverage.js";
+import {
+  migrationChecksum,
+  migrationChecksumVariants,
+  unwrapMigrationTransaction,
+} from "./migration-checksum.js";
+import {
+  assertMigrationApproved,
+  migrationTargetFingerprint,
+  parseMigrationApprovalManifest,
+} from "./migration-policy.js";
 
 loadLocalEnvironment();
 
@@ -16,7 +29,38 @@ if (!connectionString) {
 
 const ssl = databaseTlsOptions(process.env.DATABASE_SSL === "require");
 const client = new Client({ connectionString, ssl, application_name: "afterword-migrator" });
-const migrationsDirectory = path.resolve("database", "migrations");
+const migrationsDirectoryOverride = process.env.MIGRATIONS_DIRECTORY;
+if (migrationsDirectoryOverride && process.env.NODE_ENV !== "test") {
+  throw new Error("MIGRATIONS_DIRECTORY is available only when NODE_ENV=test.");
+}
+const migrationsDirectory = migrationsDirectoryOverride
+  ? path.resolve(migrationsDirectoryOverride)
+  : path.resolve("database", "migrations");
+const targetFingerprint = migrationTargetFingerprint(connectionString);
+const approvalManifest = parseMigrationApprovalManifest(process.env.MIGRATION_APPROVAL_MANIFEST);
+
+async function assertMigration012Ready(evidenceId: string) {
+  if (!evidenceId.trim()) {
+    throw new Error("Migration 012 requires retained agency-grant coverage evidence.");
+  }
+  const migration011Path = path.join(migrationsDirectory, "011_agency_client_grants.sql");
+  const migration011Sql = await readFile(migration011Path, "utf8");
+  const migration011Ledger = await client.query<{ checksum_sha256: string }>(
+    "select checksum_sha256 from public.schema_migrations where migration_id = $1",
+    ["011_agency_client_grants.sql"],
+  );
+  if (
+    !migration011Ledger.rows[0]
+    || !migrationChecksumVariants(migration011Sql).has(migration011Ledger.rows[0].checksum_sha256)
+  ) {
+    throw new Error("Migration 012 requires the expected migration 011 ledger entry.");
+  }
+  await client.query(agencyGrantCoverageLockSql);
+  const uncoveredAgencyGrants = await client.query(agencyGrantCoverageSql);
+  if (uncoveredAgencyGrants.rowCount !== 0) {
+    throw new Error("Migration 012 requires zero uncovered agency-client grants.");
+  }
+}
 
 await client.connect();
 try {
@@ -49,12 +93,24 @@ try {
       continue;
     }
 
+    assertMigrationApproved(file, checksum, targetFingerprint, approvalManifest);
+
     process.stdout.write(`applying ${file}\n`);
-    await client.query(sql);
-    await client.query(
-      "insert into public.schema_migrations (migration_id, checksum_sha256) values ($1, $2)",
-      [file, checksum],
-    );
+    await client.query("begin");
+    try {
+      if (file.startsWith("012_")) {
+        await assertMigration012Ready(approvalManifest?.evidenceId ?? "");
+      }
+      await client.query(unwrapMigrationTransaction(sql));
+      await client.query(
+        "insert into public.schema_migrations (migration_id, checksum_sha256) values ($1, $2)",
+        [file, checksum],
+      );
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw error;
+    }
   }
 } finally {
   await client.query("select pg_advisory_unlock(hashtext('afterword-schema-migrations'))").catch(() => undefined);

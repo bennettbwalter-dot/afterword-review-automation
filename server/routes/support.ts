@@ -15,7 +15,11 @@ const idParamsSchema = z.object({ id: z.string().uuid() }).strict();
 const endSchema = z.object({ reason: z.string().trim().min(10).max(1_000) }).strict();
 
 function requireSupportOperator(actor: ActorContext) {
-  if (!actor.agencyId || !["owner", "admin", "support"].includes(actor.agencyRole ?? "")) {
+  if (
+    !["agency_admin", "agency_user"].includes(actor.role)
+    || !actor.agencyId
+    || !["owner", "admin", "support"].includes(actor.agencyRole ?? "")
+  ) {
     throw new ApiError(403, "AGENCY_SUPPORT_REQUIRED", "Agency support access is required.");
   }
 }

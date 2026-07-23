@@ -67,7 +67,7 @@ test("agency permission checks deny support sessions and grant claims are opaque
   assert.match(databaseTest, /support session accepted an agency grant/i);
   assert.match(workflow, /npm run db:test:isolation/i);
   assert.match(workflow, /server\/\*\*/i);
-  assert.match(workflow, /scripts\/test-database-isolation\.ts/i);
+  assert.match(workflow, /scripts\/\*\*/i);
   assert.match(workflow, /tests\/\*\*/i);
   assert.doesNotMatch(workflow, /--file database\/tests\/003_tenant_isolation\.sql/i);
   assert.match(databaseTest, /Grant Client Admin/i);
@@ -78,11 +78,29 @@ test("agency permission checks deny support sessions and grant claims are opaque
 
 test("the release evidence requires a zero-row live integrity query before migration 012", async () => {
   const readiness = await readFile(path.resolve("docs", "evidence", "platform-capability-readiness.md"), "utf8");
+  const coverageModule = await import("../scripts/agency-grant-coverage.js").catch(() => ({
+    agencyGrantCoverageLockSql: "",
+    agencyGrantCoverageSql: "",
+  }));
+  const coverageLockSql = coverageModule.agencyGrantCoverageLockSql;
+  const sharedCoverageSql = coverageModule.agencyGrantCoverageSql;
   assert.match(readiness, /Agency-grant integrity gate \(before migration 012\)/i);
   assert.match(readiness, /It must return \*\*zero rows\*\*/i);
   assert.match(readiness, /expected_legacy_scopes/i);
   assert.match(readiness, /accepting_member\.role::text in \('owner', 'admin'\)/i);
+  assert.match(readiness, /join public\.agencies as agency[\s\S]+agency\.customer_kind = 'agency'/i);
+  assert.doesNotMatch(readiness, /expected_legacy_scopes[\s\S]+direct_container/i);
   assert.match(readiness, /forward-only migration/i);
+  assert.match(sharedCoverageSql, /join public\.agencies as agency[\s\S]+agency\.customer_kind = 'agency'/i);
+  assert.doesNotMatch(sharedCoverageSql, /expected_legacy_scopes[\s\S]+direct_container/i);
+  assert.match(sharedCoverageSql, /public\.agency_client_grants as agency_grant/i);
+  assert.doesNotMatch(sharedCoverageSql, /public\.agency_client_grants as grant\b/i);
+  assert.match(
+    coverageLockSql,
+    /lock table[\s\S]+public\.agencies[\s\S]+public\.businesses[\s\S]+public\.locations[\s\S]+public\.agency_memberships[\s\S]+public\.agency_client_grants[\s\S]+public\.business_memberships[\s\S]+in share mode/i,
+  );
+  const documentedCoverageSql = readiness.match(/```sql\r?\n(with expected_legacy_scopes[\s\S]*?)\r?\n```/i)?.[1] ?? "";
+  assert.equal(documentedCoverageSql.trim(), sharedCoverageSql.trim());
 });
 
 test("claim approval lets only the direct client discover and select a named location, with replay-safe consumption", async () => {

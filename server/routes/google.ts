@@ -108,19 +108,23 @@ function googleUnavailable(options: BuildAppOptions) {
   return options.googleClient;
 }
 
+function requireDirectBusinessGoogleActor(actor: ActorContext): void {
+  if (actor.role !== "business_owner" || actor.supportSessionId) {
+    throw new ApiError(
+      403,
+      "GOOGLE_DIRECT_BUSINESS_REQUIRED",
+      "Google account changes require a directly signed-in business owner or administrator.",
+    );
+  }
+}
+
 export async function registerGoogleRoutes(app: FastifyInstance, options: BuildAppOptions) {
   app.post(
     "/api/v1/businesses/:businessId/locations/:locationId/integrations/google/oauth/start",
     async (request, reply) => {
       requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production");
       const actor = requireActor(request);
-      if (actor.supportSessionId) {
-        throw new ApiError(
-          403,
-          "GOOGLE_OWNER_REQUIRED",
-          "Google Business Profile must be connected by a direct business owner or administrator session.",
-        );
-      }
+      requireDirectBusinessGoogleActor(actor);
       const { businessId, locationId } = oauthParamsSchema.parse(request.params);
       await requireBusinessManagement(options.repository, actor, businessId);
       const googleClient = googleUnavailable(options);
@@ -291,6 +295,7 @@ export async function registerGoogleRoutes(app: FastifyInstance, options: BuildA
   app.post("/api/v1/integrations/google/oauth/selections/:selectionToken", async (request, reply) => {
     requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production");
     const actor = requireActor(request);
+    requireDirectBusinessGoogleActor(actor);
     const { selectionToken } = selectionParamsSchema.parse(request.params);
     const { profileIndex } = selectionBodySchema.parse(request.body);
     const repository = options.repository as GoogleCommandRepository;
@@ -330,6 +335,7 @@ export async function registerGoogleRoutes(app: FastifyInstance, options: BuildA
   const syncHandler = async (request: FastifyRequest, reply: FastifyReply, pathBusinessId?: string) => {
     requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production");
     const actor = requireActor(request);
+    requireDirectBusinessGoogleActor(actor);
     const businessId = pathBusinessId ?? syncBodySchema.parse(request.body).businessId;
     await requireBusinessManagement(options.repository, actor, businessId);
     googleUnavailable(options);
@@ -352,6 +358,7 @@ export async function registerGoogleRoutes(app: FastifyInstance, options: BuildA
     async (request, reply) => {
       requireSameOrigin(request, options.config.APP_ORIGIN, options.config.NODE_ENV === "production");
       const actor = requireActor(request);
+      requireDirectBusinessGoogleActor(actor);
       const { businessId, locationId } = oauthParamsSchema.parse(request.params);
       await requireBusinessManagement(options.repository, actor, businessId);
       const repository = options.repository as GoogleCommandRepository;
