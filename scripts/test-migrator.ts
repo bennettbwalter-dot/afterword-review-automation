@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -132,15 +133,22 @@ async function copyMigrationsThrough011(directory: string) {
 
 await admin.connect();
 try {
-  const migration019File = "019_provider_independent_security.sql";
-  const migration019Sql = await readFile(path.resolve("database", "migrations", migration019File), "utf8");
+  const reviewedFiles = [
+    "019_provider_independent_security.sql",
+    "020_signup_email_readiness.sql",
+  ];
+  const migrations = Object.fromEntries(reviewedFiles.map((file) => [
+    file,
+    migrationChecksum(readFileSync(`database/migrations/${file}`, "utf8")),
+  ]));
+  const migration019File = reviewedFiles[0]!;
 
   const coreDatabase = await createDatabase("core");
   const coreConnection = connectionStringFor(coreDatabase);
   const coreManifest = approvalManifest(
     coreConnection,
     "migrator-core-verification",
-    { [migration019File]: migrationChecksum(migration019Sql) },
+    migrations,
   );
   const firstRun = await runMigrator({ connectionString: coreConnection, manifest: coreManifest });
   assert.equal(firstRun.code, 0, firstRun.output);
@@ -156,6 +164,7 @@ try {
     const secondRun = await runMigrator({ connectionString: coreConnection });
     assert.equal(secondRun.code, 0, secondRun.output);
     assert.match(secondRun.output, /already applied 019_provider_independent_security\.sql/u);
+    assert.match(secondRun.output, /already applied 020_signup_email_readiness\.sql/u);
     const secondLedger = await coreClient.query<{ count: string }>(
       "select count(*)::text as count from public.schema_migrations",
     );

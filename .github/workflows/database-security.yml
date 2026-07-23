@@ -76,14 +76,19 @@ jobs:
           import { appendFileSync, readFileSync } from "node:fs";
           import { migrationChecksum } from "./scripts/migration-checksum.ts";
           import { migrationTargetFingerprint } from "./scripts/migration-policy.ts";
-          const file = "019_provider_independent_security.sql";
+          const reviewedFiles = [
+            "019_provider_independent_security.sql",
+            "020_signup_email_readiness.sql",
+          ];
+          const migrations = Object.fromEntries(reviewedFiles.map((file) => [
+            file,
+            migrationChecksum(readFileSync(`database/migrations/${file}`, "utf8")),
+          ]));
           const manifest = {
             targetSha256: migrationTargetFingerprint(process.env.MIGRATION_DATABASE_URL),
             evidenceId: "github-database-security",
             expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-            migrations: {
-              [file]: migrationChecksum(readFileSync(`database/migrations/${file}`, "utf8")),
-            },
+            migrations,
           };
           appendFileSync(process.env.GITHUB_ENV, `MIGRATION_APPROVAL_MANIFEST=${JSON.stringify(manifest)}\n`);
           NODE

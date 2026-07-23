@@ -181,7 +181,71 @@ try {
   assert.equal(concurrentContextB?.support_session_id, null);
   await Promise.all([clientA.query("rollback"), clientB.query("rollback")]);
 
-  process.stdout.write("PostgreSQL two-connection context isolation passed.\n");
+  await Promise.all([
+    clientA.query("reset role"),
+    clientB.query("reset role"),
+  ]);
+  await Promise.all([
+    clientA.query("set role afterword_auth"),
+    clientB.query("set role afterword_auth"),
+  ]);
+
+  const signupToken = Buffer.from("83".repeat(32), "hex");
+  const resendReceipt = Buffer.from("84".repeat(32), "hex");
+  const providerReferenceHash = Buffer.from("85".repeat(32), "hex");
+  const claimTokenA = Buffer.from("86".repeat(32), "hex");
+  const claimTokenB = Buffer.from("87".repeat(32), "hex");
+  const signup = await clientA.query<{ signup_intent_id: string; should_send_email: boolean }>(
+    `select * from app_private.create_signup_email_request(
+      $1, $2, $3, $4, $5,
+      statement_timestamp() + interval '15 minutes',
+      statement_timestamp() + interval '60 seconds'
+    )`,
+    ["concurrency-signup@example.test", "Concurrency Signup", "business", signupToken, resendReceipt],
+  );
+  assert.equal(signup.rows[0]?.should_send_email, true);
+  const signupIntentId = signup.rows[0]?.signup_intent_id;
+  assert.ok(signupIntentId);
+  await clientA.query(
+    "select app_private.record_signup_email_delivery($1, 'accepted', $2, null)",
+    [signupIntentId, providerReferenceHash],
+  );
+  await admin.query(
+    `update app_private.signup_intents
+     set next_delivery_attempt_at = statement_timestamp() - interval '1 second'
+     where id = $1`,
+    [signupIntentId],
+  );
+
+  const claimSql = `select * from app_private.claim_signup_email_resend(
+    $1, $2,
+    statement_timestamp() + interval '15 minutes',
+    statement_timestamp() + interval '60 seconds'
+  )`;
+  const [claimA, claimB] = await Promise.all([
+    clientA.query(claimSql, [resendReceipt, claimTokenA]),
+    clientB.query(claimSql, [resendReceipt, claimTokenB]),
+  ]);
+  assert.equal(claimA.rows.length + claimB.rows.length, 1, "two concurrent resend claims both succeeded");
+
+  const persistedClaim = await admin.query<{
+    delivery_state: string;
+    delivery_attempt_count: number;
+    token_hash: Buffer;
+  }>(
+    `select delivery_state, delivery_attempt_count, token_hash
+     from app_private.signup_intents
+     where id = $1`,
+    [signupIntentId],
+  );
+  assert.equal(persistedClaim.rows[0]?.delivery_state, "pending");
+  assert.equal(persistedClaim.rows[0]?.delivery_attempt_count, 2);
+  assert.ok(
+    persistedClaim.rows[0]?.token_hash.equals(claimTokenA)
+      || persistedClaim.rows[0]?.token_hash.equals(claimTokenB),
+  );
+
+  process.stdout.write("PostgreSQL two-connection context and signup resend isolation passed.\n");
 } finally {
   await Promise.all([
     clientA.query("rollback").catch(() => undefined),
@@ -193,6 +257,7 @@ try {
   try {
     await admin.query("set role afterword_migration_owner");
     await admin.query(`
+      delete from app_private.signup_intents where email = 'concurrency-signup@example.test';
       delete from public.support_sessions where id = '${fixture.supportA}';
       delete from app_private.auth_sessions where user_id in ('${fixture.userA}', '${fixture.userB}');
       delete from public.locations where id in ('${fixture.locationA}', '${fixture.locationB}');

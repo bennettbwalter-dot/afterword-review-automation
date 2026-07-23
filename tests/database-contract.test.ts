@@ -107,6 +107,30 @@ test("provider-independent support sessions require a real agency customer befor
   }
 });
 
+test("signup email readiness persists a provider-neutral delivery and resend lifecycle", async () => {
+  const schema = await readFile(
+    path.resolve("database", "migrations", "020_signup_email_readiness.sql"),
+    "utf8",
+  ).catch(() => "");
+
+  for (const column of [
+    "delivery_state",
+    "delivery_attempt_count",
+    "last_delivery_attempt_at",
+    "next_delivery_attempt_at",
+    "provider_message_reference_hash",
+    "resend_receipt_hash",
+    "last_failure_class",
+  ]) assert.match(schema, new RegExp(column, "i"));
+
+  assert.match(schema, /create\s+or\s+replace\s+function\s+app_private\.create_signup_email_request\s*\([^)]*\btext\s*,[^)]*\btext\s*,[^)]*\btext\s*,[^)]*\bbytea\s*,[^)]*\bbytea\s*,[^)]*\btimestamptz\s*,[^)]*\btimestamptz\s*\)/i);
+  assert.match(schema, /create\s+or\s+replace\s+function\s+app_private\.record_signup_email_delivery\s*\([^)]*\buuid\s*,[^)]*\btext\s*,[^)]*\bbytea\s*,[^)]*\btext\s*\)/i);
+  assert.match(schema, /create\s+or\s+replace\s+function\s+app_private\.claim_signup_email_resend\s*\([^)]*\bbytea\s*,[^)]*\bbytea\s*,[^)]*\btimestamptz\s*,[^)]*\btimestamptz\s*\)/i);
+  assert.match(schema, /for update/is);
+  assert.match(schema, /delivery_attempt_count\s*<\s*3/i);
+  assert.match(schema, /next_delivery_attempt_at\s*<=\s*statement_timestamp\(\)/i);
+});
+
 test("SMS billing migration is forward-only, tenant-isolated and worker-fenced", async () => {
   const schema = await readFile(
     path.resolve("database", "migrations", "004_sms_billing_and_location_reporting.sql"),
@@ -191,6 +215,7 @@ test("database CI exercises the real migrator and two-connection isolation", asy
   const packageJson = await readFile(path.resolve("package.json"), "utf8");
   const isolationScript = await readFile(path.resolve("scripts", "test-database-isolation.ts"), "utf8");
   const concurrencyScript = await readFile(path.resolve("scripts", "test-database-concurrency.ts"), "utf8");
+  const migratorScript = await readFile(path.resolve("scripts", "test-migrator.ts"), "utf8");
 
   assert.match(workflow, /npm run db:test:migrator/u);
   assert.match(workflow, /npm run db:test:concurrency/u);
@@ -200,4 +225,16 @@ test("database CI exercises the real migrator and two-connection isolation", asy
   for (const source of [isolationScript, concurrencyScript]) {
     assert.match(source, /endsWith\("_test"\)[\s\S]+startsWith\("afterword_test_"\)/u);
   }
+  for (const source of [workflow, migratorScript]) {
+    assert.match(
+      source,
+      /const reviewedFiles = \[\s*"019_provider_independent_security\.sql",\s*"020_signup_email_readiness\.sql",\s*\]/u,
+    );
+    assert.match(source, /const migrations = Object\.fromEntries\(reviewedFiles\.map\(\(file\) => \[/u);
+    assert.doesNotMatch(source, /reviewedFiles\s*=\s*\[[^\]]*012_/su);
+  }
+  assert.match(
+    concurrencyScript,
+    /Promise\.all\(\[\s*clientA\.query\(claimSql[\s\S]+clientB\.query\(claimSql[\s\S]+rows\.length \+ claimB\.rows\.length,\s*1/u,
+  );
 });
